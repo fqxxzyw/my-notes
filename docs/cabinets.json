@@ -1,7 +1,16 @@
 {
   "schemaVersion": 2,
   "cabinets": [
-    { "id": "general", "title": "默认书柜" }
+    {
+      "id": "general",
+      "title": "默认书柜"
+    },
+    {
+      "id": "0a3dbf19-8b1e-400f-9c41-7c925983d157",
+      "title": "学习"
+    }
   ],
-  "assignments": {}
+  "assignments": {
+    "b365a7c4a96346918bb88051547e4a6a": "0a3dbf19-8b1e-400f-9c41-7c925983d157"
+  }
 }

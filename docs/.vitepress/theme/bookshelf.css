@@ -2,7 +2,6 @@
   --book-ink: #111;
   --book-muted: #555;
   --spine-brown: #6e4726;
-  --spine-width: 36px;
   min-width: 0;
   color: var(--book-ink);
 }
@@ -13,8 +12,6 @@
   border-radius: 12px;
   padding: 28px 20px 24px;
   background: #fff;
-  perspective: 1450px;
-  perspective-origin: 50% 44%;
 }
 .bookshelf__stage-heading {
   display: flex;
@@ -28,6 +25,8 @@
   overflow-x: auto;
   overflow-y: hidden;
   padding: 16px 48px 0;
+  perspective: 1450px;
+  perspective-origin: 50% 44%;
   scrollbar-width: thin;
   scrollbar-color: #111 #fff;
   overscroll-behavior-x: contain;
@@ -39,7 +38,7 @@
   width: max-content;
   min-width: 100%;
   height: 330px;
-  gap: 14px;
+  gap: 0;
   transform-style: preserve-3d;
 }
 .volume {
@@ -48,14 +47,15 @@
   display: flex;
   flex: 0 0 var(--book-width);
   width: var(--book-width);
-  height: 100%;
+  height: var(--book-height);
   align-items: end;
   justify-content: center;
   padding: 0;
   background: transparent;
   border: 0;
   cursor: pointer;
-  transition: width .15s ease-out, flex-basis .15s ease-out;
+  transform: translate3d(0, var(--lift), var(--depth));
+  transform-style: preserve-3d;
   -webkit-tap-highlight-color: transparent;
 }
 .volume:disabled { cursor: default; }
@@ -72,13 +72,12 @@
 .volume__body {
   position: relative;
   display: block;
-  flex: 0 0 var(--spine-width);
-  width: var(--spine-width);
-  height: 254px;
-  transform: translateY(var(--lift)) scaleX(var(--scale)) scaleY(var(--height-scale)) rotateX(var(--tilt-x)) rotateY(var(--tilt-y));
+  flex: 0 0 100%;
+  width: 100%;
+  height: 100%;
+  transform: rotateX(var(--tilt-x)) rotateY(var(--tilt-y));
   transform-style: preserve-3d;
   transform-origin: center bottom;
-  transition: transform .15s ease-out;
 }
 .volume__spine, .volume__top, .volume__cover { position: absolute; display: block; background: #fff; }
 .volume__spine {
@@ -89,7 +88,7 @@
   flex-direction: column;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 3px;
+  padding: 14px 6px;
   backface-visibility: hidden;
 }
 .volume__spine::before, .volume__spine::after {
@@ -100,8 +99,8 @@
   width: 1px;
   background: #d1d1d1;
 }
-.volume__spine::before { left: 3px; }
-.volume__spine::after { right: 3px; }
+.volume__spine::before { left: 5px; }
+.volume__spine::after { right: 5px; }
 .volume__number {
   flex: 0 0 auto;
   padding: 2px 5px;
@@ -155,6 +154,16 @@
   width: 2px;
   background: #111;
 }
+.volume__cover::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: #111;
+  z-index: 3;
+}
 .volume__cover-frame { position: absolute; inset: 8px; border: 1px solid #111; }
 .volume__cover-label {
   position: relative;
@@ -192,12 +201,12 @@
 .volume__top {
   top: 0;
   left: 0;
-  width: var(--spine-width);
+  width: 100%;
   height: 144px;
   border: 2px solid #111;
   transform-origin: top center;
   transform: rotateX(-90deg);
-  background: repeating-linear-gradient(90deg, #fff 0 5px, #777 5px 6px);
+  background: repeating-linear-gradient(90deg, #fff 0 5px, #111 5px 6px);
   backface-visibility: hidden;
 }
 .bookshelf__board {
@@ -249,6 +258,10 @@
   .bookshelf__scroll { padding: 16px 24px 0; }
   .bookshelf__stage-heading span:last-child { display: none; }
   .bookshelf__info { align-items: start; }
+}
+@media (max-width: 719px) {
+  .bookshelf__row { height: 270px; }
+  .volume__title { max-height: 124px; font-size: 13px; letter-spacing: .1em; }
 }
 @media (prefers-reduced-motion: reduce) {
   .volume, .volume__body { transition: none; }

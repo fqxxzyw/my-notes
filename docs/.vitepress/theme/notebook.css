@@ -177,6 +177,11 @@
   background: #fff; border-bottom: 2px solid #111;
 }
 .archive-header-inner { min-height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.desktop-header { padding-right: 3px; user-select: none; }
+.window-controls { display: flex; align-self: stretch; align-items: stretch; margin-left: 6px; }
+.window-controls button { width: 36px; min-height: 42px; font: 19px/1 Arial, sans-serif; color: #111; }
+.window-controls button:hover { background: #ececec; }
+.window-controls .window-close:hover { background: #c42b1c; color: #fff; }
 .archive-path, .archive-actions, .archive-path nav { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .archive-path nav { overflow-x: auto; white-space: nowrap; font-size: 13px; }
 .archive-path nav button:hover { text-decoration: underline; }

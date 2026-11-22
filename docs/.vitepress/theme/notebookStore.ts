@@ -309,6 +309,11 @@ export function createNotebookStore() {
   return {
     setToken(value: string): void { token = value.trim() },
     clearToken(): void { token = '' },
+    async readHead(): Promise<string> {
+      const ref = await gitRequest('ref/heads/main') as { object?: { sha?: string } }
+      if (!ref.object?.sha || !/^[a-f0-9]{40}$/.test(ref.object.sha)) throw new NotebookStoreError('github', 'GitHub 返回的分支版本无效。')
+      return ref.object.sha
+    },
     syncBatch,
     async readCatalog(snapshot = true): Promise<CatalogVersion> {
       if (snapshot) {

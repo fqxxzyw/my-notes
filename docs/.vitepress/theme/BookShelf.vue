@@ -1,89 +1,132 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Notebook } from './notebookStore'
 
 const props = defineProps<{ books: Notebook[]; selectedId?: string; disabled?: boolean }>()
 const emit = defineEmits<{ select: [book: Notebook] }>()
 
 const refs = new Map<number, HTMLElement>()
+const scroll = ref<HTMLElement | null>(null)
 const weights = ref<number[]>([])
+let targets: number[] = []
 const focused = ref<number | null>(null)
 const hovered = ref<number | null>(null)
 const lastActive = ref<number | null>(null)
-const pointerInside = ref(false)
 const reducedMotion = ref(false)
+const isMobile = ref(false)
 let motionQuery: MediaQueryList | undefined
-let pointerX = 0
+let sizeQuery: MediaQueryList | undefined
 let frame = 0
 
-const scales = computed(() => props.books.map((book, index) => {
-  if (reducedMotion.value) return 1
-  const pointerWeight = pointerInside.value ? (weights.value[index] || 0) : 0
-  const focusWeight = focused.value === null ? 0 : Math.max(0, 1 - Math.abs(index - focused.value) * 0.62)
-  const selectedWeight = book.id === props.selectedId ? 0.18 : 0
-  return 1 + Math.max(pointerWeight, focusWeight, selectedWeight) * 0.3
-}))
-const activeBook = computed(() => props.books[focused.value ?? hovered.value ?? lastActive.value ?? 0] || null)
+const activeBook = computed(() => props.books[hovered.value ?? focused.value ?? lastActive.value ?? 0] || null)
+const metrics = computed(() => isMobile.value
+  ? { baseW: 54, maxW: 72, baseH: 206, maxH: 238, gap: 0, radius: 160, maxLift: 12 }
+  : { baseW: 66, maxW: 88, baseH: 254, maxH: 294, gap: 0, radius: 220, maxLift: 18 })
 
 function setBookRef(element: unknown, index: number) {
   if (typeof HTMLElement !== 'undefined' && element instanceof HTMLElement) refs.set(index, element)
   else refs.delete(index)
 }
 
-function measurePointer() {
+function animate() {
   frame = 0
-  weights.value = props.books.map((_, index) => {
-    const rect = refs.get(index)?.getBoundingClientRect()
-    if (!rect) return 0
-    const distance = Math.abs(pointerX - (rect.left + rect.width / 2))
-    // A smooth falloff gives nearby volumes a smaller, continuous response.
-    return Math.exp(-0.5 * (distance / 68) ** 2)
+  let moving = false
+  weights.value = targets.map((target, index) => {
+    const previous = weights.value[index] || 0
+    const value = reducedMotion.value ? target : previous + (target - previous) * 0.16
+    if (Math.abs(value - target) < 0.0005) return target
+    moving = true
+    return value
+  })
+  if (moving) frame = requestAnimationFrame(animate)
+}
+
+function setTargets(center: number) {
+  const m = metrics.value
+  targets = props.books.map((_, index) => {
+    const distance = Math.abs(center - (index * (m.baseW + m.gap) + m.baseW / 2))
+    if (distance >= m.radius || reducedMotion.value) return 0
+    return Math.pow(0.5 * (1 + Math.cos(Math.PI * distance / m.radius)), 1.15)
   })
   let nearest = -1
-  let best = 0
-  weights.value.forEach((weight, index) => {
+  let best = -Infinity
+  props.books.forEach((_, index) => {
+    const weight = -Math.abs(center - (index * (m.baseW + m.gap) + m.baseW / 2))
     if (weight > best) { best = weight; nearest = index }
   })
-  hovered.value = best > 0.35 ? nearest : null
+  hovered.value = nearest >= 0 ? nearest : null
   if (hovered.value !== null) lastActive.value = hovered.value
+  if (!frame) frame = requestAnimationFrame(animate)
 }
 
 function move(event: PointerEvent) {
-  if (event.pointerType === 'touch' || props.disabled) return
-  pointerInside.value = true
-  pointerX = event.clientX
-  if (!frame) frame = requestAnimationFrame(measurePointer)
+  const element = scroll.value
+  if (!element || event.pointerType === 'touch' || props.disabled) return
+  const m = metrics.value
+  const width = props.books.length * m.baseW + Math.max(0, props.books.length - 1) * m.gap
+  const style = getComputedStyle(element)
+  const leftPadding = parseFloat(style.paddingLeft) || 0
+  const rightPadding = parseFloat(style.paddingRight) || 0
+  const innerWidth = element.clientWidth - leftPadding - rightPadding
+  const start = element.getBoundingClientRect().left + leftPadding - element.scrollLeft + Math.max(0, (innerWidth - width) / 2)
+  setTargets(event.clientX - start)
 }
 
 function leave() {
-  pointerInside.value = false
   hovered.value = null
-  if (frame) cancelAnimationFrame(frame)
-  frame = 0
+  targets = props.books.map(() => 0)
+  if (!frame) frame = requestAnimationFrame(animate)
 }
 
 function bookStyle(index: number) {
-  const scale = scales.value[index] || 1
+  const f = weights.value[index] || 0
+  const m = metrics.value
   return {
-    '--book-width': `${104 * scale}px`,
-    '--scale': scale,
-    '--height-scale': 1 + (scale - 1) * 0.525,
-    '--tilt-y': `${-26 - ((scale - 1) / 0.3) * 14}deg`,
-    '--tilt-x': `${-6 + ((scale - 1) / 0.3) * 2.5}deg`,
-    '--lift': `${(scale - 1) * -60}px`,
-    '--stack-order': Math.round(scale * 100)
+    '--book-width': `${m.baseW + (m.maxW - m.baseW) * f}px`,
+    '--book-height': `${m.baseH + (m.maxH - m.baseH) * f}px`,
+    '--tilt-y': `${-26 - 14 * f}deg`,
+    '--tilt-x': `${-6 + 2.5 * f}deg`,
+    '--lift': `${-m.maxLift * f}px`,
+    '--depth': `${26 * f}px`,
+    '--stack-order': 10 + Math.round(f * 30)
   }
 }
 
-function updateMotion(event: MediaQueryList | MediaQueryListEvent) { reducedMotion.value = event.matches }
+function focusBook(index: number) {
+  focused.value = index
+  lastActive.value = index
+  const m = metrics.value
+  setTargets(index * (m.baseW + m.gap) + m.baseW / 2)
+  hovered.value = null
+}
+function focusAdjacent(index: number, direction: number) {
+  const next = Math.max(0, Math.min(props.books.length - 1, index + direction))
+  refs.get(next)?.focus()
+}
+function updateMotion(event: MediaQueryList | MediaQueryListEvent) {
+  reducedMotion.value = event.matches
+  if (event.matches) leave()
+}
+function updateSize(event: MediaQueryList | MediaQueryListEvent) { isMobile.value = event.matches; leave() }
+watch(() => props.books.map(book => book.id).join('|'), () => {
+  targets = props.books.map(() => 0)
+  weights.value = [...targets]
+  hovered.value = null
+  focused.value = null
+  lastActive.value = null
+})
 onMounted(() => {
   motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+  sizeQuery = window.matchMedia('(max-width: 719px)')
   updateMotion(motionQuery)
+  updateSize(sizeQuery)
   motionQuery.addEventListener('change', updateMotion)
+  sizeQuery.addEventListener('change', updateSize)
 })
 onBeforeUnmount(() => {
   if (frame) cancelAnimationFrame(frame)
   motionQuery?.removeEventListener('change', updateMotion)
+  sizeQuery?.removeEventListener('change', updateSize)
 })
 </script>
 
@@ -94,7 +137,7 @@ onBeforeUnmount(() => {
       <span>3D 书脊 · 笔记本</span>
       <span>移动鼠标放大 · 点击打开</span>
     </div>
-    <div class="bookshelf__scroll" @pointermove="move" @pointerleave="leave" @scroll="leave">
+    <div ref="scroll" class="bookshelf__scroll" @pointermove="move" @pointerleave="leave" @scroll="leave">
       <div v-if="books.length" class="bookshelf__row">
         <button
           v-for="(book, index) in books"
@@ -105,11 +148,12 @@ onBeforeUnmount(() => {
           :style="bookStyle(index)"
           :disabled="disabled"
           :aria-label="book.title"
-          :aria-pressed="book.id === selectedId"
           :title="book.title"
           type="button"
-          @focus="focused = index; lastActive = index"
-          @blur="focused = null"
+          @focus="focusBook(index)"
+          @blur="focused = null; leave()"
+          @keydown.left.prevent="focusAdjacent(index, -1)"
+          @keydown.right.prevent="focusAdjacent(index, 1)"
           @click="emit('select', book)"
         >
           <span class="volume__floor-shadow" aria-hidden="true"></span>

@@ -24,7 +24,7 @@
 
 1. 用有此仓库写入权限的账号打开 [GitHub 的精细访问令牌设置](https://github.com/settings/personal-access-tokens/new)。
 2. 选择有效期，在 Repository access 中选 Only select repositories，只选 `my-notes`。在 Repository permissions 中将 Contents 设为 Read and write。
-3. 将生成的令牌填入本站的连接窗口。凭据只用于当前页面会话，刷新后需要重新连接。
+3. 将生成的令牌填入连接窗口。网页版保存在当前浏览器的本地存储中，刷新后自动恢复；它没有加密，浏览器扩展或此站点脚本可能读取，请仅在可信设备上使用。桌面版使用 Windows 当前用户的数据保护功能加密保存令牌。点击「断开连接」会清除保存的令牌。
 
 ## 在仓库里找回一章
 

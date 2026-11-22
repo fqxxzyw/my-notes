@@ -20,6 +20,7 @@ const selectedChapter = ref<Chapter | null>(null)
 const content = ref('')
 const tokenInput = ref('')
 const connected = ref(false)
+const tokenLoading = ref(true)
 const busy = ref(false)
 const error = ref('')
 const notice = ref('')
@@ -60,6 +61,7 @@ type Draft = { content: string; base: Chapter }
 const drafts = ref<Record<string, Draft>>({})
 const selectedKeys = ref<string[]>([])
 const isHosted = ref(false)
+const isDesktop = ref(false)
 const autoSave = ref(false)
 const autoStatus = ref('自动保存已关闭')
 let autoTimer: ReturnType<typeof setTimeout> | undefined
@@ -71,6 +73,60 @@ const autoCabinets = new Set<string>()
 const autoMoves = new Set<string>()
 const inFlightKeys = new Set<string>()
 const localKey = 'paper-notes-local-collection'
+const credentialKey = 'paper-notes-github-token'
+const autoPreferenceKey = 'paper-notes-auto-save-enabled'
+function savedAutoPreference(): boolean {
+  try { return localStorage.getItem(autoPreferenceKey) !== 'false' } catch { return false }
+}
+type DesktopBridge = {
+  postMessage: (value: object) => void
+  addEventListener: (name: 'message', handler: (event: MessageEvent) => void) => void
+  removeEventListener: (name: 'message', handler: (event: MessageEvent) => void) => void
+}
+function desktopBridge(): DesktopBridge | undefined {
+  return (window as unknown as { chrome?: { webview?: DesktopBridge } }).chrome?.webview
+}
+function desktopRequest(action: 'token.get' | 'token.set' | 'token.clear', token?: string): Promise<string | null> {
+  return new Promise((resolve, reject) => {
+    const bridge = desktopBridge()
+    if (!bridge) { reject(new Error('桌面安全存储不可用。')); return }
+    const id = crypto.randomUUID()
+    const timer = setTimeout(() => { bridge.removeEventListener('message', receive); reject(new Error('桌面安全存储没有响应。')) }, 8000)
+    function receive(event: MessageEvent) {
+      const result = event.data
+      if (!result || result.channel !== 'paper-notes' || result.id !== id) return
+      clearTimeout(timer)
+      bridge!.removeEventListener('message', receive)
+      if (result.ok !== true) reject(new Error('无法访问桌面安全存储。'))
+      else resolve(typeof result.token === 'string' ? result.token : null)
+    }
+    bridge.addEventListener('message', receive)
+    try { bridge.postMessage({ channel: 'paper-notes', id, action, ...(action === 'token.set' ? { token } : {}) }) }
+    catch { clearTimeout(timer); bridge.removeEventListener('message', receive); reject(new Error('无法访问桌面安全存储。')) }
+  })
+}
+async function readCredential(): Promise<string | null> {
+  return isDesktop.value ? await desktopRequest('token.get') : localStorage.getItem(credentialKey)
+}
+async function saveCredential(token: string): Promise<void> {
+  if (isDesktop.value) await desktopRequest('token.set', token)
+  else localStorage.setItem(credentialKey, token)
+}
+async function clearCredential(): Promise<void> {
+  if (isDesktop.value) await desktopRequest('token.clear')
+  else localStorage.removeItem(credentialKey)
+}
+function windowCommand(action: 'window.minimize' | 'window.maximize' | 'window.close' | 'window.drag') {
+  if (isDesktop.value) desktopBridge()?.postMessage({ channel: 'paper-notes', action })
+}
+function dragWindow(event: MouseEvent) {
+  if (!isDesktop.value || event.button !== 0 || (event.target as Element).closest('button, a, input, textarea, select, label')) return
+  windowCommand('window.drag')
+}
+function maximizeWindow(event: MouseEvent) {
+  if (!isDesktop.value || (event.target as Element).closest('button, a, input, textarea, select, label')) return
+  windowCommand('window.maximize')
+}
 function persistLocal() {
   try { localStorage.setItem(localKey, JSON.stringify({ books: localBooks.value, chapters: localChapters.value, synced: syncedCopies.value, bookVersions: bookVersions.value })) }
   catch { throw new Error('浏览器无法保存本地内容，请复制正文或释放存储空间后重试。') }
@@ -316,16 +372,27 @@ async function refresh() {
   })
 }
 async function connect() {
-  if (!tokenInput.value.trim()) { error.value = '请输入 GitHub 令牌。'; return }
-  store.setToken(tokenInput.value)
+  const token = tokenInput.value.trim()
+  if (!token) { error.value = '请输入 GitHub 令牌。'; return }
+  store.setToken(token)
   tokenInput.value = ''
-  const success = await run(async () => { await store.listNotebooks() })
-  if (success) { connected.value = true; if (isHosted.value) autoSave.value = true; notice.value = '令牌已设置，写入权限将在同步时验证。令牌仅保存在当前页面内存中，已有本地草稿需手动选择同步。' }
-  else store.clearToken()
+  const success = await run(async () => {
+    await store.listNotebooks()
+    try { await saveCredential(token) } catch { throw new Error('令牌无法保存到本机，请检查存储权限后重试。') }
+  })
+  if (success) {
+    connected.value = true
+    if (isHosted.value) autoSave.value = savedAutoPreference()
+    notice.value = '令牌已保存，写入权限将在同步时验证；已有本地草稿需手动选择同步。'
+  } else store.clearToken()
 }
-function disconnect() {
-  autoSave.value = false; store.clearToken(); tokenInput.value = ''; connected.value = false
-  notice.value = '已断开连接；本地草稿仍保留在此浏览器。'
+async function disconnect() {
+  const success = await run(async () => {
+    try { await clearCredential() } catch { throw new Error('无法清除已保存的令牌，请重试。') }
+  })
+  if (!success) return
+  connected.value = false; autoSave.value = false; store.clearToken(); tokenInput.value = ''
+  notice.value = '已断开连接并清除保存的令牌；本地草稿仍保留。'
 }
 async function addBook() {
   if (!saveDraft()) return
@@ -510,24 +577,45 @@ async function flushAuto() {
 }
 watch(autoSave, enabled => {
   if (enabled && (!isHosted.value || !connected.value)) { autoSave.value = false; autoStatus.value = '连接线上书架后可开启'; return }
+  if (isHosted.value && connected.value && !disposed) {
+    try { localStorage.setItem(autoPreferenceKey, String(enabled)) } catch { /* keep the active setting for this session */ }
+  }
   if (enabled) autoStatus.value = '自动保存已开启'
   else { clearTimeout(autoTimer); autoKeys.clear(); autoBooks.clear(); autoMoves.clear(); autoCabinets.clear(); autoStatus.value = '自动保存已关闭' }
 }, { flush: 'sync' })
+let backgroundRunning = false
+let backgroundReady = false
+let backgroundRetry = false
+let backgroundTimer: ReturnType<typeof setTimeout> | undefined
+let backgroundLastCheck = 0
+let backgroundHead = ''
+function scheduleDesktopRemoteCheck() {
+  if (!isDesktop.value || !backgroundReady || disposed) return
+  if (backgroundRunning) { backgroundRetry = true; return }
+  clearTimeout(backgroundTimer)
+  // Limit unauthenticated GitHub API traffic while still checking after a quick
+  // switch back from the web app, rather than losing that focus event.
+  const delay = Math.max(0, 10000 - (Date.now() - backgroundLastCheck))
+  backgroundTimer = setTimeout(() => { void updateFromRemoteInBackground() }, delay)
+}
 async function updateFromRemoteInBackground() {
-  if (!isHosted.value || !snapshot.value || disposed) return
+  if ((!isHosted.value && !isDesktop.value) || (!isDesktop.value && !snapshot.value) || disposed) return
+  if (backgroundRunning) { if (isDesktop.value) backgroundRetry = true; return }
+  if (isDesktop.value && (busy.value || writing)) { backgroundLastCheck = Date.now(); scheduleDesktopRemoteCheck(); return }
+  backgroundRunning = true
+  backgroundLastCheck = Date.now()
   const version = localMutationVersion
   try {
-    const response = await fetch('https://api.github.com/repos/fqxxzyw/my-notes/git/ref/heads/main', { cache: 'no-store' })
-    if (!response.ok) return
-    const data = await response.json()
+    const head = await store.readHead()
+    if (isDesktop.value && head && head === backgroundHead) return
     const buildSha = typeof __PAPER_BUILD_SHA__ === 'string' ? __PAPER_BUILD_SHA__ : ''
-    if (buildSha && data?.object?.sha === buildSha) return
+    if (snapshot.value && buildSha && head === buildSha) { backgroundHead = head; return }
     const [latest, latestCatalog] = await Promise.all([store.listNotebooks(), store.readCatalog(false)])
     const selectedId = selectedBook.value?.id
     const request = bookRun
     const selectedExists = !!selectedId && latest.some(book => book.id === selectedId)
     const latestChapters = selectedExists ? await store.listChapters(selectedId!) : []
-    if (!snapshot.value || disposed || writing || version !== localMutationVersion) return
+    if ((!isDesktop.value && !snapshot.value) || disposed || writing || version !== localMutationVersion) return
     catalog.latest(latestCatalog)
     chapterCache.clear()
     if (selectedExists) chapterCache.set(`remote:${selectedId}`, Promise.resolve(latestChapters))
@@ -539,11 +627,39 @@ async function updateFromRemoteInBackground() {
     if (selectedId && selectedBook.value?.id === selectedId && request === bookRun) {
       selectedBook.value = books.value.find(book => book.id === selectedId) || selectedBook.value
       chapters.value = await getChapters(selectedBook.value)
+      // Never replace an open editor or the baseline of a pending draft; the
+      // existing GitHub SHA check must detect a concurrent edit on submission.
+      const current = selectedChapter.value
+      const latestChapter = current && chapters.value.find(item => item.id === current.id)
+      if (current && latestChapter && view.value !== 'edit' && !drafts.value[chapterKey(current)] && content.value === current.content) {
+        suspendDraft = true
+        try { selectedChapter.value = latestChapter; content.value = latestChapter.content }
+        finally { suspendDraft = false }
+      }
     }
+    if (isDesktop.value && request !== bookRun) { backgroundHead = ''; backgroundRetry = true }
+    else backgroundHead = head
   } catch { /* Snapshot stays available when GitHub is unreachable. */ }
+  finally {
+    backgroundRunning = false
+    if (backgroundRetry && !disposed) { backgroundRetry = false; scheduleDesktopRemoteCheck() }
+  }
 }
 onMounted(() => {
   isHosted.value = location.hostname === 'fqxxzyw.github.io' && (location.pathname === '/my-notes' || location.pathname.startsWith('/my-notes/'))
+  isDesktop.value = location.hostname === 'paper.local' && (location.pathname === '/my-notes' || location.pathname.startsWith('/my-notes/'))
+  void (async () => {
+    try {
+      const token = await readCredential()
+      if (disposed) return
+      if (token) {
+        store.setToken(token)
+        connected.value = true
+        if (isHosted.value) autoSave.value = savedAutoPreference()
+      }
+    } catch { if (!disposed) error.value = '无法读取已保存的 GitHub 令牌，请检查本机存储。' }
+    finally { tokenLoading.value = false }
+  })()
   let restoreError = ''
   try {
     const saved = JSON.parse(localStorage.getItem(localKey) || '{}')
@@ -570,11 +686,15 @@ onMounted(() => {
       await loadBooks(true)
     })
     if (restoreError) error.value = restoreError
+    backgroundReady = loaded
     if (loaded) void updateFromRemoteInBackground()
   })()
+  window.addEventListener('focus', scheduleDesktopRemoteCheck)
 })
 onBeforeUnmount(() => {
   disposed = true
+  window.removeEventListener('focus', scheduleDesktopRemoteCheck)
+  clearTimeout(backgroundTimer)
   clearTimeout(autoTimer)
   saveDraft()
   autoSave.value = false
@@ -608,7 +728,7 @@ async function openSearchResult(chapter: Chapter) {
 
 <template>
   <div class="desk">
-    <header class="archive-header">
+    <header class="archive-header" :class="{ 'desktop-header': isDesktop }" @mousedown="dragWindow" @dblclick="maximizeWindow">
       <div class="archive-header-inner">
         <div class="archive-path">
           <button class="archive-brand" type="button" @click="openCabinet()"><span aria-hidden="true"></span>纸间</button>
@@ -645,6 +765,11 @@ async function openSearchResult(chapter: Chapter) {
           <button v-if="!chosenCabinet" type="button" class="archive-new" :disabled="busy" @click="creatingCabinet = true">＋ 新建书柜</button>
           <button v-else-if="!selectedBook" type="button" class="archive-new" :disabled="busy" @click="creatingBook = true">＋ 新建笔记本</button>
           <button v-else type="button" class="archive-new" :disabled="busy" @click="creatingChapter = true; if (selectedChapter) backToChapters()">＋ 新建章节</button>
+          <div v-if="isDesktop" class="window-controls" aria-label="窗口控制">
+            <button type="button" aria-label="最小化窗口" title="最小化" @click="windowCommand('window.minimize')">&#x2212;</button>
+            <button type="button" aria-label="最大化或还原窗口" title="最大化或还原" @click="windowCommand('window.maximize')">&#x25A1;</button>
+            <button type="button" class="window-close" aria-label="关闭窗口" title="关闭" @click="windowCommand('window.close')">&#x00D7;</button>
+          </div>
         </div>
       </div>
     </header>
@@ -851,8 +976,8 @@ async function openSearchResult(chapter: Chapter) {
         <form v-if="!connected" @submit.prevent="connect">
           <label for="github-token">此仓库的精细访问令牌</label>
           <div class="token-row">
-            <input id="github-token" v-model="tokenInput" type="password" autocomplete="off" placeholder="仅用于当前页面会话" required>
-            <button class="primary-button" :disabled="busy">{{ isHosted ? '连接并自动保存' : '连接' }}</button>
+            <input id="github-token" v-model="tokenInput" type="password" autocomplete="off" placeholder="GitHub 访问令牌" :disabled="tokenLoading" required>
+            <button class="primary-button" :disabled="busy || tokenLoading">连接 GitHub</button>
           </div>
         </form>
         <template v-else>
@@ -863,6 +988,8 @@ async function openSearchResult(chapter: Chapter) {
           <p v-if="isHosted" role="status">{{ autoStatus }}</p>
           <button class="text-button" :disabled="busy" @click="disconnect">断开连接</button>
         </template>
+        <p v-if="isDesktop">令牌使用 Windows 当前账户加密保存在本机；断开连接会清除。</p>
+        <p v-else>令牌保存在此浏览器的本地存储中，刷新后会恢复；同一浏览器的扩展或此站点脚本可能读取它，请仅在可信设备上使用。断开连接会清除。</p>
         <a href="./guide.html">查看令牌设置和同步说明 ↗</a>
       </div>
       </div>

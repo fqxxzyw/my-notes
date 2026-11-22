@@ -8,14 +8,21 @@ const emit = defineEmits<{ select: [id: string]; create: [] }>()
 <template>
   <div class="cabinet-gallery" aria-label="书柜列表">
     <button v-for="(item, index) in items" :key="item.id" class="cabinet" type="button"
-      :aria-label="`${item.title}，${item.books.length} 本笔记本`" @click="emit('select', item.id)">
+      :aria-label="`${item.title}，${item.books.length} 本笔记本${item.books.length ? '：' + item.books.slice(0, 4).map(book => book.title).join('、') + (item.books.length > 4 ? '等' : '') : ''}`" @click="emit('select', item.id)">
       <span class="cabinet__top">
         <span class="cabinet__information">
           <span class="cabinet__meta"><span class="case-number">CASE {{ String(index + 1).padStart(2, '0') }}</span> {{ item.books.length }} 册</span>
           <span class="cabinet__name">{{ item.title }}</span>
         </span>
         <span class="cabinet__drawing" aria-hidden="true">
-          <span class="cabinet__books"><i v-for="book in item.books.slice(0, 5)" :key="book.id"></i></span>
+          <span class="cabinet__books">
+            <span v-for="(book, bookIndex) in item.books.slice(0, 4)" :key="book.id" class="cabinet__book">
+              <span class="cabinet__book-number">{{ String(bookIndex + 1).padStart(2, '0') }}</span>
+              <span class="cabinet__book-title">{{ book.title }}</span>
+              <span class="cabinet__book-rule"></span>
+            </span>
+          </span>
+          <span v-if="item.books.length > 4" class="cabinet__more">+{{ item.books.length - 4 }}</span>
           <span class="cabinet__plank"></span>
         </span>
       </span>
@@ -51,10 +58,13 @@ const emit = defineEmits<{ select: [id: string]; create: [] }>()
 .cabinet__meta { color: #555; font-size: 12px; font-weight: 600; }
 .case-number { display: inline-block; margin-right: 6px; padding: 2px 7px; color: #111; border: 1.5px solid #111; border-radius: 4px; font: 700 11px ui-monospace,monospace; }
 .cabinet__name { font-family: var(--paper-serif); font-size: 22px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
-.cabinet__drawing { flex: 0 0 80px; position: relative; height: 74px; border: 2px solid #111; background: #fff; }
-.cabinet__books { display: flex; align-items: end; gap: 3px; height: 52px; padding: 0 7px; overflow: hidden; }
-.cabinet__books i { flex: 0 0 10px; height: 32px; border: 1.5px solid #111; background: #fff; }
-.cabinet__books i:nth-child(even) { height: 38px; }
+.cabinet__drawing { flex: 0 0 96px; position: relative; height: 80px; border: 2px solid #111; background: #fff; }
+.cabinet__books { display: flex; align-items: end; gap: 1px; height: 57px; padding: 0 5px; overflow: hidden; }
+.cabinet__book { display: flex; flex: 0 0 17px; height: 49px; min-width: 0; flex-direction: column; align-items: center; padding: 2px 1px; border: 1.5px solid #111; box-shadow: inset 1px 0 #ddd, inset -1px 0 #ddd; background: #fff; }
+.cabinet__book-number { flex: none; border-block: 1px solid #111; font: 700 5px/1 ui-monospace, monospace; }
+.cabinet__book-title { min-height: 0; max-height: 30px; margin: auto 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; writing-mode: vertical-rl; text-orientation: upright; color: #6e4726; font: 700 6px/1.1 var(--paper-serif, serif); }
+.cabinet__book-rule { flex: none; width: 6px; height: 1px; background: #111; }
+.cabinet__more { position: absolute; top: 2px; right: 3px; font: 700 7px/1 ui-monospace, monospace; }
 .cabinet__plank { display: block; height: 7px; border-top: 2px solid #111; border-bottom: 1px solid #111; }
 .cabinet__footer { align-items: center; border-top: 1.5px solid #111; padding-top: 13px; font-size: 12px; }
 .cabinet__footer strong { white-space: nowrap; }

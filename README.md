@@ -1,12 +1,9 @@
-# My Tech Notes
+# 纸间
 
-基于 VitePress 的学习与开发笔记。
+[打开我的书柜](https://fqxxzyw.github.io/my-notes/) · [使用指南](https://fqxxzyw.github.io/my-notes/guide.html)
 
-```bash
-npm ci
-npm run docs:dev
-```
+个人 Markdown 笔记站。一册对应 `docs/notebooks/<bookId>/`，册名写在 `index.md` 首行，每一章保存在同目录下的独立 Markdown 文件。GitHub Pages 开启连接后会自动保存。本地开发或预览网页支持勾选多章并一次提交到 GitHub。草稿保存在浏览器，仓库写入使用当前页面会话中的精细访问令牌。
 
-打开终端显示的地址（通常是 `http://localhost:5173/my-notes/`）预览。笔记放在 `docs/`，导航和侧边栏在 `docs/.vitepress/config.mts` 中配置。运行 `npm run docs:build` 验证生产构建。
+书柜名称和笔记本归属记录在 `docs/cabinets.json`。移动笔记本时只更新归属，原文和提交历史保留在原目录。
 
-推送到 `main` 分支后，GitHub Actions 会部署到 GitHub Pages。仓库的 Pages 构建来源需设置为 **GitHub Actions**。当前 `base` 为 `/my-notes/`，如果仓库名称变化，请同步修改它。
+本地运行 `npm ci` 和 `npm run docs:dev`，生产构建使用 `npm run docs:build`。推送到 `main` 会触发 GitHub Actions 发布到 `/my-notes/`。

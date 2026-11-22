@@ -1,0 +1,10 @@
+{
+  "cabinets": [
+    { "id": "general", "title": "常用书柜" },
+    { "id": "reading-room", "title": "阅读与灵感" }
+  ],
+  "assignments": {
+    "reading": "reading-room",
+    "ideas": "reading-room"
+  }
+}

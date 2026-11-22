@@ -1,0 +1,736 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { createNotebookStore, type Notebook, type Chapter } from './notebookStore'
+import ChapterMarkdown from './ChapterMarkdown.vue'
+import BookShelf from './BookShelf.vue'
+import CabinetGallery from './CabinetGallery.vue'
+import { useCabinets } from './useCabinets'
+declare const __PAPER_BUILD_SHA__: string
+
+const store = createNotebookStore()
+const catalog = useCabinets()
+const activeCabinet = ref('')
+const creatingCabinet = ref(false)
+const cabinetName = ref('')
+const books = ref<Notebook[]>([])
+const chapters = ref<Chapter[]>([])
+const selectedBook = ref<Notebook | null>(null)
+const selectedChapter = ref<Chapter | null>(null)
+const content = ref('')
+const tokenInput = ref('')
+const connected = ref(false)
+const busy = ref(false)
+const error = ref('')
+const notice = ref('')
+const view = ref<'read' | 'edit'>('read')
+const query = ref('')
+const bookTitle = ref('')
+const chapterTitle = ref('')
+const creatingBook = ref(false)
+const creatingChapter = ref(false)
+const remoteVersion = ref<Chapter | null>(null)
+const snapshot = ref(true)
+const searchIndex = ref<Chapter[]>([])
+const searching = ref(false)
+let searchRun = 0
+let bookRun = 0
+let localMutationVersion = 0
+let suspendDraft = false
+const localBooks = ref<Notebook[]>([])
+const bookVersions = ref<Record<string, string>>({})
+const localChapters = ref<Chapter[]>([])
+const loadedBookIds = ref<string[]>([])
+type SyncedCopy = { chapter: Chapter; baseSha: string | null; snapshotVersion: string }
+const syncedCopies = ref<Record<string, SyncedCopy>>({})
+const snapshotFiles = import.meta.glob('../../notebooks/**/*.md', { eager: true, query: '?raw', import: 'default' }) as Record<string, string>
+let snapshotVersion = ''
+async function identifySnapshot() {
+  const text = JSON.stringify(Object.entries(snapshotFiles).sort(([a], [b]) => a.localeCompare(b)))
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  snapshotVersion = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+}
+const chapterCache = new Map<string, Promise<Chapter[]>>()
+type Draft = { content: string; base: Chapter }
+const drafts = ref<Record<string, Draft>>({})
+const selectedKeys = ref<string[]>([])
+const isHosted = ref(false)
+const autoSave = ref(false)
+const autoStatus = ref('自动保存已关闭')
+let autoTimer: ReturnType<typeof setTimeout> | undefined
+let writing = false
+let disposed = false
+const autoKeys = new Set<string>()
+const autoBooks = new Set<string>()
+const autoCabinets = new Set<string>()
+const autoMoves = new Set<string>()
+const inFlightKeys = new Set<string>()
+const localKey = 'paper-notes-local-collection'
+function persistLocal() {
+  try { localStorage.setItem(localKey, JSON.stringify({ books: localBooks.value, chapters: localChapters.value, synced: syncedCopies.value, bookVersions: bookVersions.value })) }
+  catch { throw new Error('浏览器无法保存本地内容，请复制正文或释放存储空间后重试。') }
+}
+const chapterKey = (chapter: Pick<Chapter, 'bookId' | 'id'>) => `${chapter.bookId}/${chapter.id}`
+const batchItems = computed(() => {
+  const byKey = new Map<string, Chapter>()
+  for (const chapter of localChapters.value) if (!chapter.sha) byKey.set(chapterKey(chapter), chapter)
+  for (const [key, draft] of Object.entries(drafts.value)) byKey.set(key, { ...draft.base, content: draft.content })
+  return Array.from(byKey, ([key, chapter]) => ({ key, bookId: chapter.bookId, bookTitle: books.value.find(book => book.id === chapter.bookId)?.title || chapter.bookId, title: chapter.title, chapter }))
+})
+async function getChapters(book: Notebook): Promise<Chapter[]> {
+  const useSnapshot = snapshot.value
+  const key = `${useSnapshot ? 'snapshot' : 'remote'}:${book.id}`
+  let pending = chapterCache.get(key)
+  if (!pending) {
+    pending = !loadedBookIds.value.includes(book.id) ? Promise.resolve([]) : useSnapshot ? store.listSnapshotChapters(book.id) : store.listChapters(book.id)
+    chapterCache.set(key, pending)
+    pending.catch(() => { if (chapterCache.get(key) === pending) chapterCache.delete(key) })
+  }
+  const source = await pending
+  const merged = source.map(chapter => {
+    const copy = syncedCopies.value[chapterKey(chapter)]
+    return useSnapshot && copy?.snapshotVersion === snapshotVersion && copy.baseSha === chapter.sha ? copy.chapter : chapter
+  })
+  const extras = [ ...localChapters.value.filter(chapter => !chapter.sha), ...Object.values(drafts.value).map(draft => draft.base), ...(useSnapshot ? Object.values(syncedCopies.value).filter(copy => copy.snapshotVersion === snapshotVersion && copy.baseSha === null).map(copy => copy.chapter) : []) ]
+  for (const chapter of extras) {
+    if (chapter.bookId === book.id && !merged.some(item => item.id === chapter.id)) merged.push(chapter)
+  }
+  return merged
+}
+function newId() { return crypto.randomUUID().replaceAll('-', '') }
+const draftKey = (chapter: Chapter) => `paper-notes-draft:${chapter.bookId}:${chapter.id}`
+const dirty = computed(() => !!selectedChapter.value && content.value !== selectedChapter.value.content)
+const chosenCabinet = computed(() => catalog.cabinets.value.find(cabinet => cabinet.id === activeCabinet.value) || null)
+const cabinetItems = computed(() => catalog.cabinets.value.map(cabinet => ({ ...cabinet, books: books.value.filter(book => catalog.assigned(book.id) === cabinet.id) })))
+const visibleCabinets = computed(() => cabinetItems.value.filter(cabinet => {
+  const q = query.value.trim().toLowerCase()
+  return !q || cabinet.title.toLowerCase().includes(q) || cabinet.books.some(book => book.title.toLowerCase().includes(q))
+}))
+const filteredBooks = computed(() => books.value.filter(book => catalog.assigned(book.id) === activeCabinet.value && book.title.toLowerCase().includes(query.value.trim().toLowerCase())))
+const filteredChapters = computed(() => {
+  const q = query.value.trim().toLowerCase()
+  return chapters.value.filter(chapter => !q || chapter.title.toLowerCase().includes(q) || chapter.content.toLowerCase().includes(q))
+})
+const searchResults = computed(() => {
+  const q = query.value.trim().toLowerCase()
+  if (!q) return []
+  return searchIndex.value.filter(chapter => chapter.title.toLowerCase().includes(q) || chapter.content.toLowerCase().includes(q))
+})
+
+function message(e: unknown) {
+  return e instanceof Error ? e.message : '操作没有完成，请稍后重试。'
+}
+function clearMessages() { error.value = ''; notice.value = ''; remoteVersion.value = null }
+function revealConnection() {
+  const panel = document.querySelector<HTMLDetailsElement>('details#connection')
+  if (panel) panel.open = true
+}
+function goToConnection() {
+  revealConnection()
+  document.getElementById('connection')?.scrollIntoView({ behavior: 'smooth' })
+}
+function saveDraft(): boolean {
+  const chapter = selectedChapter.value
+  if (!chapter || typeof localStorage === 'undefined') return true
+  try {
+    const key = chapterKey(chapter)
+    if (content.value === chapter.content && !inFlightKeys.has(key)) {
+      localStorage.removeItem(draftKey(chapter))
+      const next = { ...drafts.value }; delete next[key]; drafts.value = next
+    } else {
+      const draft = { content: content.value, base: chapter }
+      localStorage.setItem(draftKey(chapter), JSON.stringify(draft))
+      drafts.value = { ...drafts.value, [key]: draft }
+    }
+    return true
+  } catch { error.value = '浏览器无法保存本地草稿，请复制正文或释放存储空间后重试。'; return false }
+}
+watch(content, () => {
+  if (suspendDraft) return
+  if (!saveDraft()) { autoSave.value = false; autoStatus.value = '本地草稿保存失败，自动保存已暂停'; return }
+  if (selectedChapter.value && autoSave.value) { autoKeys.add(chapterKey(selectedChapter.value)); scheduleAuto() }
+}, { flush: 'sync' })
+
+async function run(action: () => Promise<void>) {
+  busy.value = true
+  error.value = ''
+  try { await action(); return true } catch (e) { error.value = message(e); return false } finally { busy.value = false }
+}
+async function loadBooks(useSnapshot = snapshot.value) {
+  const remoteBooks = useSnapshot ? await store.listSnapshotNotebooks() : await store.listNotebooks()
+  chapterCache.clear()
+  loadedBookIds.value = remoteBooks.map(book => book.id)
+  books.value = mergeBooks(remoteBooks, useSnapshot)
+  snapshot.value = useSnapshot
+}
+function mergeBooks(remoteBooks: Notebook[], useSnapshot: boolean): Notebook[] {
+  const merged = [...remoteBooks, ...localBooks.value.filter(local => !remoteBooks.some(book => book.id === local.id) && (!local.sha || localChapters.value.some(chapter => chapter.bookId === local.id && !chapter.sha) || Object.values(drafts.value).some(draft => draft.base.bookId === local.id) || (useSnapshot && bookVersions.value[local.id] === snapshotVersion)))]
+  for (const draft of Object.values(drafts.value)) {
+    if (!merged.some(book => book.id === draft.base.bookId)) merged.push({ id: draft.base.bookId, title: `本地草稿 · ${draft.base.bookId.slice(0, 8)}`, sha: '' })
+  }
+  return merged
+}
+function openCabinet(id = '') {
+  if (!saveDraft()) return
+  if (id && !catalog.cabinets.value.some(cabinet => cabinet.id === id)) { error.value = '书柜不存在，请刷新目录。'; return }
+  ++bookRun
+  activeCabinet.value = id
+  selectedBook.value = null
+  selectedChapter.value = null
+  chapters.value = []
+  creatingBook.value = false; creatingChapter.value = false; creatingCabinet.value = false
+  busy.value = false
+  clearMessages()
+}
+function addCabinet() {
+  clearMessages()
+  try {
+    const id = catalog.create(cabinetName.value)
+    cabinetName.value = ''; creatingCabinet.value = false
+    notice.value = '书柜已保存在本机。'
+    if (autoSave.value) { autoCabinets.add(id); scheduleAuto() }
+  } catch (e) { error.value = `无法创建书柜：${message(e)}` }
+}
+function moveSelected(event: Event) {
+  const book = selectedBook.value
+  const select = event.target as HTMLSelectElement | null
+  if (!book || !select) return
+  const previous = catalog.assigned(book.id)
+  try {
+    catalog.move(book.id, select.value)
+    activeCabinet.value = select.value
+    notice.value = '笔记本归属已保存在本机。'
+    if (autoSave.value) { autoMoves.add(book.id); scheduleAuto() }
+  } catch (e) { activeCabinet.value = catalog.assigned(book.id); select.value = activeCabinet.value || previous; error.value = `书柜归属尚未保存：${message(e)}` }
+}
+async function openBook(book: Notebook) {
+  if (!saveDraft()) return
+  const request = ++bookRun
+  clearMessages()
+  activeCabinet.value = catalog.assigned(book.id)
+  creatingBook.value = false; creatingChapter.value = false
+  selectedBook.value = book
+  selectedChapter.value = null
+  chapters.value = []
+  busy.value = true
+  try {
+    const result = await getChapters(book)
+    if (request === bookRun && selectedBook.value?.id === book.id) chapters.value = result
+  } catch (e) { if (request === bookRun) error.value = message(e) }
+  finally { if (request === bookRun) busy.value = false }
+}
+function openChapter(chapter: Chapter) {
+  if (!saveDraft()) return
+  clearMessages()
+  suspendDraft = true
+  selectedChapter.value = chapter
+  content.value = chapter.content
+  try {
+    const raw = localStorage.getItem(draftKey(chapter))
+    if (raw) {
+      const saved = JSON.parse(raw)
+      if (typeof saved.content === 'string' && saved.base?.id === chapter.id && saved.base?.bookId === chapter.bookId && typeof saved.base?.sha === 'string') {
+        selectedChapter.value = saved.base
+        content.value = saved.content
+        notice.value = '已恢复这篇章节的本地草稿。'
+      }
+    }
+  } catch { error.value = '无法读取本地草稿。' }
+  finally { suspendDraft = false }
+  view.value = 'read'
+  void nextTick(() => document.getElementById('writing-title')?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+}
+async function refresh() {
+  if (!saveDraft()) return false
+  if (writing) { error.value = '正在同步，请稍候再读取目录。'; return false }
+  const request = ++bookRun
+  const version = localMutationVersion
+  clearMessages()
+  return await run(async () => {
+    const bookId = selectedBook.value?.id
+    const chapterId = selectedChapter.value?.id
+    const [remoteBooks, latestCatalog] = await Promise.all([store.listNotebooks(), store.readCatalog(false)])
+    if (writing || version !== localMutationVersion) throw new Error('同步期间目录发生变化，请稍后重新读取。')
+    catalog.latest(latestCatalog)
+    chapterCache.clear()
+    loadedBookIds.value = remoteBooks.map(book => book.id)
+    books.value = mergeBooks(remoteBooks, false)
+    snapshot.value = false
+    if (selectedBook.value) activeCabinet.value = catalog.assigned(selectedBook.value.id)
+    else if (activeCabinet.value && !catalog.cabinets.value.some(item => item.id === activeCabinet.value)) activeCabinet.value = ''
+    if (request !== bookRun) return
+    if (bookId) {
+      selectedBook.value = books.value.find(book => book.id === bookId) || null
+      if (selectedBook.value) {
+        chapters.value = await getChapters(selectedBook.value)
+        const chapter = chapters.value.find(item => item.id === chapterId)
+        if (chapter) openChapter(chapter)
+        else selectedChapter.value = null
+      } else { chapters.value = []; selectedChapter.value = null }
+    }
+    notice.value = '已读取 GitHub 上的最新目录。'
+  })
+}
+async function connect() {
+  if (!tokenInput.value.trim()) { error.value = '请输入 GitHub 令牌。'; return }
+  store.setToken(tokenInput.value)
+  tokenInput.value = ''
+  const success = await run(async () => { await store.listNotebooks() })
+  if (success) { connected.value = true; if (isHosted.value) autoSave.value = true; notice.value = '已连接 GitHub；令牌仅保存在当前页面内存中。已有本地草稿需手动选择同步。' }
+  else store.clearToken()
+}
+function disconnect() {
+  autoSave.value = false; store.clearToken(); tokenInput.value = ''; connected.value = false
+  notice.value = '已断开连接；本地草稿仍保留在此浏览器。'
+}
+async function addBook() {
+  if (!saveDraft()) return
+  clearMessages()
+  await run(async () => {
+    const title = bookTitle.value.trim()
+    if (!title || /[\r\n]/.test(title)) throw new Error('请输入有效的笔记本名称。')
+    if (!activeCabinet.value) throw new Error('请先打开一个书柜。')
+    const book = { id: newId(), title, sha: '' }
+    localBooks.value.push(book)
+    try { persistLocal() } catch (e) { localBooks.value.pop(); throw e }
+    books.value = [...books.value, book]
+    bookTitle.value = ''; creatingBook.value = false
+    selectedBook.value = book; chapters.value = []; selectedChapter.value = null
+    try { catalog.move(book.id, activeCabinet.value) } catch (e) {
+      throw new Error(`笔记本已保存在本机，但书柜归属尚未保存：${message(e)}`)
+    }
+    notice.value = '本地笔记本已创建。添加章节后可一并同步。'
+    if (autoSave.value) { autoBooks.add(book.id); scheduleAuto() }
+  })
+}
+async function addChapter() {
+  const book = selectedBook.value
+  if (!book) return
+  if (!saveDraft()) return
+  clearMessages()
+  await run(async () => {
+    const title = chapterTitle.value.trim()
+    if (!title || /[\r\n]/.test(title)) throw new Error('请输入有效的章节名称。')
+    const chapter = { bookId: book.id, id: newId(), title, content: `# ${title}\n\n`, sha: '' }
+    localChapters.value.push(chapter)
+    try { persistLocal() } catch (e) { localChapters.value.pop(); throw e }
+    chapters.value = [...chapters.value, chapter]
+    chapterTitle.value = ''; creatingChapter.value = false
+    openChapter(chapter); view.value = 'edit'
+    notice.value = '本地章节已创建；准备好后点击同步。'
+    if (autoSave.value) { autoKeys.add(chapterKey(chapter)); scheduleAuto() }
+  })
+}
+async function syncBook() {
+  const book = selectedBook.value
+  if (!book) return
+  if (!connected.value) { error.value = '请先在页面下方连接 GitHub，再同步笔记本。'; goToConnection(); return }
+  if (!saveDraft()) return
+  clearMessages()
+  const success = await run(() => performBatch([], [book.id]))
+  if (success) notice.value = '笔记本及其归属已同步到 GitHub。'
+  if (autoSave.value && (autoKeys.size || autoBooks.size || autoCabinets.size || autoMoves.size)) scheduleAuto()
+}
+async function syncCatalog() {
+  if (!connected.value) { error.value = '请先连接 GitHub，再同步书柜整理。'; goToConnection(); return }
+  if (!saveDraft()) return
+  const bookIds = Object.keys(catalog.journal.value.moves)
+  const cabinetIds = Object.keys(catalog.journal.value.created)
+  if (!bookIds.length && !cabinetIds.length) { notice.value = '没有待同步的书柜整理。'; return }
+  clearMessages()
+  const success = await run(() => performBatch([], bookIds, cabinetIds))
+  if (success) notice.value = '书柜整理已同步到 GitHub。'
+  if (autoSave.value && (autoKeys.size || autoBooks.size || autoCabinets.size || autoMoves.size)) scheduleAuto()
+}
+async function sync() {
+  const chapter = selectedChapter.value
+  if (!chapter) return
+  if (!connected.value) { error.value = '请先连接 GitHub，再同步本地草稿。'; goToConnection(); return }
+  if (!saveDraft()) return
+  clearMessages()
+  const success = await run(() => performBatch([chapterKey(chapter)], []))
+  if (success) notice.value = '已同步到 GitHub；网站将在构建完成后更新。'
+  if (autoSave.value && (autoKeys.size || autoBooks.size || autoCabinets.size || autoMoves.size)) scheduleAuto()
+}
+async function inspectRemote() {
+  const chapter = selectedChapter.value
+  if (!chapter) return
+  await run(async () => { remoteVersion.value = await store.readChapter(chapter.bookId, chapter.id) })
+}
+function useRemoteBase() {
+  if (!remoteVersion.value) return
+  const previous = selectedChapter.value
+  selectedChapter.value = remoteVersion.value
+  if (!saveDraft()) { selectedChapter.value = previous; return }
+  remoteVersion.value = null
+  error.value = ''
+  notice.value = '已采用远程版本作为同步基准，当前草稿未改变。确认合并后再点击同步。'
+}
+async function performBatch(keys: string[], bookIds: string[], cabinetIds: string[] = []) {
+  if (writing) throw new Error('正在同步，请稍候。')
+  const entries = batchItems.value.filter(item => keys.includes(item.key))
+  const newBooks = localBooks.value.filter(book => !book.sha && (bookIds.includes(book.id) || entries.some(item => item.bookId === book.id)))
+  writing = true
+  for (const entry of entries) inFlightKeys.add(entry.key)
+  let catalogPrepared = false
+  try {
+    const scopedBookIds = [...new Set([...bookIds, ...entries.map(item => item.bookId)])]
+    const catalogChange = catalog.prepare(scopedBookIds, cabinetIds)
+    catalogPrepared = !!catalogChange
+    if (!entries.length && !newBooks.length && !catalogChange) return
+    const bases = await Promise.all(entries.map(async item => {
+      const prior = syncedCopies.value[item.key]
+      if (prior && prior.snapshotVersion === snapshotVersion && prior.chapter.sha === item.chapter.sha) return prior.baseSha
+      return (await store.listSnapshotChapters(item.bookId)).find(chapter => chapter.id === item.chapter.id)?.sha || null
+    }))
+    const result = await store.syncBatch(newBooks, entries.map(item => item.chapter), catalogChange)
+    if (catalogChange && !result.catalog) throw new Error('GitHub 未返回书柜目录版本，请保留本地整理后重试。')
+    if (result.catalog) { catalog.acknowledge(result.catalog); catalogPrepared = false }
+    localMutationVersion++
+    for (const item of entries) chapterCache.delete(`remote:${item.bookId}`)
+    for (const book of result.books) {
+      if (!loadedBookIds.value.includes(book.id) && !snapshot.value) loadedBookIds.value.push(book.id)
+      bookVersions.value = { ...bookVersions.value, [book.id]: snapshotVersion }
+      localBooks.value = localBooks.value.map(item => item.id === book.id ? book : item)
+      books.value = books.value.map(item => item.id === book.id ? book : item)
+      if (selectedBook.value?.id === book.id) selectedBook.value = book
+    }
+    for (let i = 0; i < result.chapters.length; i++) {
+      const chapter = result.chapters[i]
+      const index = entries.findIndex(item => item.key === chapterKey(chapter))
+      if (index < 0) continue
+      syncedCopies.value = { ...syncedCopies.value, [chapterKey(chapter)]: { chapter, baseSha: bases[index], snapshotVersion } }
+      localChapters.value = localChapters.value.map(item => chapterKey(item) === chapterKey(chapter) ? chapter : item)
+      chapters.value = chapters.value.map(item => chapterKey(item) === chapterKey(chapter) ? chapter : item)
+    }
+    try { persistLocal() } catch { throw new Error('内容已提交到 GitHub，但浏览器无法保存本地缓存。请保留草稿并刷新远程目录。') }
+    for (const resultChapter of result.chapters) {
+      const key = chapterKey(resultChapter)
+      const entry = entries.find(item => item.key === key)
+      if (!entry) continue
+      const current = drafts.value[key]
+      try {
+        if (current && current.content !== entry.chapter.content) {
+          const draft = { base: resultChapter, content: current.content }
+          localStorage.setItem(draftKey(resultChapter), JSON.stringify(draft))
+          drafts.value = { ...drafts.value, [key]: draft }
+        } else {
+          localStorage.removeItem(draftKey(resultChapter))
+          const next = { ...drafts.value }; delete next[key]; drafts.value = next
+        }
+      } catch { throw new Error('内容已提交到 GitHub，但浏览器无法保存后续本地修改。请立即复制草稿。') }
+      if (selectedChapter.value && chapterKey(selectedChapter.value) === key) selectedChapter.value = resultChapter
+    }
+  } finally {
+    if (catalogPrepared) catalog.fail()
+    for (const entry of entries) inFlightKeys.delete(entry.key)
+    writing = false
+  }
+}
+async function syncSelected() {
+  if (!connected.value) { error.value = '请先连接 GitHub，再同步勾选的章节。'; goToConnection(); return }
+  if (!saveDraft()) return
+  const keys = [...selectedKeys.value]
+  if (!keys.some(key => batchItems.value.some(item => item.key === key))) { error.value = '请先勾选要同步的章节。'; return }
+  clearMessages()
+  const success = await run(() => performBatch(keys, []))
+  if (success) { selectedKeys.value = selectedKeys.value.filter(key => !keys.includes(key)); notice.value = '所选章节已同步到 GitHub。' }
+  if (autoSave.value && (autoKeys.size || autoBooks.size || autoCabinets.size || autoMoves.size)) scheduleAuto()
+}
+function scheduleAuto() {
+  if (disposed || !autoSave.value || !connected.value || !isHosted.value) return
+  clearTimeout(autoTimer)
+  autoStatus.value = '等待自动保存'
+  autoTimer = setTimeout(() => { void flushAuto() }, 1600)
+}
+async function flushAuto() {
+  if (disposed || !autoSave.value || !connected.value || !isHosted.value) return
+  if (writing) { scheduleAuto(); return }
+  const keys = [...autoKeys]; const bookIds = [...new Set([...autoBooks, ...autoMoves])]; const cabinetIds = [...autoCabinets]
+  autoKeys.clear(); autoBooks.clear(); autoMoves.clear(); autoCabinets.clear()
+  if (!keys.length && !bookIds.length && !cabinetIds.length) return
+  autoStatus.value = '正在自动保存'
+  try {
+    await performBatch(keys, bookIds, cabinetIds)
+    autoStatus.value = '已自动同步'
+    if (autoKeys.size || autoBooks.size || autoCabinets.size || autoMoves.size) scheduleAuto()
+  } catch (e) {
+    autoSave.value = false
+    autoStatus.value = `自动保存已暂停：${message(e)}`
+    error.value = `${autoStatus.value}。本地草稿仍保留，请检查后手动同步。`
+    autoKeys.clear(); autoBooks.clear(); autoMoves.clear(); autoCabinets.clear()
+  }
+}
+watch(autoSave, enabled => {
+  if (enabled && (!isHosted.value || !connected.value)) { autoSave.value = false; autoStatus.value = '连接线上书架后可开启'; return }
+  if (enabled) autoStatus.value = '自动保存已开启'
+  else { clearTimeout(autoTimer); autoKeys.clear(); autoBooks.clear(); autoMoves.clear(); autoCabinets.clear(); autoStatus.value = '自动保存已关闭' }
+}, { flush: 'sync' })
+async function updateFromRemoteInBackground() {
+  if (!isHosted.value || !snapshot.value || disposed) return
+  const version = localMutationVersion
+  try {
+    const response = await fetch('https://api.github.com/repos/fqxxzyw/my-notes/git/ref/heads/main', { cache: 'no-store' })
+    if (!response.ok) return
+    const data = await response.json()
+    const buildSha = typeof __PAPER_BUILD_SHA__ === 'string' ? __PAPER_BUILD_SHA__ : ''
+    if (buildSha && data?.object?.sha === buildSha) return
+    const [latest, latestCatalog] = await Promise.all([store.listNotebooks(), store.readCatalog(false)])
+    const selectedId = selectedBook.value?.id
+    const request = bookRun
+    const selectedExists = !!selectedId && latest.some(book => book.id === selectedId)
+    const latestChapters = selectedExists ? await store.listChapters(selectedId!) : []
+    if (!snapshot.value || disposed || writing || version !== localMutationVersion) return
+    catalog.latest(latestCatalog)
+    chapterCache.clear()
+    if (selectedExists) chapterCache.set(`remote:${selectedId}`, Promise.resolve(latestChapters))
+    loadedBookIds.value = latest.map(book => book.id)
+    books.value = mergeBooks(latest, false)
+    if (selectedBook.value) activeCabinet.value = catalog.assigned(selectedBook.value.id)
+    else if (activeCabinet.value && !catalog.cabinets.value.some(item => item.id === activeCabinet.value)) activeCabinet.value = ''
+    snapshot.value = false
+    if (selectedId && selectedBook.value?.id === selectedId && request === bookRun) {
+      selectedBook.value = books.value.find(book => book.id === selectedId) || selectedBook.value
+      chapters.value = await getChapters(selectedBook.value)
+    }
+  } catch { /* Snapshot stays available when GitHub is unreachable. */ }
+}
+onMounted(() => {
+  isHosted.value = location.hostname === 'fqxxzyw.github.io' && (location.pathname === '/my-notes' || location.pathname.startsWith('/my-notes/'))
+  let restoreError = ''
+  try {
+    const saved = JSON.parse(localStorage.getItem(localKey) || '{}')
+    if (Array.isArray(saved.books)) localBooks.value = saved.books
+    if (Array.isArray(saved.chapters)) localChapters.value = saved.chapters
+    if (saved.synced && typeof saved.synced === 'object' && !Array.isArray(saved.synced)) syncedCopies.value = saved.synced
+    if (saved.bookVersions && typeof saved.bookVersions === 'object' && !Array.isArray(saved.bookVersions)) bookVersions.value = saved.bookVersions
+    const found: Record<string, Draft> = {}
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)
+      if (!key?.startsWith('paper-notes-draft:')) continue
+      try {
+        const draft = JSON.parse(localStorage.getItem(key) || 'null')
+        if (typeof draft?.content === 'string' && typeof draft?.base?.bookId === 'string' && typeof draft?.base?.id === 'string' && typeof draft?.base?.sha === 'string') found[chapterKey(draft.base)] = draft
+      } catch { /* skip a malformed draft without discarding others */ }
+    }
+    drafts.value = found
+  } catch { restoreError = '无法读取本地笔记本，请检查浏览器存储。' }
+  void (async () => {
+    await identifySnapshot()
+    const loaded = await run(async () => {
+      const snapshotCatalog = await store.readCatalog(true)
+      try { catalog.restore(snapshotCatalog) } catch { restoreError = '无法恢复本地书柜，请检查浏览器存储。'; catalog.latest(snapshotCatalog) }
+      await loadBooks(true)
+    })
+    if (restoreError) error.value = restoreError
+    if (loaded) void updateFromRemoteInBackground()
+  })()
+})
+onBeforeUnmount(() => {
+  disposed = true
+  clearTimeout(autoTimer)
+  saveDraft()
+  autoSave.value = false
+  store.clearToken()
+  tokenInput.value = ''
+})
+watch([query, books, localChapters, content, syncedCopies, drafts], async ([value]) => {
+  const runId = ++searchRun
+  if (!value.trim()) { searchIndex.value = []; searching.value = false; return }
+  searching.value = true
+  try {
+    const all = await Promise.all(books.value.map(book => getChapters(book)))
+    if (runId === searchRun) searchIndex.value = all.flat().map(chapter => {
+      try { const draft = JSON.parse(localStorage.getItem(draftKey(chapter)) || 'null'); return typeof draft?.content === 'string' ? { ...chapter, content: draft.content } : chapter } catch { return chapter }
+    })
+  } catch (e) { if (runId === searchRun) error.value = `搜索暂不可用：${message(e)}` }
+  finally { if (runId === searchRun) searching.value = false }
+})
+async function openSearchResult(chapter: Chapter) {
+  const book = books.value.find(item => item.id === chapter.bookId)
+  if (!book) return
+  await openBook(book)
+  if (selectedBook.value?.id !== chapter.bookId) return
+  const original = chapters.value.find(item => item.id === chapter.id)
+  if (original) openChapter(original)
+}
+</script>
+
+<template>
+  <div class="desk">
+    <section class="intro" aria-labelledby="desk-title">
+      <div class="intro-copy">
+        <nav v-if="chosenCabinet" class="crumbs" aria-label="当前位置">
+          <button @click="openCabinet()">全部书柜</button>
+          <template v-if="selectedBook"><span aria-hidden="true">/</span><button @click="openCabinet(chosenCabinet.id)">{{ chosenCabinet.title }}</button></template>
+        </nav>
+        <h1 id="desk-title">{{ selectedBook?.title || chosenCabinet?.title || '我的书柜' }}</h1>
+        <p class="intro-text">
+          {{ selectedBook ? chapters.length + ' 章' : chosenCabinet ? filteredBooks.length + ' 册笔记本' : cabinetItems.length + ' 个书柜 · ' + books.length + ' 册笔记本' }}
+        </p>
+        <a href="#connection" class="sync-link" @click="revealConnection">
+          <span class="sync-dot" :class="{ online: connected }" aria-hidden="true"></span>
+          {{ connected ? (isHosted ? autoStatus : '已连接 GitHub') : '本机草稿 · 连接 GitHub' }}
+        </a>
+      </div>
+    </section>
+
+    <section id="bookshelf" class="library" aria-label="笔记本与章节">
+      <div class="tools">
+        <label class="search">
+          <span class="lens" aria-hidden="true"></span><span class="sr-only">搜索笔记</span>
+          <input v-model="query" type="search" placeholder="搜索书柜、笔记本或章节">
+        </label>
+        <button class="text-button" :disabled="busy" @click="refresh">读取最新目录</button>
+        <button v-if="!chosenCabinet" class="primary-button" :disabled="busy" :aria-expanded="creatingCabinet" @click="creatingCabinet = !creatingCabinet">＋ 新建书柜</button>
+        <button v-else-if="!selectedBook" class="primary-button" :disabled="busy" :aria-expanded="creatingBook" @click="creatingBook = !creatingBook">＋ 新建笔记本</button>
+        <button v-else class="primary-button" :disabled="busy" :aria-expanded="creatingChapter" @click="creatingChapter = !creatingChapter">＋ 添加章节</button>
+      </div>
+      <form v-if="creatingCabinet && !chosenCabinet" class="inline-form" @submit.prevent="addCabinet">
+        <label for="cabinet-name">书柜名称</label>
+        <input id="cabinet-name" v-model="cabinetName" maxlength="120" placeholder="例如，工作资料" required>
+        <button class="primary-button" :disabled="busy">创建</button>
+        <button type="button" class="text-button" @click="creatingCabinet = false">取消</button>
+      </form>
+      <form v-if="creatingBook" class="inline-form" @submit.prevent="addBook">
+        <label for="book-name">笔记本名称</label>
+        <input id="book-name" v-model="bookTitle" maxlength="120" placeholder="例如，Java 学习" required>
+        <button class="primary-button" :disabled="busy">创建</button>
+        <button type="button" class="text-button" @click="creatingBook = false">取消</button>
+      </form>
+      <div v-if="query.trim()" class="search-results">
+        <p v-if="searching" role="status">正在查找章节…</p>
+        <template v-else>
+          <p>{{ searchResults.length }} 篇匹配章节</p>
+          <button v-for="result in searchResults" :key="result.bookId + '/' + result.id" class="chapter-row" :disabled="busy" @click="openSearchResult(result)">
+            <span>{{ books.find(book => book.id === result.bookId)?.title }} ／ {{ result.title }}</span>
+            <span class="arrow" aria-hidden="true">↗</span>
+          </button>
+        </template>
+      </div>
+      <div v-if="!selectedChapter && error" class="feedback error" role="alert">{{ error }}</div>
+      <p v-if="!selectedChapter && notice" class="feedback" role="status">{{ notice }}</p>
+      <p v-if="busy" class="feedback" role="status">正在读取或保存笔记…</p>
+      <CabinetGallery v-if="!chosenCabinet" :items="visibleCabinets" @select="openCabinet" />
+      <p v-if="!chosenCabinet && !visibleCabinets.length" class="empty-shelf">没有匹配的书柜。</p>
+      <BookShelf v-if="chosenCabinet && !selectedBook && filteredBooks.length" :books="filteredBooks"
+        :disabled="busy" @select="openBook" />
+      <p v-if="chosenCabinet && !selectedBook && !filteredBooks.length" class="empty-shelf">{{ query ? '没有匹配的书名。' : '书柜还是空的。新建一本笔记，或把其他柜里的笔记移到这里。' }}</p>
+      <div v-if="selectedBook" class="chapter-panel">
+          <template v-if="selectedBook">
+            <div class="book-heading">
+            <div class="panel-heading">
+              <span>{{ selectedBook.sha ? '已收录笔记本' : '本机笔记本' }}</span>
+              <button v-if="!selectedBook.sha" class="text-button" :disabled="busy" @click="syncBook">同步笔记本</button>
+            </div>
+            <label class="move-book">所在书柜
+              <select :value="activeCabinet" :disabled="busy" @change="moveSelected">
+                <option v-for="cabinet in cabinetItems" :key="cabinet.id" :value="cabinet.id">{{ cabinet.title }}</option>
+              </select>
+            </label>
+            </div>
+            <div class="contents-list">
+            <div class="chapter-title">
+              <span>目录 · {{ chapters.length }} 章</span>
+            </div>
+            <form v-if="creatingChapter" class="inline-form" @submit.prevent="addChapter">
+              <label for="chapter-name">章节名称</label>
+              <input id="chapter-name" v-model="chapterTitle" maxlength="120" required>
+              <button class="primary-button" :disabled="busy">创建</button>
+              <button type="button" class="text-button" @click="creatingChapter = false">取消</button>
+            </form>
+            <button v-for="(chapter, index) in filteredChapters" :key="chapter.id" class="chapter-row"
+              :disabled="busy" :class="{selected: selectedChapter?.id === chapter.id}" @click="openChapter(chapter)">
+              <span class="chapter-index" aria-hidden="true">{{ String(index + 1).padStart(2, '0') }}</span>
+              <span>{{ chapter.title }}</span><span class="arrow" aria-hidden="true">↗</span>
+            </button>
+            <p v-if="!filteredChapters.length" class="empty">{{ query ? '本册没有匹配的章节。' : '还没有章节。点「添加章节」写下第一页。' }}</p>
+            </div>
+          </template>
+          <p v-else class="chapter-placeholder">选一本笔记，在这里查看目录。</p>
+      </div>
+      <button v-if="catalog.pending.value" class="text-button sync-catalog" :disabled="busy" @click="syncCatalog">同步书柜整理</button>
+      <details v-if="!isHosted" class="batch-box">
+        <summary>批量同步<span>{{ batchItems.length }} 项待同步</span></summary>
+        <p v-if="!batchItems.length">目前没有待提交的章节。</p>
+        <template v-else>
+          <p>勾选要公开的章节，一次提交到 GitHub。新笔记本会随章节一起创建。</p>
+          <div class="batch-list">
+            <label v-for="item in batchItems" :key="item.key">
+              <input v-model="selectedKeys" type="checkbox" :disabled="busy" :value="item.key">
+              <span>{{ item.bookTitle }} ／ {{ item.title }}</span>
+            </label>
+          </div>
+          <button class="primary-button" :disabled="busy || !selectedKeys.length" @click="syncSelected">
+            同步所选（{{ selectedKeys.length }}）
+          </button>
+        </template>
+      </details>
+    </section>
+
+    <section v-if="selectedChapter" class="writing" aria-labelledby="writing-title">
+      <div class="writing-top">
+        <div>
+          <p>{{ selectedBook?.title }}</p><h2 id="writing-title">{{ selectedChapter.title }}</h2>
+          <p>{{ !selectedChapter.sha ? '本地章节，尚未同步' : dirty ? '本机有未同步的修改' : 'GitHub 已收录此版本' }}</p>
+        </div>
+        <div class="view-actions">
+          <button :class="{ chosen: view === 'read' }" :aria-pressed="view === 'read'" @click="view = 'read'">阅读</button>
+          <button :class="{ chosen: view === 'edit' }" :aria-pressed="view === 'edit'" @click="view = 'edit'">编辑</button>
+        </div>
+      </div>
+      <div v-if="view === 'read'" class="paper">
+        <ChapterMarkdown :source="content.replace(/^# [^\r\n]+(?:\r?\n|$)/, '')" />
+      </div>
+      <div v-else class="paper editor">
+        <label for="chapter-content">Markdown 正文 <small>· 自动保存本机草稿</small></label>
+        <textarea id="chapter-content" v-model="content" :readonly="busy" spellcheck="false"></textarea>
+        <div class="editor-footer">
+          <span>{{ content.length }} 字符<span v-if="isHosted && connected" aria-live="polite"> · {{ autoStatus }}</span></span>
+          <button class="primary-button" :disabled="busy || (!dirty && !!selectedChapter.sha)" @click="sync">同步到 GitHub ↗</button>
+        </div>
+      </div>
+      <div v-if="error" class="feedback error" role="alert">
+        {{ error }}
+        <button v-if="error.includes('远程')" class="text-button" :disabled="busy" @click="inspectRemote">查看远程版本</button>
+        <a v-if="!connected" href="#connection" @click="revealConnection">连接 GitHub</a>
+      </div>
+      <p v-if="notice" class="feedback" role="status">{{ notice }}</p>
+      <div v-if="remoteVersion" class="remote-box">
+        <h3>GitHub 上的版本</h3>
+        <p>对照下面的内容编辑草稿，再选择「已完成合并」并同步。</p>
+        <pre>{{ remoteVersion.content }}</pre>
+        <button class="text-button" @click="useRemoteBase">已完成合并，使用这个版本作为基准</button>
+      </div>
+    </section>
+
+    <details id="connection" class="connection-details">
+      <summary>GitHub 同步设置</summary>
+      <div class="connection">
+      <div>
+        <p>{{ isHosted ? '连接后，本次新建和编辑的笔记将自动保存到公开仓库' : '勾选章节再点同步，原文将通过一次提交保存到公开仓库' }}
+          <a href="https://github.com/fqxxzyw/my-notes">fqxxzyw/my-notes</a>。</p>
+      </div>
+      <div class="connection-form">
+        <form v-if="!connected" @submit.prevent="connect">
+          <label for="github-token">此仓库的精细访问令牌</label>
+          <div class="token-row">
+            <input id="github-token" v-model="tokenInput" type="password" autocomplete="off" placeholder="仅用于当前页面会话" required>
+            <button class="primary-button" :disabled="busy">{{ isHosted ? '连接并自动保存' : '连接' }}</button>
+          </div>
+        </form>
+        <template v-else>
+          <p class="connected">已连接 GitHub</p>
+          <label v-if="isHosted" class="auto-setting">
+            <input v-model="autoSave" type="checkbox"> 自动保存到 GitHub
+          </label>
+          <p v-if="isHosted" role="status">{{ autoStatus }}</p>
+          <button class="text-button" :disabled="busy" @click="disconnect">断开连接</button>
+        </template>
+        <a href="./guide.html">查看令牌设置和同步说明 ↗</a>
+      </div>
+      </div>
+    </details>
+  </div>
+</template>
+
+<style scoped src="./notebook.css"></style>

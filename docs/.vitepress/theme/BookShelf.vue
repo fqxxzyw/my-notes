@@ -19,9 +19,17 @@ let sizeQuery: MediaQueryList | undefined
 let frame = 0
 
 const activeBook = computed(() => props.books[hovered.value ?? focused.value ?? lastActive.value ?? 0] || null)
+
+// Each book has a real front cover, extending to the right of its spine in 3D.
+// Reserve the projected width of that cover as the book rotates and grows.
+const coverDepth = 144
+function spacingFor(width: number, rotation: number) {
+  const radians = Math.abs(rotation) * Math.PI / 180
+  return Math.ceil(Math.max(0, width * (Math.cos(radians) - 1) + coverDepth * Math.sin(radians)) + 12)
+}
 const metrics = computed(() => isMobile.value
-  ? { baseW: 54, maxW: 72, baseH: 206, maxH: 238, gap: 0, radius: 160, maxLift: 12 }
-  : { baseW: 66, maxW: 88, baseH: 254, maxH: 294, gap: 0, radius: 220, maxLift: 18 })
+  ? { baseW: 54, maxW: 72, baseH: 206, maxH: 238, gap: spacingFor(54, -26), radius: 160, maxLift: 12 }
+  : { baseW: 66, maxW: 88, baseH: 254, maxH: 294, gap: spacingFor(66, -26), radius: 220, maxLift: 18 })
 
 function setBookRef(element: unknown, index: number) {
   if (typeof HTMLElement !== 'undefined' && element instanceof HTMLElement) refs.set(index, element)
@@ -41,20 +49,29 @@ function animate() {
   if (moving) frame = requestAnimationFrame(animate)
 }
 
-function setTargets(center: number) {
+function setTargets(center: number, preferred: number | null = null) {
   const m = metrics.value
+  const centers = props.books.map((_, index) => {
+    const spine = refs.get(index)?.querySelector('.volume__spine')
+    const rect = spine?.getBoundingClientRect()
+    return rect ? (rect.left + rect.right) / 2 : center
+  })
+  const preferredSpine = preferred === null ? null : refs.get(preferred)?.querySelector('.volume__spine')?.getBoundingClientRect()
+  // A cover belongs to the book on its left. Clamp its influence to that book's
+  // visible spine so hovering a cover does not activate its neighbour.
+  if (preferredSpine) center = Math.max(preferredSpine.left, Math.min(preferredSpine.right, center))
   targets = props.books.map((_, index) => {
-    const distance = Math.abs(center - (index * (m.baseW + m.gap) + m.baseW / 2))
+    const distance = Math.abs(center - centers[index])
     if (distance >= m.radius || reducedMotion.value) return 0
     return Math.pow(0.5 * (1 + Math.cos(Math.PI * distance / m.radius)), 1.15)
   })
   let nearest = -1
   let best = -Infinity
   props.books.forEach((_, index) => {
-    const weight = -Math.abs(center - (index * (m.baseW + m.gap) + m.baseW / 2))
+    const weight = -Math.abs(center - centers[index])
     if (weight > best) { best = weight; nearest = index }
   })
-  hovered.value = nearest >= 0 ? nearest : null
+  hovered.value = preferred ?? (nearest >= 0 ? nearest : null)
   if (hovered.value !== null) lastActive.value = hovered.value
   if (!frame) frame = requestAnimationFrame(animate)
 }
@@ -62,14 +79,10 @@ function setTargets(center: number) {
 function move(event: PointerEvent) {
   const element = scroll.value
   if (!element || event.pointerType === 'touch' || props.disabled) return
-  const m = metrics.value
-  const width = props.books.length * m.baseW + Math.max(0, props.books.length - 1) * m.gap
-  const style = getComputedStyle(element)
-  const leftPadding = parseFloat(style.paddingLeft) || 0
-  const rightPadding = parseFloat(style.paddingRight) || 0
-  const innerWidth = element.clientWidth - leftPadding - rightPadding
-  const start = element.getBoundingClientRect().left + leftPadding - element.scrollLeft + Math.max(0, (innerWidth - width) / 2)
-  setTargets(event.clientX - start)
+  const target = event.target instanceof Element ? event.target.closest('.volume') : null
+  let preferred: number | null = null
+  refs.forEach((item, index) => { if (item === target) preferred = index })
+  setTargets(event.clientX, preferred)
 }
 
 function leave() {
@@ -81,10 +94,13 @@ function leave() {
 function bookStyle(index: number) {
   const f = weights.value[index] || 0
   const m = metrics.value
+  const width = m.baseW + (m.maxW - m.baseW) * f
+  const tiltY = -26 - 14 * f
   return {
-    '--book-width': `${m.baseW + (m.maxW - m.baseW) * f}px`,
+    '--book-width': `${width}px`,
+    '--book-spacing': `${spacingFor(width, tiltY)}px`,
     '--book-height': `${m.baseH + (m.maxH - m.baseH) * f}px`,
-    '--tilt-y': `${-26 - 14 * f}deg`,
+    '--tilt-y': `${tiltY}deg`,
     '--tilt-x': `${-6 + 2.5 * f}deg`,
     '--lift': `${-m.maxLift * f}px`,
     '--depth': `${26 * f}px`,
@@ -95,8 +111,8 @@ function bookStyle(index: number) {
 function focusBook(index: number) {
   focused.value = index
   lastActive.value = index
-  const m = metrics.value
-  setTargets(index * (m.baseW + m.gap) + m.baseW / 2)
+  const spine = refs.get(index)?.querySelector('.volume__spine')?.getBoundingClientRect()
+  if (spine) setTargets((spine.left + spine.right) / 2, index)
   hovered.value = null
 }
 function focusAdjacent(index: number, direction: number) {
@@ -138,7 +154,7 @@ onBeforeUnmount(() => {
       <span>移动鼠标放大 · 点击打开</span>
     </div>
     <div ref="scroll" class="bookshelf__scroll" @pointermove="move" @pointerleave="leave" @scroll="leave">
-      <div v-if="books.length" class="bookshelf__row">
+      <div v-if="books.length" class="bookshelf__row" :style="{ '--rest-spacing': `${metrics.gap}px` }">
         <button
           v-for="(book, index) in books"
           :key="book.id"

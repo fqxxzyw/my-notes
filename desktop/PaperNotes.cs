@@ -134,6 +134,25 @@ namespace PaperNotesDesktop
         private static extern bool ReleaseCapture();
         [DllImport("user32.dll")]
         private static extern IntPtr SendMessage(IntPtr hWnd, int message, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll")]
+        private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmExtendFrameIntoClientArea(IntPtr hwnd, ref Margins margins);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct Margins { public int Left, Right, Top, Bottom; }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativePoint { public int X, Y; }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeRect { public int Left, Top, Right, Bottom; }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MonitorInfo { public int Size; public NativeRect Monitor, Work; public uint Flags; }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MinMaxInfo { public NativePoint Reserved, MaxSize, MaxPosition, MinTrackSize, MaxTrackSize; }
 
         public MainWindow(string root, string profile)
         {
@@ -193,9 +212,45 @@ namespace PaperNotesDesktop
             }
         }
 
+        protected override void OnHandleCreated(EventArgs args)
+        {
+            base.OnHandleCreated(args);
+            try
+            {
+                // DWM paints the normal system border/shadow, and Windows 11
+                // clips the window to its native rounded-corner geometry.
+                int renderingEnabled = 2; // DWMNCRP_ENABLED
+                DwmSetWindowAttribute(Handle, 2, ref renderingEnabled, sizeof(int));
+                int rounded = 2; // DWMWCP_ROUND; ignored on older Windows
+                DwmSetWindowAttribute(Handle, 33, ref rounded, sizeof(int));
+                var margins = new Margins { Left = 1, Right = 1, Top = 1, Bottom = 1 };
+                DwmExtendFrameIntoClientArea(Handle, ref margins);
+            }
+            catch (DllNotFoundException) { }
+            catch (EntryPointNotFoundException) { }
+        }
+
         protected override void WndProc(ref Message message)
         {
-            const int WmNcCalcSize = 0x0083, WmNcHitTest = 0x0084;
+            const int WmGetMinMaxInfo = 0x0024, WmNcCalcSize = 0x0083, WmNcHitTest = 0x0084;
+            if (message.Msg == WmGetMinMaxInfo)
+            {
+                base.WndProc(ref message);
+                // A captionless window has no nonclient inset, so use the
+                // actual monitor work area and never cover the taskbar.
+                IntPtr monitor = MonitorFromWindow(message.HWnd, 2);
+                var info = new MonitorInfo { Size = Marshal.SizeOf(typeof(MonitorInfo)) };
+                if (monitor != IntPtr.Zero && GetMonitorInfo(monitor, ref info))
+                {
+                    var limits = (MinMaxInfo)Marshal.PtrToStructure(message.LParam, typeof(MinMaxInfo));
+                    limits.MaxPosition.X = info.Work.Left - info.Monitor.Left;
+                    limits.MaxPosition.Y = info.Work.Top - info.Monitor.Top;
+                    limits.MaxSize.X = info.Work.Right - info.Work.Left;
+                    limits.MaxSize.Y = info.Work.Bottom - info.Work.Top;
+                    Marshal.StructureToPtr(limits, message.LParam, false);
+                }
+                return;
+            }
             if (message.Msg == WmNcCalcSize && message.WParam != IntPtr.Zero)
             {
                 message.Result = IntPtr.Zero;
@@ -235,7 +290,7 @@ namespace PaperNotesDesktop
             if (action == "window.close") { Close(); return; }
             if (action == "window.drag")
             {
-                if (WindowState == FormWindowState.Normal) { ReleaseCapture(); SendMessage(Handle, 0x00A1, new IntPtr(2), IntPtr.Zero); }
+                ReleaseCapture(); SendMessage(Handle, 0x00A1, new IntPtr(2), IntPtr.Zero);
                 return;
             }
             string id = GetString(request, "id");

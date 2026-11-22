@@ -54,18 +54,19 @@ const emit = defineEmits<{ select: [id: string]; create: [] }>()
 .cabinet:hover, .cabinet:focus-visible { transform: translate(-2px,-2px); box-shadow: 4px 4px #111; }
 .cabinet:focus-visible { outline: 2px solid #111; outline-offset: 4px; }
 .cabinet__top, .cabinet__footer { display: flex; justify-content: space-between; gap: 16px; }
-.cabinet__information { min-width: 0; display: grid; align-content: start; gap: 10px; }
+.cabinet__top { align-items: stretch; }
+.cabinet__information { flex: 0 1 32%; min-width: 0; display: grid; align-content: start; gap: 10px; }
 .cabinet__meta { color: #555; font-size: 12px; font-weight: 600; }
 .case-number { display: inline-block; margin-right: 6px; padding: 2px 7px; color: #111; border: 1.5px solid #111; border-radius: 4px; font: 700 11px ui-monospace,monospace; }
 .cabinet__name { font-family: var(--paper-serif); font-size: 22px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
-.cabinet__drawing { flex: 0 0 96px; position: relative; height: 80px; border: 2px solid #111; background: #fff; }
-.cabinet__books { display: flex; align-items: end; gap: 1px; height: 57px; padding: 0 5px; overflow: hidden; }
-.cabinet__book { display: flex; flex: 0 0 17px; height: 49px; min-width: 0; flex-direction: column; align-items: center; padding: 2px 1px; border: 1.5px solid #111; box-shadow: inset 1px 0 #ddd, inset -1px 0 #ddd; background: #fff; }
-.cabinet__book-number { flex: none; border-block: 1px solid #111; font: 700 5px/1 ui-monospace, monospace; }
-.cabinet__book-title { min-height: 0; max-height: 30px; margin: auto 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; writing-mode: vertical-rl; text-orientation: upright; color: #6e4726; font: 700 6px/1.1 var(--paper-serif, serif); }
-.cabinet__book-rule { flex: none; width: 6px; height: 1px; background: #111; }
-.cabinet__more { position: absolute; top: 2px; right: 3px; font: 700 7px/1 ui-monospace, monospace; }
-.cabinet__plank { display: block; height: 7px; border-top: 2px solid #111; border-bottom: 1px solid #111; }
+.cabinet__drawing { flex: 1 1 0; min-width: 0; position: relative; height: 144px; border: 2px solid #111; background: #fff; }
+.cabinet__books { position: absolute; inset: 0 0 13px; display: flex; align-items: end; gap: 1px; padding: 0 7px; overflow: hidden; }
+.cabinet__book { display: flex; flex: 1 1 0; max-width: 72px; height: calc(100% - 13px); min-width: 0; flex-direction: column; align-items: center; padding: 5px 2px; border: 1.5px solid #111; box-shadow: inset 1px 0 #ddd, inset -1px 0 #ddd; background: #fff; }
+.cabinet__book-number { flex: none; padding: 1px 2px; border-block: 1px solid #111; font: 700 9px/1 ui-monospace, monospace; }
+.cabinet__book-title { min-height: 0; max-height: 86px; margin: auto 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; writing-mode: vertical-rl; text-orientation: upright; color: #6e4726; font: 700 13px/1.1 var(--paper-serif, serif); }
+.cabinet__book-rule { flex: none; width: 12px; height: 1px; background: #111; }
+.cabinet__more { position: absolute; top: 3px; right: 4px; font: 700 9px/1 ui-monospace, monospace; }
+.cabinet__plank { position: absolute; bottom: 0; left: 0; right: 0; display: block; height: 13px; border-top: 2px solid #111; border-bottom: 1px solid #111; }
 .cabinet__footer { align-items: center; border-top: 1.5px solid #111; padding-top: 13px; font-size: 12px; }
 .cabinet__footer strong { white-space: nowrap; }
 .cabinet__tags { display: flex; min-width: 0; flex-wrap: wrap; gap: 5px; }
@@ -75,5 +76,13 @@ const emit = defineEmits<{ select: [id: string]; create: [] }>()
 .cabinet--create span:last-child { color: #555; font-size: 12px; }
 .create-plus { display: grid; place-items: center; width: 40px; height: 40px; border: 2px solid #111; border-radius: 50%; font-size: 23px; }
 @media (max-width: 700px) { .cabinet-gallery { grid-template-columns: 1fr; gap: 14px; } .cabinet { min-height: 155px; padding: 18px; } }
+@media (max-width: 420px) {
+  .cabinet__top { gap: 10px; }
+  .cabinet__information { flex-basis: 38%; }
+  .cabinet__name { font-size: 19px; }
+  .cabinet__drawing { height: 128px; }
+  .cabinet__books { padding-inline: 4px; }
+  .cabinet__book-title { max-height: 64px; font-size: 11px; }
+}
 @media (prefers-reduced-motion: reduce) { .cabinet { transition: none; } }
 </style>

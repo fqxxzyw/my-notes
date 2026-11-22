@@ -1,0 +1,78 @@
+/* The switch sits in the existing navigation, without adding another bar. */
+.desk .theme-toggle {
+  display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
+  padding: 5px 8px; border: 1.5px solid #111; border-radius: 8px;
+  background: #fff; color: #111; font-size: 12px; font-weight: 600; white-space: nowrap;
+}
+.desk .theme-toggle span:first-child { font-size: 16px; line-height: 1; }
+.desk .theme-toggle:hover { background: #111; color: #fff; }
+
+/* Charcoal paper, warm ink and pale outlines preserve the drawn-book look. */
+:root.paper-night {
+  color-scheme: dark;
+  --vp-c-bg: #17191c; --vp-c-bg-alt: #1e2023; --vp-c-bg-soft: #292b2e;
+  --vp-c-text-1: #ede9e2; --vp-c-text-2: #bcb6ad;
+  --vp-c-brand-1: #d5ad80; --vp-c-brand-2: #e3c09a; --vp-c-brand-3: #ede9e2;
+  --vp-c-divider: #88857e;
+}
+html.paper-night, .paper-night body, .paper-night .Layout { background: #17191c; color: #ede9e2; }
+html.paper-night .desk {
+  --ink: #ede9e2; --muted: #bcb6ad; --line: #8d8981; --red: #d5ad80;
+  --panel: #222427; --shelf: #1d1f22; --button: #d8d2c8;
+}
+.paper-night .desk :is(.archive-header, .archive-dialog, .archive-dialog input, .archive-search input, .archive-search-results,
+  .cabinet, .cabinet__drawing, .cabinet__book, .paper, .reference-book-card, .reference-editor-sidebar,
+  .reference-sidebar-row, .chapter-row, .bookshelf__stage, .bookshelf__info, .bookshelf__board,
+  .editor-modes, .markdown-toolbar button, .code-tool, .code-tool select, .editor-panes, .move-book select,
+  .reference-outline-button, .theme-toggle, .archive-new, .archive-sync, .archive-refresh) {
+  background-color: #222427; color: #ede9e2; border-color: #97938a;
+}
+.paper-night .desk :is(.archive-header, .archive-dialog-heading, .archive-divider, .intro, .sync-link,
+  .cabinet, .cabinet__drawing, .cabinet__book, .cabinet__book-number, .cabinet__plank, .cabinet__footer,
+  .cabinet__tags span, .case-number, .create-plus, .batch-box, .paper, .reference-book-card,
+  .reference-hero-stage, .reference-book-bottom, .reference-chapter-heading, .chapter-row, .chapter-index,
+  .reference-editor-sidebar, .reference-sidebar-heading, .reference-editor-workspace .paper.editor,
+  .bookshelf__stage-heading, .bookshelf__board, .bookshelf__info, .editor-modes, .editor-modes button,
+  .markdown-toolbar, .markdown-toolbar button, .code-tool, .code-tool select, .editor-panes,
+  .editor-panes--split .editor-preview, .archive-dialog input, .archive-dialog-heading button) { border-color: #97938a; }
+.paper-night .desk :is(.archive-intro, .cabinet__meta, .cabinet--create span:last-child,
+  .cabinet__tags .cabinet__empty, .editor-caption small, .bookshelf__info-copy > span,
+  .bookshelf__info-label, .archive-search-results p) { color: #bcb6ad; }
+.paper-night .desk :is(.case-number, .chapter-index, .chapter-title.reference-chapter-heading,
+  .chapter-row:hover, .chapter-row.selected, .volume__cover-title, .window-controls button,
+  .editor-modes button, .sync-link) { color: #ede9e2; }
+.paper-night .desk :is(.cabinet__book-title, .reference-book-spine-title) { color: #d5ad80; }
+.paper-night .desk :is(.cabinet:hover, .cabinet:focus-visible, .chapter-row:hover, .chapter-row.selected,
+  .reference-book-card, .archive-search-results, .archive-dialog) { box-shadow: 4px 4px #0d0e0f; }
+.paper-night .desk :is(.archive-search-results button:hover, .reference-sidebar-row:hover,
+  .reference-sidebar-row.active, .window-controls button:hover) { background: #343639; }
+.paper-night .desk .window-controls .window-close:hover { background: #b33127; color: #fff; }
+.paper-night .desk :is(.archive-new:hover, .archive-sync:hover, .archive-refresh:hover, .theme-toggle:hover,
+  .reference-outline-button:hover, .markdown-toolbar button:hover:not(:disabled)) { background: #d8d2c8; color: #17191c; }
+.paper-night .desk :is(.primary-button, .bookshelf__open, .editor-modes button[aria-pressed="true"],
+  .view-actions button.chosen) { background: #d8d2c8; color: #17191c; border-color: #d8d2c8; }
+.paper-night .desk :is(.primary-button:hover:enabled, .bookshelf__open:hover) { background: #222427; color: #ede9e2; box-shadow: 3px 3px #97938a; }
+.paper-night .desk :is(.archive-brand span, .archive-brand span::after) { border-color: #c7c1b6; }
+.paper-night .desk .archive-brand span { box-shadow: 2px 2px #0d0e0f; }
+.paper-night .desk .archive-divider { background: #97938a; }
+.paper-night .desk .cabinet__book { box-shadow: inset 1px 0 #555, inset -1px 0 #555; }
+.paper-night .desk :is(.cabinet__book-rule, .reference-book-rule, .volume__tailband,
+  .volume__cover::before, .volume__cover::after, .volume__cover-lines span,
+  .bookshelf__board span:first-child, .bookshelf__board span:last-child) { background: #b4aea4; }
+.paper-night .desk .bookshelf { --book-ink: #ede9e2; --book-muted: #bcb6ad; --spine-brown: #d5ad80; }
+.paper-night .desk :is(.volume__spine, .volume__cover, .reference-book-spine, .reference-book-cover) {
+  background: #303136; color: #ede9e2; border-color: #b4aea4;
+}
+.paper-night .desk :is(.volume__number, .volume__cover-frame, .volume__cover-label, .volume__cover-rule,
+  .reference-book-number, .reference-cover-frame, .reference-cover-meta, .reference-cover-rule) { border-color: #b4aea4; }
+.paper-night .desk :is(.volume__top, .reference-book-top) {
+  border-color: #b4aea4; background: repeating-linear-gradient(90deg, #303136 0 5px, #a39e94 5px 6px);
+}
+.paper-night .desk :is(.volume__spine::before, .volume__spine::after,
+  .reference-book-spine::before, .reference-book-spine::after) { background: #aba59b; opacity: .35; }
+.paper-night .desk .bookshelf__board { box-shadow: 0 4px 0 #0d0e0f; }
+.paper-night .desk .bookshelf__scroll { scrollbar-color: #aaa59c #222427; }
+.paper-night .desk :is(input, textarea, select) { color: #ede9e2; }
+.paper-night .desk :is(input, textarea)::placeholder { color: #aaa59c; }
+.paper-night .desk :is(.chapter-prose code, .chapter-prose pre) { color: #ede9e2; }
+@media (max-width: 700px) { .desk .theme-toggle { padding: 5px 6px; font-size: 11px; } }

@@ -13,6 +13,10 @@
   --paper-serif: "Baskerville", "Noto Serif CJK SC", "Songti SC", "STSong", "SimSun", serif;
 }
 
+/* Keep page scrolling available while hiding the browser's outer scrollbar. */
+html, body { scrollbar-width: none; }
+html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; }
+
 .VPNav .VPNavBar {
   background: var(--vp-c-bg);
   border-bottom: 2px solid var(--vp-c-divider);

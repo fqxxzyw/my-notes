@@ -62,6 +62,17 @@ const drafts = ref<Record<string, Draft>>({})
 const selectedKeys = ref<string[]>([])
 const isHosted = ref(false)
 const isDesktop = ref(false)
+const nightMode = ref(false)
+const themeKey = 'paper-notes-theme'
+function applyTheme(night: boolean) {
+  nightMode.value = night
+  document.documentElement.classList.toggle('paper-night', night)
+}
+function toggleTheme() {
+  const night = !nightMode.value
+  applyTheme(night)
+  try { localStorage.setItem(themeKey, night ? 'night' : 'day') } catch { /* the current selection still applies */ }
+}
 const autoSave = ref(false)
 const autoStatus = ref('自动保存已关闭')
 let autoTimer: ReturnType<typeof setTimeout> | undefined
@@ -648,6 +659,7 @@ async function updateFromRemoteInBackground() {
 onMounted(() => {
   isHosted.value = location.hostname === 'fqxxzyw.github.io' && (location.pathname === '/my-notes' || location.pathname.startsWith('/my-notes/'))
   isDesktop.value = location.hostname === 'paper.local' && (location.pathname === '/my-notes' || location.pathname.startsWith('/my-notes/'))
+  try { applyTheme(localStorage.getItem(themeKey) === 'night') } catch { applyTheme(false) }
   void (async () => {
     try {
       const token = await readCredential()
@@ -760,6 +772,7 @@ async function openSearchResult(chapter: Chapter) {
               </template>
             </div>
           </div>
+          <button type="button" class="theme-toggle" :aria-pressed="nightMode" :aria-label="nightMode ? '切换到日间模式' : '切换到夜间模式'" :title="nightMode ? '切换到日间模式' : '切换到夜间模式'" @click="toggleTheme"><span aria-hidden="true">{{ nightMode ? '☀' : '☾' }}</span><span>{{ nightMode ? '日间' : '夜间' }}</span></button>
           <button class="archive-refresh" :disabled="busy" @click="refresh">刷新</button>
           <a class="archive-sync" href="#connection" @click="revealConnection">同步</a>
           <button v-if="!chosenCabinet" type="button" class="archive-new" :disabled="busy" @click="creatingCabinet = true">＋ 新建书柜</button>

@@ -1,5 +1,6 @@
 import { validateCatalog, type CatalogVersion } from './cabinetStore'
 import type { Chapter, Notebook } from './notebookStore'
+import { namespaceKey } from './repository'
 
 /** A complete GitHub revision, separate from unsynchronized local drafts. */
 export type RemoteSnapshot = {
@@ -65,9 +66,9 @@ function cleanSnapshot(value: unknown): RemoteSnapshot {
 }
 
 /** Returns null for an absent, incomplete or unreadable cache; never alters drafts or a damaged cache. */
-export function readRemoteCache(storage?: StoragePort): RemoteSnapshot | null {
+export function readRemoteCache(repository?: string | null, storage?: StoragePort): RemoteSnapshot | null {
   try {
-    const raw = getStorage(storage).getItem(CACHE_KEY)
+    const raw = getStorage(storage).getItem(namespaceKey(CACHE_KEY, repository))
     if (!raw) return null
     const data: unknown = JSON.parse(raw)
     if (!data || typeof data !== 'object' || Array.isArray(data)) return null
@@ -78,13 +79,13 @@ export function readRemoteCache(storage?: StoragePort): RemoteSnapshot | null {
 }
 
 /** Serialize first; localStorage setItem replaces the old snapshot atomically or throws. */
-export function writeRemoteCache(snapshot: RemoteSnapshot, storage?: StoragePort): void {
+export function writeRemoteCache(snapshot: RemoteSnapshot, repository?: string | null, storage?: StoragePort): void {
   const clean = cleanSnapshot(snapshot)
   const serialized = JSON.stringify({ version: 1, snapshot: clean })
-  getStorage(storage).setItem(CACHE_KEY, serialized)
+  getStorage(storage).setItem(namespaceKey(CACHE_KEY, repository), serialized)
 }
 
 /** Invalidate a prior revision after a remote deletion so it cannot revive deleted notes. */
-export function clearRemoteCache(storage?: StoragePort): void {
-  getStorage(storage).removeItem(CACHE_KEY)
+export function clearRemoteCache(repository?: string | null, storage?: StoragePort): void {
+  getStorage(storage).removeItem(namespaceKey(CACHE_KEY, repository))
 }

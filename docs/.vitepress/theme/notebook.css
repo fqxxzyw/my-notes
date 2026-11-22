@@ -159,6 +159,10 @@
 .connection p { font-size: 13px; line-height: 1.75; color: var(--muted); }
 .connection-form { align-self: center; }
 .connection-form label, .connection-form a { font-size: 13px; }
+.connection-form label { display: block; }
+.repository-input { display: block; width: 100%; padding: 8px 5px; margin: 4px 0 12px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); }
+.legacy-workspace-notice { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 20px; margin-bottom: 18px; padding: 12px 15px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); font-size: 13px; }
+.legacy-workspace-notice a { color: var(--red); font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
 .connection-form a { color: var(--red); text-decoration: underline; text-underline-offset: 3px; }
 .token-row { display: flex; align-items: center; border-bottom: 1px solid var(--line); margin: 5px 0 8px; }
 .token-row input { flex: 1; }
@@ -218,7 +222,7 @@
 .archive-dialog-heading h2 { font-size: 16px; font-weight: 700; }
 .archive-dialog-heading button { width: 28px; height: 28px; border: 1.5px solid #111; border-radius: 5px; }
 .archive-dialog label { font-size: 12px; font-weight: 700; }
-.archive-dialog input { width: 100%; padding: 9px; border: 1.5px solid #111; border-radius: 7px; background: #fff; }
+.archive-dialog input, .archive-dialog select { width: 100%; padding: 9px; border: 1.5px solid #111; border-radius: 7px; background: #fff; }
 .archive-dialog-actions { display: flex; justify-content: end; gap: 8px; margin-top: 5px; }
 @media (min-width: 701px) { .archive-mobile-tools { display: none; } }
 @media (max-width: 700px) {

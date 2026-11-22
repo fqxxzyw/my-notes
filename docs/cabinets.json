@@ -1,10 +1,7 @@
 {
+  "schemaVersion": 2,
   "cabinets": [
-    { "id": "general", "title": "常用书柜" },
-    { "id": "reading-room", "title": "阅读与灵感" }
+    { "id": "general", "title": "默认书柜" }
   ],
-  "assignments": {
-    "reading": "reading-room",
-    "ideas": "reading-room"
-  }
+  "assignments": {}
 }

@@ -44,3 +44,6 @@
 .delete-button:hover:enabled { background: var(--ink); color: var(--panel); }
 .delete-button:disabled { opacity: .5; }
 .delete-hint { color: var(--muted); font-size: 12px; }
+.bulk-move { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.bulk-move select { min-width: 150px; max-width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--ink); }
+.removed-cabinet-row { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 8px; }

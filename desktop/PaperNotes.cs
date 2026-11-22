@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Web.Script.Serialization;
@@ -126,7 +127,7 @@ namespace PaperNotesDesktop
         private const string StartUrl = "https://paper.local/my-notes/index.html";
         private readonly string root;
         private readonly string profile;
-        private readonly string credentialPath;
+        private readonly string credentialDirectory;
         private readonly JavaScriptSerializer json = new JavaScriptSerializer();
         private Microsoft.Web.WebView2.WinForms.WebView2 webView;
 
@@ -158,7 +159,7 @@ namespace PaperNotesDesktop
         {
             this.root = root;
             this.profile = profile;
-            credentialPath = Path.Combine(Path.GetDirectoryName(profile), "github-token.dat");
+            credentialDirectory = Path.Combine(Path.GetDirectoryName(profile), "Credentials");
             Text = "纸间";
             FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.CenterScreen;
@@ -298,6 +299,8 @@ namespace PaperNotesDesktop
             var response = new Dictionary<string, object> { { "channel", "paper-notes" }, { "id", id } };
             try
             {
+                if (action != "token.get" && action != "token.set" && action != "token.clear" && action != "token.importLegacy") return;
+                string credentialPath = GetCredentialPath(GetString(request, "repository"));
                 if (action == "token.get")
                 {
                     string token = null;
@@ -321,8 +324,18 @@ namespace PaperNotesDesktop
                     finally { if (File.Exists(temporary)) File.Delete(temporary); }
                 }
                 else if (action == "token.clear") { if (File.Exists(credentialPath)) File.Delete(credentialPath); }
+                else if (action == "token.importLegacy")
+                {
+                    ImportLegacyCredential(credentialPath);
+                    response["imported"] = true;
+                }
                 else return;
                 response["ok"] = true;
+            }
+            catch (InvalidOperationException exception)
+            {
+                response["ok"] = false;
+                response["error"] = exception.Message;
             }
             catch
             {
@@ -330,6 +343,44 @@ namespace PaperNotesDesktop
                 response["error"] = "无法访问 Windows 加密存储。";
             }
             webView.CoreWebView2.PostWebMessageAsJson(json.Serialize(response));
+        }
+
+        private void ImportLegacyCredential(string target)
+        {
+            string legacy = Path.Combine(Path.GetDirectoryName(profile), "github-token.dat");
+            if (!File.Exists(legacy)) throw new InvalidOperationException("没有找到旧版已保存的令牌。请手动输入令牌。");
+            if (File.Exists(target)) throw new InvalidOperationException("此仓库已经保存令牌，旧令牌不会覆盖它。");
+            byte[] decoded = ProtectedData.Unprotect(File.ReadAllBytes(legacy), null, DataProtectionScope.CurrentUser);
+            try
+            {
+                if (decoded.Length == 0 || decoded.Length > 8192) throw new InvalidOperationException("旧版令牌无效，请手动输入令牌。");
+                byte[] encrypted = ProtectedData.Protect(decoded, null, DataProtectionScope.CurrentUser);
+                Directory.CreateDirectory(Path.GetDirectoryName(target));
+                string temporary = target + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                try
+                {
+                    File.WriteAllBytes(temporary, encrypted);
+                    // Move is atomic and will not overwrite a token that appeared meanwhile.
+                    File.Move(temporary, target);
+                }
+                finally { if (File.Exists(temporary)) File.Delete(temporary); }
+            }
+            finally { Array.Clear(decoded, 0, decoded.Length); }
+        }
+
+        private string GetCredentialPath(string repository)
+        {
+            // The page supplies an owner/repo identity, never a filesystem path.
+            // GitHub repository names are case-insensitive.
+            string value = (repository ?? "").Trim().ToLowerInvariant();
+            string[] parts = value.Split('/');
+            if (parts.Length != 2 || !Regex.IsMatch(parts[0], @"^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$") ||
+                parts[0].Contains("--") || !Regex.IsMatch(parts[1], @"^[a-z0-9._-]{1,100}$") || parts[1] == "." || parts[1] == "..")
+                throw new ArgumentException("仓库标识无效。");
+            byte[] digest;
+            using (SHA256 hash = SHA256.Create()) digest = hash.ComputeHash(Encoding.UTF8.GetBytes(value));
+            string name = BitConverter.ToString(digest).Replace("-", "").ToLowerInvariant();
+            return Path.Combine(credentialDirectory, name + ".dat");
         }
 
         private static string GetString(Dictionary<string, object> data, string key)

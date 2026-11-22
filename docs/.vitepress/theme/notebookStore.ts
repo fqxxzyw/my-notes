@@ -1,5 +1,7 @@
 /** GitHub-backed notebook storage. Credentials live only in this store instance. */
 import { defaultCatalog, parseCatalog, serializeCatalog, type CabinetCatalog, type CatalogVersion } from './cabinetStore'
+import { normalizeRepository } from './repository'
+export { normalizeRepository } from './repository'
 export type { CabinetCatalog, CatalogVersion } from './cabinetStore'
 export type Notebook = { id: string; title: string; sha: string }
 export type Chapter = { bookId: string; id: string; title: string; content: string; sha: string }
@@ -20,21 +22,7 @@ type BatchResult = { books: Notebook[]; chapters: Chapter[]; catalog?: CatalogVe
 export type BookDeletion = { book: Notebook; chapters: Chapter[] }
 
 const ROOT = 'notebooks'
-const API = 'https://api.github.com/repos/fqxxzyw/my-notes/contents/docs'
-const GIT_API = 'https://api.github.com/repos/fqxxzyw/my-notes/git'
 const ID = /^[a-zA-Z0-9_-]+$/
-// These files are bundled as raw text, so the bookshelf remains available
-// without GitHub API access. The published snapshot represents a real commit.
-const snapshotFiles = import.meta.glob<string>('../../notebooks/*/*.md', {
-  eager: true,
-  query: '?raw',
-  import: 'default'
-})
-const snapshotCatalogFile = import.meta.glob<string>('../../cabinets.json', {
-  eager: true,
-  query: '?raw',
-  import: 'default'
-})
 
 function checkedCatalog(raw: string): CabinetCatalog {
   try { return parseCatalog(raw) }
@@ -58,13 +46,6 @@ async function blobSha(content: string): Promise<string> {
   data.set(body, header.length)
   const hash = await crypto.subtle.digest('SHA-1', data)
   return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('')
-}
-
-function snapshotEntries(): Array<{ bookId: string; name: string; content: string }> {
-  return Object.entries(snapshotFiles).flatMap(([path, content]) => {
-    const match = /^\.\.\/\.\.\/notebooks\/([a-zA-Z0-9_-]+)\/([a-zA-Z0-9_-]+)\.md$/.exec(path)
-    return match ? [{ bookId: match[1], name: match[2], content }] : []
-  })
 }
 
 function checkId(value: string): string {
@@ -104,13 +85,19 @@ function decode(file: GitHubFile): string {
   }
 }
 
-export function createNotebookStore() {
+export function createNotebookStore(repository?: string | null) {
+  const canonical = repository ? normalizeRepository(repository) : ''
+  const repoPath = canonical.split('/').map(encodeURIComponent).join('/')
+  const repoApi = canonical ? `https://api.github.com/repos/${repoPath}` : ''
+  const api = repoApi ? `${repoApi}/contents/docs` : ''
+  const gitApi = repoApi ? `${repoApi}/git` : ''
   let token = ''
 
   async function request(path: string, options: { allowMissing?: boolean } = {}): Promise<unknown> {
+    if (!api) throw new NotebookStoreError('invalid', '请先设置 GitHub 仓库地址。')
     let response: Response
     try {
-      response = await fetch(`${API}/${path.split('/').map(encodeURIComponent).join('/')}?ref=main`, {
+      response = await fetch(`${api}/${path.split('/').map(encodeURIComponent).join('/')}?ref=main`, {
         headers: {
           Accept: 'application/vnd.github+json',
           'X-GitHub-Api-Version': '2022-11-28',
@@ -135,9 +122,10 @@ export function createNotebookStore() {
   }
 
   async function gitRequest(path: string, method: 'GET' | 'POST' | 'PATCH' = 'GET', body?: object): Promise<unknown> {
+    if (!gitApi) throw new NotebookStoreError('invalid', '请先设置 GitHub 仓库地址。')
     let response: Response
     try {
-      response = await fetch(`${GIT_API}/${path}`, {
+      response = await fetch(`${gitApi}/${path}`, {
         method,
         headers: {
           Accept: 'application/vnd.github+json',
@@ -427,6 +415,21 @@ export function createNotebookStore() {
   return {
     setToken(value: string): void { token = value.trim() },
     clearToken(): void { token = '' },
+    async verifyRepository(): Promise<void> {
+      if (!repoApi) throw new NotebookStoreError('invalid', '请先设置 GitHub 仓库地址。')
+      let response: Response
+      try {
+        response = await fetch(repoApi, { headers: {
+          Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        }, cache: 'no-store' })
+      } catch { throw new NotebookStoreError('network', '无法连接 GitHub，请检查网络后重试。') }
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) throw new NotebookStoreError('auth', 'GitHub 拒绝访问，请检查令牌权限。')
+        if (response.status === 404) throw new NotebookStoreError('not-found', '仓库不存在或无权访问，请检查仓库地址和令牌。')
+        throw new NotebookStoreError('github', `GitHub 请求失败（HTTP ${response.status}）。`)
+      }
+    },
     async readHead(): Promise<string> {
       const ref = await gitRequest('ref/heads/main') as { object?: { sha?: string } }
       if (!ref.object?.sha || !/^[a-f0-9]{40}$/.test(ref.object.sha)) throw new NotebookStoreError('github', 'GitHub 返回的分支版本无效。')
@@ -436,30 +439,12 @@ export function createNotebookStore() {
     deleteBatch,
     async readCatalog(snapshot = true): Promise<CatalogVersion> {
       if (snapshot) {
-        const raw = snapshotCatalogFile['../../cabinets.json']
-        return raw === undefined ? { catalog: defaultCatalog(), sha: '' } : { catalog: checkedCatalog(raw), sha: await blobSha(raw) }
+        return { catalog: defaultCatalog(), sha: '' }
       }
       const data = await request('cabinets.json', { allowMissing: true }) as GitHubFile | null
       if (data === null) return { catalog: defaultCatalog(), sha: '' }
       if (data.type !== 'file' || typeof data.sha !== 'string') throw new NotebookStoreError('github', 'GitHub 返回的书柜文件信息无效。')
       return { catalog: checkedCatalog(decode(data)), sha: data.sha }
-    },
-    async listSnapshotNotebooks(): Promise<Notebook[]> {
-      return Promise.all(snapshotEntries().filter(item => item.name === 'index').map(async item => ({
-        id: item.bookId,
-        title: titleFrom(item.content, item.bookId),
-        sha: await blobSha(item.content)
-      })))
-    },
-    async listSnapshotChapters(bookId: string): Promise<Chapter[]> {
-      checkId(bookId)
-      return Promise.all(snapshotEntries().filter(item => item.bookId === bookId && item.name.toLowerCase() !== 'index').map(async item => ({
-        bookId,
-        id: item.name,
-        title: titleFrom(item.content, item.name),
-        content: item.content,
-        sha: await blobSha(item.content)
-      })))
     },
     async listNotebooks(): Promise<Notebook[]> {
       const list = await entries(ROOT, true)

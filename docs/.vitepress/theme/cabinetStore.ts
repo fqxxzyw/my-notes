@@ -1,13 +1,13 @@
 /** Public, versioned bookshelf catalog. Missing assignments belong to general. */
 export type Cabinet = { id: string; title: string }
-export type CabinetCatalog = { cabinets: Cabinet[]; assignments: Record<string, string> }
+export type CabinetCatalog = { cabinets: Cabinet[]; assignments: Record<string, string>; schemaVersion?: number }
 export type CatalogVersion = { catalog: CabinetCatalog; sha: string }
 
 export const DEFAULT_CABINET_ID = 'general'
 const ID = /^[a-zA-Z0-9_-]+$/
 
 export function defaultCatalog(): CabinetCatalog {
-  return { cabinets: [{ id: DEFAULT_CABINET_ID, title: '常用书柜' }], assignments: {} }
+  return { schemaVersion: 2, cabinets: [{ id: DEFAULT_CABINET_ID, title: '默认书柜' }], assignments: {} }
 }
 
 /** Validate untrusted JSON and return a detached, JSON-safe copy. */
@@ -32,7 +32,8 @@ export function validateCatalog(value: unknown): CabinetCatalog {
     if (!ID.test(bookId) || typeof cabinetId !== 'string' || !seen.has(cabinetId)) throw new Error('笔记本的书柜归属无效。')
     assignments[bookId] = cabinetId
   }
-  return { cabinets, assignments }
+  if (input.schemaVersion !== undefined && input.schemaVersion !== 2) throw new Error('不支持的书柜目录版本。')
+  return { ...(input.schemaVersion === 2 ? { schemaVersion: 2 } : {}), cabinets, assignments }
 }
 
 export function parseCatalog(raw: string): CabinetCatalog {

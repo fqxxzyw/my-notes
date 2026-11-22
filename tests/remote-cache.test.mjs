@@ -25,47 +25,59 @@ function fakeStorage() {
 test('a complete remote snapshot survives reload without storing unrelated fields', () => {
   const storage = fakeStorage()
   storage.values.set('paper-notes-draft:book1/chapter1', 'unsynchronized draft')
-  writeRemoteCache({ ...snapshot, token: 'fake-secret' }, storage)
-  const loaded = readRemoteCache(storage)
+  writeRemoteCache({ ...snapshot, token: 'fake-secret' }, 'example/repo', storage)
+  const loaded = readRemoteCache('example/repo', storage)
   assert.equal(loaded.head, snapshot.head)
   assert.equal(loaded.chapters.book1[0].content, snapshot.chapters.book1[0].content)
   assert.equal(JSON.stringify([...storage.values.values()]).includes('fake-secret'), false)
-  clearRemoteCache(storage)
-  assert.equal(readRemoteCache(storage), null)
+  clearRemoteCache('example/repo', storage)
+  assert.equal(readRemoteCache('example/repo', storage), null)
   assert.equal(storage.values.get('paper-notes-draft:book1/chapter1'), 'unsynchronized draft')
 })
 
 test('invalid or incomplete new snapshots never replace the previous cache', () => {
   const storage = fakeStorage()
-  writeRemoteCache(snapshot, storage)
+  writeRemoteCache(snapshot, 'example/repo', storage)
   const before = [...storage.values.values()][0]
-  assert.throws(() => writeRemoteCache({ ...snapshot, chapters: {} }, storage))
-  assert.throws(() => writeRemoteCache({ ...snapshot, head: 'not-a-sha' }, storage))
+  assert.throws(() => writeRemoteCache({ ...snapshot, chapters: {} }, 'example/repo', storage))
+  assert.throws(() => writeRemoteCache({ ...snapshot, head: 'not-a-sha' }, 'example/repo', storage))
   assert.equal([...storage.values.values()][0], before)
-  assert.equal(readRemoteCache(storage).head, snapshot.head)
+  assert.equal(readRemoteCache('example/repo', storage).head, snapshot.head)
 })
 
 test('a storage quota failure preserves the previous snapshot', () => {
   const storage = fakeStorage()
-  writeRemoteCache(snapshot, storage)
+  writeRemoteCache(snapshot, 'example/repo', storage)
   const before = [...storage.values.values()][0]
   storage.setItem = () => { throw new Error('quota') }
-  assert.throws(() => writeRemoteCache({ ...snapshot, head: sha('e') }, storage), /quota/)
+  assert.throws(() => writeRemoteCache({ ...snapshot, head: sha('e') }, 'example/repo', storage), /quota/)
   assert.equal([...storage.values.values()][0], before)
 })
 
 test('bad cache contents cannot be mistaken for a valid snapshot', () => {
   const storage = fakeStorage()
-  storage.values.set('paper-notes-remote-snapshot-v1', '{bad json')
-  assert.equal(readRemoteCache(storage), null)
+  storage.values.set('paper-notes:v2:repo:example%2Frepo:paper-notes-remote-snapshot-v1', '{bad json')
+  assert.equal(readRemoteCache('example/repo', storage), null)
   assert.equal(storage.values.size, 1)
 })
 
 test('known stale snapshots remain marked stale without losing notes', () => {
   const storage = fakeStorage()
-  writeRemoteCache({ ...snapshot, stale: true }, storage)
-  assert.equal(readRemoteCache(storage).stale, true)
-  assert.equal(readRemoteCache(storage).chapters.book1.length, 1)
-  assert.throws(() => writeRemoteCache({ ...snapshot, stale: 'yes' }, storage))
-  assert.equal(readRemoteCache(storage).stale, true)
+  writeRemoteCache({ ...snapshot, stale: true }, 'example/repo', storage)
+  assert.equal(readRemoteCache('example/repo', storage).stale, true)
+  assert.equal(readRemoteCache('example/repo', storage).chapters.book1.length, 1)
+  assert.throws(() => writeRemoteCache({ ...snapshot, stale: 'yes' }, 'example/repo', storage))
+  assert.equal(readRemoteCache('example/repo', storage).stale, true)
+})
+
+test('cached notes and old unscoped data never leak across repository profiles', () => {
+  const storage = fakeStorage()
+  storage.values.set('paper-notes-remote-snapshot-v1', JSON.stringify({ version: 1, snapshot }))
+  assert.equal(readRemoteCache('alice/notes', storage), null)
+  writeRemoteCache(snapshot, 'alice/notes', storage)
+  assert.equal(readRemoteCache('Alice/Notes', storage).head, snapshot.head)
+  assert.equal(readRemoteCache('bob/notes', storage), null)
+  clearRemoteCache('bob/notes', storage)
+  assert.equal(readRemoteCache('alice/notes', storage).head, snapshot.head)
+  assert.ok(storage.values.has('paper-notes-remote-snapshot-v1'))
 })

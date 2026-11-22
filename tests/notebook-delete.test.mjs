@@ -53,7 +53,7 @@ function mockGit({ extra = false, changed = false, rejectRef = false } = {}) {
     if (method === 'PATCH' && path === 'refs/heads/main') return rejectRef ? new Response('{}', { status: 409 }) : response({})
     throw new Error(`Unexpected request: ${method} ${path}`)
   }
-  const store = createNotebookStore()
+  const store = createNotebookStore('example/repo')
   store.setToken('fake-token')
   return { calls, store }
 }

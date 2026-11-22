@@ -20,7 +20,7 @@ html.paper-night .desk {
   --ink: #ede9e2; --muted: #bcb6ad; --line: #8d8981; --red: #d5ad80;
   --panel: #222427; --shelf: #1d1f22; --button: #d8d2c8;
 }
-.paper-night .desk :is(.archive-header, .archive-dialog, .archive-dialog input, .archive-search input, .archive-search-results,
+.paper-night .desk :is(.archive-header, .archive-dialog, .archive-dialog input, .archive-dialog select, .archive-search input, .archive-search-results,
   .cabinet, .cabinet__drawing, .cabinet__book, .paper, .reference-book-card, .reference-editor-sidebar,
   .reference-sidebar-row, .chapter-row, .bookshelf__stage, .bookshelf__info, .bookshelf__board,
   .editor-modes, .markdown-toolbar button, .code-tool, .code-tool select, .editor-panes, .move-book select,

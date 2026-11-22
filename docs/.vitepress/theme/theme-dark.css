@@ -68,6 +68,7 @@ html.paper-night .desk {
 .paper-night .desk :is(.volume__top, .reference-book-top) {
   border-color: #b4aea4; background: repeating-linear-gradient(90deg, #303136 0 5px, #a39e94 5px 6px);
 }
+.paper-night .desk .volume__top { background: #303136; }
 .paper-night .desk :is(.volume__spine::before, .volume__spine::after,
   .reference-book-spine::before, .reference-book-spine::after) { background: #aba59b; opacity: .35; }
 .paper-night .desk .bookshelf__board { box-shadow: 0 4px 0 #0d0e0f; }

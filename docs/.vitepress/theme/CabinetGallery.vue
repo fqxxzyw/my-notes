@@ -61,7 +61,7 @@ const emit = defineEmits<{ select: [id: string]; create: [] }>()
 .cabinet__name { font-family: var(--paper-serif); font-size: 22px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
 .cabinet__drawing { flex: 1 1 0; min-width: 0; position: relative; height: 144px; border: 2px solid #111; background: #fff; box-shadow: 2px 2px 0 currentColor; }
 .cabinet__books { position: absolute; inset: 0 0 13px; display: flex; align-items: end; gap: 1px; padding: 0 7px; overflow: hidden; }
-.cabinet__book { display: flex; flex: 1 1 0; max-width: 72px; height: calc(100% - 13px); min-width: 0; flex-direction: column; align-items: center; padding: 5px 2px; border: 1.5px solid #111; box-shadow: inset 1px 0 #ddd, inset -1px 0 #ddd; background: #fff; }
+.cabinet__book { display: flex; flex: 0 1 28px; width: 28px; height: calc(100% - 13px); min-width: 0; flex-direction: column; align-items: center; padding: 5px 2px; border: 1.5px solid #111; box-shadow: inset 1px 0 #ddd, inset -1px 0 #ddd; background: #fff; }
 .cabinet__book-number { flex: none; padding: 1px 2px; border-block: 1px solid #111; font: 700 9px/1 ui-monospace, monospace; letter-spacing: .04em; }
 .cabinet__book-title { min-height: 0; max-height: 86px; margin: auto 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; writing-mode: vertical-rl; text-orientation: upright; color: #6e4726; font: 700 13px/1.1 var(--paper-serif, serif); }
 .cabinet__book-rule { flex: none; width: 12px; height: 1px; background: #111; }

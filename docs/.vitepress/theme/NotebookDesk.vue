@@ -6,6 +6,7 @@ import MarkdownEditor from './MarkdownEditor.vue'
 import BookShelf from './BookShelf.vue'
 import CabinetGallery from './CabinetGallery.vue'
 import { useCabinets } from './useCabinets'
+import { readRemoteCache, writeRemoteCache, clearRemoteCache, type RemoteSnapshot } from './remoteCache'
 declare const __PAPER_BUILD_SHA__: string
 
 const store = createNotebookStore()
@@ -37,6 +38,8 @@ watch([creatingCabinet, creatingBook], ([cabinetOpen, bookOpen]) => {
 })
 const remoteVersion = ref<Chapter | null>(null)
 const snapshot = ref(true)
+const restoredSnapshot = ref<RemoteSnapshot | null>(null)
+const offlineMode = ref(false)
 const searchIndex = ref<Chapter[]>([])
 const searching = ref(false)
 let searchRun = 0
@@ -60,6 +63,8 @@ const chapterCache = new Map<string, Promise<Chapter[]>>()
 type Draft = { content: string; base: Chapter }
 const drafts = ref<Record<string, Draft>>({})
 const selectedKeys = ref<string[]>([])
+const deleteBookIds = ref<string[]>([])
+const deleteChapterIds = ref<string[]>([])
 const isHosted = ref(false)
 const isDesktop = ref(false)
 const nightMode = ref(false)
@@ -183,10 +188,17 @@ function toggleBatchGroup(group: typeof batchGroups.value[number], event: Event)
 }
 async function getChapters(book: Notebook): Promise<Chapter[]> {
   const useSnapshot = snapshot.value
-  const key = `${useSnapshot ? 'snapshot' : 'remote'}:${book.id}`
+  const key = `${offlineMode.value ? 'offline' : useSnapshot ? 'snapshot' : 'remote'}:${book.id}`
   let pending = chapterCache.get(key)
   if (!pending) {
-    pending = !loadedBookIds.value.includes(book.id) ? Promise.resolve([]) : useSnapshot ? store.listSnapshotChapters(book.id) : store.listChapters(book.id)
+    pending = !loadedBookIds.value.includes(book.id) ? Promise.resolve([]) : offlineMode.value && restoredSnapshot.value ? Promise.resolve(restoredSnapshot.value.chapters[book.id] || []) : useSnapshot ? store.listSnapshotChapters(book.id) : store.listChapters(book.id).catch(error => {
+      const cached = restoredSnapshot.value
+      if (cached && Object.prototype.hasOwnProperty.call(cached.chapters, book.id)) {
+        notice.value = '无法连接 GitHub，正在显示上次恢复的本机副本。'
+        return cached.chapters[book.id]
+      }
+      throw error
+    })
     chapterCache.set(key, pending)
     pending.catch(() => { if (chapterCache.get(key) === pending) chapterCache.delete(key) })
   }
@@ -279,6 +291,7 @@ function openCabinet(id = '') {
   if (id && !catalog.cabinets.value.some(cabinet => cabinet.id === id)) { error.value = '书柜不存在，请刷新目录。'; return }
   ++bookRun
   activeCabinet.value = id
+  deleteBookIds.value = []; deleteChapterIds.value = []
   selectedBook.value = null
   selectedChapter.value = null
   chapters.value = []
@@ -321,6 +334,7 @@ async function openBook(book: Notebook) {
   activeCabinet.value = catalog.assigned(book.id)
   creatingBook.value = false; creatingChapter.value = false
   selectedBook.value = book
+  deleteChapterIds.value = []
   selectedChapter.value = null
   chapters.value = []
   busy.value = true
@@ -357,11 +371,19 @@ async function refresh() {
   const request = ++bookRun
   const version = localMutationVersion
   clearMessages()
-  return await run(async () => {
+  clearTimeout(autoTimer)
+  const restored = await run(async () => {
     const bookId = selectedBook.value?.id
     const chapterId = selectedChapter.value?.id
+    const head = await store.readHead()
     const [remoteBooks, latestCatalog] = await Promise.all([store.listNotebooks(), store.readCatalog(false)])
+    const allChapters = await Promise.all(remoteBooks.map(async book => [book.id, await store.listChapters(book.id)] as const))
+    if (await store.readHead() !== head) throw new Error('恢复期间 GitHub 内容发生变化，请重新恢复。')
     if (writing || version !== localMutationVersion) throw new Error('同步期间目录发生变化，请稍后重新读取。')
+    const complete: RemoteSnapshot = { head, books: remoteBooks, chapters: Object.fromEntries(allChapters), catalog: latestCatalog }
+    try { writeRemoteCache(complete) } catch { throw new Error('无法保存完整的 GitHub 备份到本机；原有缓存和草稿均已保留。') }
+    restoredSnapshot.value = complete
+    offlineMode.value = true
     catalog.latest(latestCatalog)
     chapterCache.clear()
     loadedBookIds.value = remoteBooks.map(book => book.id)
@@ -379,8 +401,10 @@ async function refresh() {
         else selectedChapter.value = null
       } else { chapters.value = []; selectedChapter.value = null }
     }
-    notice.value = '已读取 GitHub 上的最新目录。'
+    notice.value = '已将 GitHub 的笔记恢复到本机，可离线阅读；未同步草稿仍保留。'
   })
+  if (autoSave.value && (autoKeys.size || autoBooks.size || autoCabinets.size || autoMoves.size)) scheduleAuto()
+  return restored
 }
 async function connect() {
   const token = tokenInput.value.trim()
@@ -474,6 +498,51 @@ async function sync() {
   if (success) notice.value = '已同步到 GitHub；网站将在构建完成后更新。'
   if (autoSave.value && (autoKeys.size || autoBooks.size || autoCabinets.size || autoMoves.size)) scheduleAuto()
 }
+
+// Preserve the last complete offline download after a confirmed write. If the
+// cache predates the submitted parent revision, apply our change but mark it
+// stale: unrelated remote changes still require an explicit restore.
+function updateOfflineAfterCommit(parent: string, head: string, change: {
+  books?: Notebook[]; chapters?: Chapter[]; catalog?: import('./cabinetStore').CatalogVersion;
+  deletedBooks?: string[]; deletedChapters?: Chapter[]
+}) {
+  const previous = restoredSnapshot.value || readRemoteCache()
+  if (!previous) return
+  const sameRevision = previous.head === parent && !previous.stale
+  const removedBooks = new Set(change.deletedBooks || [])
+  const removedChapters = new Set((change.deletedChapters || []).map(chapterKey))
+  const books = previous.books.filter(book => !removedBooks.has(book.id)).map(book => ({ ...book }))
+  const bookChapters: Record<string, Chapter[]> = Object.fromEntries(
+    books.map(book => [book.id, (previous.chapters[book.id] || []).filter(chapter => !removedChapters.has(chapterKey(chapter))).map(chapter => ({ ...chapter }))])
+  )
+  for (const book of change.books || []) {
+    const index = books.findIndex(item => item.id === book.id)
+    if (index < 0) { books.push(book); bookChapters[book.id] = [] } else books[index] = book
+  }
+  let complete = sameRevision
+  for (const chapter of change.chapters || []) {
+    const list = bookChapters[chapter.bookId]
+    if (!list) { complete = false; continue }
+    const index = list.findIndex(item => item.id === chapter.id)
+    if (index < 0) list.push(chapter); else list[index] = chapter
+  }
+  const next: RemoteSnapshot = {
+    head: complete ? head : previous.head, books, chapters: bookChapters,
+    catalog: change.catalog || previous.catalog, ...(complete ? {} : { stale: true })
+  }
+  try {
+    writeRemoteCache(next)
+    restoredSnapshot.value = next
+    chapterCache.clear()
+    if (!complete) error.value = '本机离线副本已更新所提交的内容，但可能缺少其他设备的更新；请点击“恢复”。'
+  } catch {
+    // Never keep a deleted item in a cache that would silently revive it.
+    let cleared = false
+    try { clearRemoteCache(); restoredSnapshot.value = null; offlineMode.value = false; chapterCache.clear(); cleared = true }
+    catch { /* an inaccessible old cache cannot be safely changed here */ }
+    error.value = cleared ? 'GitHub 操作已完成，旧离线副本已移除；请检查存储空间后点击“恢复”。' : 'GitHub 操作已完成，但无法更新或清除旧离线副本；离线时可能显示旧内容，请检查存储权限后点击“恢复”。'
+  }
+}
 async function inspectRemote() {
   const chapter = selectedChapter.value
   if (!chapter) return
@@ -506,6 +575,7 @@ async function performBatch(keys: string[], bookIds: string[], cabinetIds: strin
       return (await store.listSnapshotChapters(item.bookId)).find(chapter => chapter.id === item.chapter.id)?.sha || null
     }))
     const result = await store.syncBatch(newBooks, entries.map(item => item.chapter), catalogChange)
+    updateOfflineAfterCommit(result.parent, result.head, { books: result.books, chapters: result.chapters, catalog: result.catalog })
     if (catalogChange && !result.catalog) throw new Error('GitHub 未返回书柜目录版本，请保留本地整理后重试。')
     if (result.catalog) { catalog.acknowledge(result.catalog); catalogPrepared = false }
     localMutationVersion++
@@ -560,6 +630,134 @@ async function syncSelected() {
   clearMessages()
   const success = await run(() => performBatch(keys, bookIds))
   if (success) { const sent = new Set([...keys, ...bookIds.map(id => `book:${id}`)]); selectedKeys.value = selectedKeys.value.filter(key => !sent.has(key)); notice.value = '所选笔记已同步到 GitHub。' }
+  if (autoSave.value && (autoKeys.size || autoBooks.size || autoCabinets.size || autoMoves.size)) scheduleAuto()
+}
+
+async function syncFromHeader() {
+  if (!saveDraft()) return
+  if (selectedKeys.value.length) { await syncSelected(); return }
+  if (selectedChapter.value && (dirty.value || !selectedChapter.value.sha)) { await sync(); return }
+  if (view.value === 'edit') { view.value = 'read'; await nextTick() }
+  const panel = document.querySelector<HTMLDetailsElement>('details.batch-box:not(.delete-manager)')
+  if (panel) {
+    panel.open = true
+    notice.value = pendingBatchCount.value ? '请先勾选要同步的本机项目。' : '没有待同步的笔记本或章节。'
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+}
+
+// Remove local records only after a remote deletion has succeeded. The pending
+// list also permits discarding a draft without deleting its published chapter.
+function removeLocalRecords(bookIds: string[], chapterKeys: string[], draftOnlyKeys: string[] = []) {
+  const removedBooks = new Set(bookIds), removedChapters = new Set(chapterKeys)
+  const discardedDrafts = new Set(draftOnlyKeys)
+  for (const [key, draft] of Object.entries(drafts.value)) {
+    if (removedBooks.has(draft.base.bookId) || removedChapters.has(key)) discardedDrafts.add(key)
+  }
+  const before = {
+    books: localBooks.value, chapters: localChapters.value, copies: syncedCopies.value,
+    versions: bookVersions.value, drafts: drafts.value, storage: localStorage.getItem(localKey),
+    draftStorage: Object.fromEntries([...discardedDrafts].map(key => {
+      const draft = drafts.value[key]
+      return [key, draft ? localStorage.getItem(draftKey(draft.base)) : null]
+    })) as Record<string, string | null>
+  }
+  try {
+    localBooks.value = localBooks.value.filter(book => !removedBooks.has(book.id))
+    localChapters.value = localChapters.value.filter(chapter => !removedBooks.has(chapter.bookId) && !removedChapters.has(chapterKey(chapter)))
+    syncedCopies.value = Object.fromEntries(Object.entries(syncedCopies.value).filter(([key, copy]) => !removedBooks.has(copy.chapter.bookId) && !removedChapters.has(key)))
+    bookVersions.value = Object.fromEntries(Object.entries(bookVersions.value).filter(([id]) => !removedBooks.has(id)))
+    drafts.value = Object.fromEntries(Object.entries(drafts.value).filter(([key]) => !discardedDrafts.has(key)))
+    persistLocal()
+    for (const key of discardedDrafts) {
+      const draft = before.drafts[key]
+      if (draft) localStorage.removeItem(draftKey(draft.base))
+    }
+    catalog.discardMoves(bookIds)
+  } catch (e) {
+    localBooks.value = before.books; localChapters.value = before.chapters
+    syncedCopies.value = before.copies; bookVersions.value = before.versions; drafts.value = before.drafts
+    try {
+      if (before.storage === null) localStorage.removeItem(localKey); else localStorage.setItem(localKey, before.storage)
+      for (const [key, value] of Object.entries(before.draftStorage)) {
+        const draft = before.drafts[key]
+        if (draft) { if (value === null) localStorage.removeItem(draftKey(draft.base)); else localStorage.setItem(draftKey(draft.base), value) }
+      }
+    } catch { /* report the original storage failure */ }
+    throw e
+  }
+  localMutationVersion++
+  books.value = books.value.filter(book => !removedBooks.has(book.id))
+  loadedBookIds.value = loadedBookIds.value.filter(id => !removedBooks.has(id))
+  chapters.value = chapters.value.filter(chapter => !removedBooks.has(chapter.bookId) && !removedChapters.has(chapterKey(chapter)))
+  for (const id of removedBooks) { autoBooks.delete(id); autoMoves.delete(id); chapterCache.delete(`remote:${id}`); chapterCache.delete(`snapshot:${id}`) }
+  for (const key of removedChapters) {
+    const bookId = key.split('/')[0]
+    chapterCache.delete(`remote:${bookId}`); chapterCache.delete(`snapshot:${bookId}`)
+  }
+  for (const key of [...removedChapters, ...discardedDrafts]) autoKeys.delete(key)
+  selectedKeys.value = selectedKeys.value.filter(key => !removedChapters.has(key) && !discardedDrafts.has(key) && !removedBooks.has(key.startsWith('book:') ? key.slice(5) : key.split('/')[0]))
+  if (selectedBook.value && removedBooks.has(selectedBook.value.id)) {
+    selectedBook.value = null; selectedChapter.value = null; chapters.value = []; view.value = 'read'
+  } else if (selectedChapter.value) {
+    const key = chapterKey(selectedChapter.value)
+    if (removedChapters.has(key)) { selectedChapter.value = null; view.value = 'read' }
+    else if (discardedDrafts.has(key)) {
+      const base = before.drafts[key]?.base
+      if (base) { suspendDraft = true; try { selectedChapter.value = base; content.value = base.content } finally { suspendDraft = false } }
+    }
+  }
+}
+
+async function deletePendingSelected() {
+  if (writing || busy.value) { error.value = '正在同步，请稍后再删除。'; return }
+  const chosen = new Set(selectedKeys.value)
+  const selectedBooks = localBooks.value.filter(book => !book.sha && chosen.has(`book:${book.id}`))
+  const bookIds = selectedBooks.map(book => book.id)
+  const entries = batchItems.value.filter(item => chosen.has(item.key) && !bookIds.includes(item.bookId))
+  if (!bookIds.length && !entries.length) { error.value = '请先勾选要删除的本机项目。'; return }
+  const names = [...selectedBooks.map(book => `整本：${book.title}`), ...entries.map(item => `${item.chapter.sha ? '丢弃本机草稿' : '本机章节'}：${item.title}`)]
+  if (!window.confirm(`将删除以下本机内容：\n\n${names.join('\n')}\n\n新建笔记本包括其中所有本机章节和草稿；已同步章节仅丢弃本机草稿，GitHub 上的章节不受影响。此操作无法撤销。`)) return
+  clearTimeout(autoTimer)
+  const success = await run(async () => {
+    removeLocalRecords(bookIds, entries.filter(item => !item.chapter.sha).map(item => item.key), entries.filter(item => !!item.chapter.sha).map(item => item.key))
+  })
+  if (success) notice.value = '已删除所选本机项目；GitHub 内容未改变。'
+  if (autoSave.value && (autoKeys.size || autoBooks.size || autoCabinets.size || autoMoves.size)) scheduleAuto()
+}
+
+async function deleteManaged(wholeBooks: Notebook[], selectedChapters: Chapter[]) {
+  if (writing || busy.value) { error.value = '正在同步，请稍后再删除。'; return }
+  if (!wholeBooks.length && !selectedChapters.length) { error.value = '请先勾选要删除的内容。'; return }
+  const localIds = new Set(localBooks.value.filter(book => !book.sha).map(book => book.id))
+  if (wholeBooks.some(book => !book.sha && !localIds.has(book.id))) { error.value = '有笔记本来源不明确，请先刷新或处理其本机草稿。'; return }
+  const remoteBooks = wholeBooks.filter(book => !localIds.has(book.id))
+  const remoteChapters = selectedChapters.filter(chapter => !!chapter.sha && !wholeBooks.some(book => book.id === chapter.bookId))
+  if ((remoteBooks.length || remoteChapters.length) && !connected.value) { error.value = '删除已同步内容需要先连接 GitHub。'; goToConnection(); return }
+  clearTimeout(autoTimer)
+  let remotePayload: Array<{ book: Notebook; chapters: Chapter[] }> = []
+  const loaded = await run(async () => { remotePayload = await Promise.all(remoteBooks.map(async book => ({ book, chapters: await store.listChapters(book.id) }))) })
+  if (!loaded) { if (autoSave.value) scheduleAuto(); return }
+  const names = [...wholeBooks.map(book => `整本：${book.title}${localIds.has(book.id) ? '（仅本机）' : `（GitHub 和本机，${remotePayload.find(item => item.book.id === book.id)?.chapters.length ?? 0} 个远程章节）`}`), ...selectedChapters.map(chapter => `章节：${chapter.title}${chapter.sha ? '（GitHub 和本机）' : '（仅本机）'}`)]
+  if (!window.confirm(`确认删除以下内容？\n\n${names.join('\n')}\n\n整本删除会同时删除其中全部章节和本机草稿。标记 GitHub 的内容会从仓库删除；如果远程内容发生变化将拒绝操作。此操作无法撤销。`)) { if (autoSave.value) scheduleAuto(); return }
+  let remoteSucceeded = false
+  const success = await run(async () => {
+    writing = true
+    try {
+      if (remotePayload.length || remoteChapters.length) {
+        const result = await store.deleteBatch(remotePayload, remoteChapters)
+        remoteSucceeded = true
+        updateOfflineAfterCommit(result.parent, result.head, { deletedBooks: remoteBooks.map(book => book.id), deletedChapters: remoteChapters, catalog: result.catalog })
+        if (result.catalog) catalog.latest(result.catalog)
+        snapshot.value = false
+      }
+      removeLocalRecords(wholeBooks.map(book => book.id), selectedChapters.map(chapterKey))
+    } catch (e) {
+      if (remoteSucceeded) throw new Error(`GitHub 已删除，但清理本机数据失败：${message(e)}。请检查本机草稿后刷新。`)
+      throw e
+    } finally { writing = false }
+  })
+  if (success) { deleteBookIds.value = []; deleteChapterIds.value = []; notice.value = '已删除所选内容。' }
   if (autoSave.value && (autoKeys.size || autoBooks.size || autoCabinets.size || autoMoves.size)) scheduleAuto()
 }
 function scheduleAuto() {
@@ -618,6 +816,11 @@ async function updateFromRemoteInBackground() {
   const version = localMutationVersion
   try {
     const head = await store.readHead()
+    if (restoredSnapshot.value && restoredSnapshot.value.head !== head && !restoredSnapshot.value.stale) {
+      const old = { ...restoredSnapshot.value, stale: true }
+      try { writeRemoteCache(old); restoredSnapshot.value = old; notice.value = 'GitHub 有新内容；离线副本可能不是最新，请点击“恢复”。' }
+      catch { error.value = '无法更新离线副本状态，请检查存储空间后点击“恢复”。' }
+    }
     if (isDesktop.value && head && head === backgroundHead) return
     const buildSha = typeof __PAPER_BUILD_SHA__ === 'string' ? __PAPER_BUILD_SHA__ : ''
     if (snapshot.value && buildSha && head === buildSha) { backgroundHead = head; return }
@@ -628,6 +831,7 @@ async function updateFromRemoteInBackground() {
     const latestChapters = selectedExists ? await store.listChapters(selectedId!) : []
     if ((!isDesktop.value && !snapshot.value) || disposed || writing || version !== localMutationVersion) return
     catalog.latest(latestCatalog)
+    offlineMode.value = false
     chapterCache.clear()
     if (selectedExists) chapterCache.set(`remote:${selectedId}`, Promise.resolve(latestChapters))
     loadedBookIds.value = latest.map(book => book.id)
@@ -693,9 +897,17 @@ onMounted(() => {
   void (async () => {
     await identifySnapshot()
     const loaded = await run(async () => {
-      const snapshotCatalog = await store.readCatalog(true)
+      const savedRemote = readRemoteCache()
+      const snapshotCatalog = savedRemote?.catalog || await store.readCatalog(true)
       try { catalog.restore(snapshotCatalog) } catch { restoreError = '无法恢复本地书柜，请检查浏览器存储。'; catalog.latest(snapshotCatalog) }
-      await loadBooks(true)
+      if (savedRemote) {
+        restoredSnapshot.value = savedRemote
+        offlineMode.value = true
+        snapshot.value = false
+        loadedBookIds.value = savedRemote.books.map(book => book.id)
+        books.value = mergeBooks(savedRemote.books, false)
+        if (savedRemote.stale) notice.value = '本机离线副本可能缺少其他设备的更新，联网后请点击“恢复”。'
+      } else await loadBooks(true)
     })
     if (restoreError) error.value = restoreError
     backgroundReady = loaded
@@ -773,8 +985,8 @@ async function openSearchResult(chapter: Chapter) {
             </div>
           </div>
           <button type="button" class="theme-toggle" :aria-pressed="nightMode" :aria-label="nightMode ? '切换到日间模式' : '切换到夜间模式'" :title="nightMode ? '切换到日间模式' : '切换到夜间模式'" @click="toggleTheme"><span aria-hidden="true">{{ nightMode ? '☀' : '☾' }}</span><span>{{ nightMode ? '日间' : '夜间' }}</span></button>
-          <button class="archive-refresh" :disabled="busy" @click="refresh">刷新</button>
-          <a class="archive-sync" href="#connection" @click="revealConnection">同步</a>
+          <button class="archive-refresh" :disabled="busy" title="从 GitHub 恢复笔记到本机，保留未同步草稿" aria-label="从 GitHub 恢复笔记，保留未同步草稿" @click="refresh">恢复</button>
+          <button class="archive-sync" :disabled="busy" title="将勾选的本机笔记或当前修改的章节提交到 GitHub" aria-label="将勾选的本机笔记或当前修改的章节同步到 GitHub" @click="syncFromHeader">同步</button>
           <button v-if="!chosenCabinet" type="button" class="archive-new" :disabled="busy" @click="creatingCabinet = true">＋ 新建书柜</button>
           <button v-else-if="!selectedBook" type="button" class="archive-new" :disabled="busy" @click="creatingBook = true">＋ 新建笔记本</button>
           <button v-else type="button" class="archive-new" :disabled="busy" @click="creatingChapter = true; if (selectedChapter) backToChapters()">＋ 新建章节</button>
@@ -846,6 +1058,14 @@ async function openSearchResult(chapter: Chapter) {
       <p v-if="!chosenCabinet && !visibleCabinets.length" class="empty-shelf">没有匹配的书柜。</p>
       <BookShelf v-if="chosenCabinet && !selectedBook && filteredBooks.length" :books="filteredBooks"
         :disabled="busy" @select="openBook" />
+      <details v-if="chosenCabinet && !selectedBook && filteredBooks.length" class="batch-box delete-manager">
+        <summary>管理笔记本<span>批量删除</span></summary>
+        <p>选择要删除的笔记本。已同步的整本笔记及其章节会从 GitHub 和本机删除；未同步的仅从本机删除。</p>
+        <div class="delete-manager-list">
+          <label v-for="book in filteredBooks" :key="book.id"><input v-model="deleteBookIds" type="checkbox" :value="book.id" :disabled="busy"><span>{{ book.title }}</span><small>{{ book.sha ? 'GitHub 和本机' : '本机' }}</small></label>
+        </div>
+        <button class="delete-button" type="button" :disabled="busy || !deleteBookIds.length" @click="deleteManaged(filteredBooks.filter(book => deleteBookIds.includes(book.id)), [])">删除所选笔记本（{{ deleteBookIds.length }}）</button>
+      </details>
       <p v-if="chosenCabinet && !selectedBook && !filteredBooks.length" class="empty-shelf">{{ query ? '没有匹配的书名。' : '书柜还是空的。新建一本笔记，或把其他柜里的笔记移到这里。' }}</p>
       <div v-if="selectedBook" class="chapter-panel">
         <aside class="reference-book-card">
@@ -893,6 +1113,14 @@ async function openSearchResult(chapter: Chapter) {
               <button class="primary-button" :disabled="busy">创建</button>
               <button type="button" class="text-button" @click="creatingChapter = false">取消</button>
             </form>
+            <details v-if="!selectedChapter && filteredChapters.length" class="batch-box delete-manager chapter-delete-manager">
+              <summary>管理章节<span>批量删除</span></summary>
+              <p>已同步章节会从 GitHub 和本机删除，未同步章节仅从本机删除；相关草稿也会删除。</p>
+              <div class="delete-manager-list">
+                <label v-for="chapter in filteredChapters" :key="chapter.id"><input v-model="deleteChapterIds" type="checkbox" :value="chapter.id" :disabled="busy"><span>{{ chapter.title }}</span><small>{{ chapter.sha ? 'GitHub 和本机' : '本机' }}</small></label>
+              </div>
+              <button class="delete-button" type="button" :disabled="busy || !deleteChapterIds.length" @click="deleteManaged([], filteredChapters.filter(chapter => deleteChapterIds.includes(chapter.id)))">删除所选章节（{{ deleteChapterIds.length }}）</button>
+            </details>
             <button v-for="(chapter, index) in filteredChapters" :key="chapter.id" class="chapter-row"
               :disabled="busy" :class="{selected: selectedChapter?.id === chapter.id}" @click="openChapter(chapter)">
               <span class="chapter-index" aria-hidden="true">{{ String(index + 1).padStart(2, '0') }}</span>
@@ -929,6 +1157,8 @@ async function openSearchResult(chapter: Chapter) {
           <button class="primary-button" :disabled="busy || !selectedKeys.length" @click="syncSelected">
             同步所选（{{ selectedKeys.length }}）
           </button>
+          <button class="delete-button" type="button" :disabled="busy || !selectedKeys.length" @click="deletePendingSelected">删除所选本机项目（{{ selectedKeys.length }}）</button>
+          <p class="delete-hint">已同步章节在此删除时仅丢弃本机草稿；要从 GitHub 删除，请在书架或章节目录的管理入口操作。</p>
         </template>
       </details>
     </section>

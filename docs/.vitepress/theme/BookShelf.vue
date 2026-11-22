@@ -33,8 +33,8 @@ function spacingFor(width: number, rotation: number) {
   return Math.ceil(Math.max(0, width * (Math.cos(radians) - 1) + coverDepth * Math.sin(radians)) + 12)
 }
 const metrics = computed(() => isMobile.value
-  ? { baseW: 54, maxW: 72, baseH: 206, maxH: 238, gap: spacingFor(54, -26), radius: 160, maxLift: 12 }
-  : { baseW: 66, maxW: 88, baseH: 254, maxH: 294, gap: spacingFor(66, -26), radius: 220, maxLift: 18 })
+  ? { baseW: 54, maxW: 72, baseH: 206, maxH: 238, gap: 14, radius: 160, maxLift: 12 }
+  : { baseW: 66, maxW: 88, baseH: 254, maxH: 294, gap: 26, radius: 220, maxLift: 18 })
 
 function setBookRef(element: unknown, index: number) {
   if (typeof HTMLElement !== 'undefined' && element instanceof HTMLElement) refs.set(index, element)
@@ -141,7 +141,7 @@ function bookStyle(index: number) {
   const tiltY = -26 - 14 * f
   return {
     '--book-width': `${width}px`,
-    '--book-spacing': `${spacingFor(width, tiltY)}px`,
+    '--book-spacing': `${m.gap + (spacingFor(width, tiltY) - m.gap) * f}px`,
     '--book-height': `${m.baseH + (m.maxH - m.baseH) * f}px`,
     '--tilt-y': `${tiltY}deg`,
     '--tilt-x': `${-6 + 2.5 * f}deg`,

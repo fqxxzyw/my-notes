@@ -1,5 +1,20 @@
-param([string]$OutputPath = (Join-Path $PSScriptRoot 'app.ico'))
+param([string]$OutputPath)
+if (-not $OutputPath) { $OutputPath = Join-Path $PSScriptRoot 'app.ico' }
 Add-Type -AssemblyName System.Drawing
+
+function New-RoundedBox([single]$x, [single]$y, [single]$width, [single]$height, [single]$radius) {
+  $path = [Drawing.Drawing2D.GraphicsPath]::new()
+  $diameter = 2 * $radius
+  $path.AddArc($x, $y, $diameter, $diameter, 180, 90)
+  $path.AddArc($x + $width - $diameter, $y, $diameter, $diameter, 270, 90)
+  $path.AddArc($x + $width - $diameter, $y + $height - $diameter, $diameter, $diameter, 0, 90)
+  $path.AddArc($x, $y + $height - $diameter, $diameter, $diameter, 90, 90)
+  $path.CloseFigure()
+  return $path
+}
+
+# Recreate the supplied HTML logo: white rounded square, 2px black outline
+# and offset shadow, with a centred brown book spine and black outline.
 $sizes = @(16, 24, 32, 48, 64, 128, 256)
 $images = @()
 foreach ($size in $sizes) {
@@ -7,31 +22,22 @@ foreach ($size in $sizes) {
   $graphics = [Drawing.Graphics]::FromImage($bitmap)
   $graphics.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
   $graphics.ScaleTransform($size / 256.0, $size / 256.0)
-  $ink = [Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(255, 18, 18, 18))
+  $ink = [Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(255, 17, 17, 17))
   $white = [Drawing.SolidBrush]::new([Drawing.Color]::White)
   $brown = [Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(255, 110, 71, 38))
-  $line = [Drawing.Pen]::new([Drawing.Color]::FromArgb(255, 18, 18, 18), 6)
-  $line.LineJoin = [Drawing.Drawing2D.LineJoin]::Round
-  $graphics.FillRectangle($white, 20, 20, 216, 216)
-  $graphics.DrawRectangle($line, 20, 20, 216, 216)
-  $front = [Drawing.PointF[]]@([Drawing.PointF]::new(66, 54),[Drawing.PointF]::new(106, 58),[Drawing.PointF]::new(106, 202),[Drawing.PointF]::new(66, 198))
-  $cover = [Drawing.PointF[]]@([Drawing.PointF]::new(106, 58),[Drawing.PointF]::new(190, 48),[Drawing.PointF]::new(190, 189),[Drawing.PointF]::new(106, 202))
-  $top = [Drawing.PointF[]]@([Drawing.PointF]::new(66, 54),[Drawing.PointF]::new(147, 45),[Drawing.PointF]::new(190, 48),[Drawing.PointF]::new(106, 58))
-  $graphics.FillPolygon($white, $top)
-  $graphics.DrawPolygon($line, $top)
-  $graphics.FillPolygon($white, $cover)
-  $graphics.DrawPolygon($line, $cover)
-  $graphics.FillPolygon($white, $front)
-  $graphics.DrawPolygon($line, $front)
-  $graphics.FillRectangle($brown, 80, 97, 12, 57)
-  $graphics.FillRectangle($ink, 78, 76, 16, 4)
-  $graphics.FillRectangle($ink, 78, 172, 16, 4)
-  $graphics.FillRectangle($ink, 124, 88, 42, 4)
-  $graphics.FillRectangle($ink, 124, 151, 38, 4)
+  $shadow = New-RoundedBox 32 32 200 200 44
+  $outline = New-RoundedBox 16 16 200 200 44
+  $inside = New-RoundedBox 31 31 170 170 29
+  $graphics.FillPath($ink, $shadow)
+  $graphics.FillPath($ink, $outline)
+  $graphics.FillPath($white, $inside)
+  $graphics.FillRectangle($ink, 94, 63, 44, 106)
+  $graphics.FillRectangle($brown, 101, 70, 30, 92)
   $memory = [IO.MemoryStream]::new()
   $bitmap.Save($memory, [Drawing.Imaging.ImageFormat]::Png)
   $images += ,$memory.ToArray()
-  $memory.Dispose(); $line.Dispose(); $brown.Dispose(); $white.Dispose(); $ink.Dispose(); $graphics.Dispose(); $bitmap.Dispose()
+  $memory.Dispose(); $inside.Dispose(); $outline.Dispose(); $shadow.Dispose()
+  $brown.Dispose(); $white.Dispose(); $ink.Dispose(); $graphics.Dispose(); $bitmap.Dispose()
 }
 $file = [IO.File]::Open($OutputPath, [IO.FileMode]::Create)
 $writer = [IO.BinaryWriter]::new($file)

@@ -16,7 +16,8 @@ type GitHubFile = { type: 'file'; name: string; path: string; sha: string; encod
 type GitHubEntry = { type: string; name: string; path: string; sha: string }
 type GitTreeEntry = { path: string; type: string; mode: string; sha: string }
 type GitTree = { tree: GitTreeEntry[]; truncated?: boolean }
-type BatchResult = { books: Notebook[]; chapters: Chapter[]; catalog?: CatalogVersion }
+type BatchResult = { books: Notebook[]; chapters: Chapter[]; catalog?: CatalogVersion; parent: string; head: string }
+export type BookDeletion = { book: Notebook; chapters: Chapter[] }
 
 const ROOT = 'notebooks'
 const API = 'https://api.github.com/repos/fqxxzyw/my-notes/contents/docs'
@@ -148,7 +149,9 @@ export function createNotebookStore() {
         cache: 'no-store'
       })
     } catch {
-      throw new NotebookStoreError('network', '无法连接 GitHub。提交结果可能未知，请保留草稿并用相同内容重试。')
+      throw new NotebookStoreError('network', method === 'GET'
+        ? '无法连接 GitHub，请检查网络后重试。'
+        : '无法连接 GitHub。提交结果可能未知，请保留草稿并用相同内容重试。')
     }
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) throw new NotebookStoreError('auth', 'GitHub 拒绝访问。请检查令牌权限或稍后重试。')
@@ -255,6 +258,7 @@ export function createNotebookStore() {
       pending.push(change)
     }
 
+    let head = parent
     if (pending.length) {
       const createdTree = await gitRequest('trees', 'POST', {
         base_tree: baseTree,
@@ -273,13 +277,127 @@ export function createNotebookStore() {
       }) as { sha?: string }
       if (!createdCommit?.sha) throw new NotebookStoreError('github', 'GitHub 未返回提交版本，请保留草稿。')
       await gitRequest('refs/heads/main', 'PATCH', { sha: createdCommit.sha, force: false })
+      head = createdCommit.sha
     }
     const desiredByPath = new Map(changes.map(change => [change.path, change.desired]))
     return {
+      parent, head,
       books: newBooks.map(book => ({ ...book, title: checkTitle(book.title), sha: desiredByPath.get(`docs/${ROOT}/${book.id}/index.md`)! })),
       chapters: chapters.map(chapter => ({ ...chapter, title: titleFrom(chapter.content, chapter.id), sha: desiredByPath.get(`docs/${ROOT}/${chapter.bookId}/${chapter.id}.md`)! })),
       ...(catalog ? { catalog: { catalog, sha: desiredByPath.get('docs/cabinets.json')! } } : {})
     }
+  }
+
+  /** Delete only the exact files reviewed by the caller, in a single Git commit. */
+  async function deleteBatch(books: BookDeletion[], chapters: Chapter[]): Promise<{ parent: string; head: string; catalog?: CatalogVersion }> {
+    if (!token) throw new NotebookStoreError('auth', '请先连接有仓库内容写入权限的 GitHub 令牌。')
+    if (!books.length && !chapters.length) throw new NotebookStoreError('invalid', '请先选择要删除的笔记本或章节。')
+
+    const expected = new Map<string, string>()
+    const selectedBooks = new Map<string, Map<string, string>>()
+    const requireSha = (sha: string) => {
+      if (typeof sha !== 'string' || !/^[a-f0-9]{40}$/.test(sha)) throw new NotebookStoreError('invalid', '缺少有效的远端版本号，请刷新后重试。')
+      return sha
+    }
+    const addExpected = (path: string, sha: string) => {
+      if (expected.has(path)) throw new NotebookStoreError('invalid', '删除列表包含重复条目。')
+      expected.set(path, requireSha(sha))
+    }
+    for (const item of books) {
+      const bookId = checkId(item.book.id)
+      if (selectedBooks.has(bookId) || !Array.isArray(item.chapters)) throw new NotebookStoreError('invalid', '删除列表包含重复或无效的笔记本。')
+      const directory = `docs/${ROOT}/${bookId}`
+      const files = new Map<string, string>()
+      files.set('index.md', requireSha(item.book.sha))
+      for (const chapter of item.chapters) {
+        if (chapter.bookId !== bookId) throw new NotebookStoreError('invalid', '章节不属于所选笔记本。')
+        const name = `${checkChapterId(chapter.id)}.md`
+        if (files.has(name)) throw new NotebookStoreError('invalid', '删除列表包含重复章节。')
+        files.set(name, requireSha(chapter.sha))
+      }
+      selectedBooks.set(bookId, files)
+      for (const [name, sha] of files) addExpected(`${directory}/${name}`, sha)
+    }
+    for (const chapter of chapters) {
+      const bookId = checkId(chapter.bookId)
+      const chapterId = checkChapterId(chapter.id)
+      if (selectedBooks.has(bookId)) throw new NotebookStoreError('invalid', '整本笔记和其中章节不能重复选择。')
+      addExpected(`docs/${ROOT}/${bookId}/${chapterId}.md`, chapter.sha)
+    }
+
+    const ref = await gitRequest('ref/heads/main') as { object?: { sha?: string } }
+    const parent = requireSha(ref?.object?.sha || '')
+    const commit = await gitRequest(`commits/${encodeURIComponent(parent)}`) as { tree?: { sha?: string } }
+    const baseTree = requireSha(commit?.tree?.sha || '')
+    const cache = new Map<string, Promise<GitTree>>()
+    async function tree(sha: string): Promise<GitTree> {
+      if (!cache.has(sha)) cache.set(sha, (async () => {
+        const value = await gitRequest(`trees/${encodeURIComponent(sha)}`) as GitTree
+        if (!Array.isArray(value?.tree) || value.truncated) throw new NotebookStoreError('github', '无法完整读取远端目录，请保留本地内容。')
+        return value
+      })())
+      return cache.get(sha)!
+    }
+    async function findPath(path: string): Promise<GitTreeEntry | null> {
+      const parts = path.split('/')
+      let current = baseTree
+      for (let i = 0; i < parts.length; i++) {
+        const entry = (await tree(current)).tree.find(item => item.path === parts[i])
+        if (!entry) return null
+        if (i === parts.length - 1) return entry
+        if (entry.type !== 'tree' || !entry.sha) throw new NotebookStoreError('conflict', '远端目录结构已变化，请刷新后重试。')
+        current = entry.sha
+      }
+      return null
+    }
+    const isRegularFile = (entry: GitTreeEntry) => entry.type === 'blob' && ['100644', '100755'].includes(entry.mode)
+    for (const [bookId, files] of selectedBooks) {
+      const dir = await findPath(`docs/${ROOT}/${bookId}`)
+      if (!dir || dir.type !== 'tree' || !dir.sha) throw new NotebookStoreError('conflict', `远端笔记本已发生变化：${bookId}。`)
+      const entries = (await tree(dir.sha)).tree
+      // Never remove an unseen attachment, nested directory or newly added chapter.
+      if (entries.length !== files.size || entries.some(entry => !isRegularFile(entry) || !files.has(entry.path) || files.get(entry.path) !== entry.sha)) {
+        throw new NotebookStoreError('conflict', `远端笔记本内容已变化或含有未识别文件：${bookId}。请刷新并检查后重试。`)
+      }
+    }
+    const deletions: Array<{ path: string; mode: string; type: 'blob'; sha: null }> = []
+    for (const [path, sha] of expected) {
+      const entry = await findPath(path)
+      if (!entry || !isRegularFile(entry) || entry.sha !== sha) throw new NotebookStoreError('conflict', `远端文件已变化：${path}。请刷新并检查后重试。`)
+      deletions.push({ path, mode: entry.mode, type: 'blob', sha: null })
+    }
+
+    let catalog: CabinetCatalog | undefined
+    let catalogSha: string | undefined
+    let catalogChange: { path: string; mode: string; type: 'blob'; content: string } | undefined
+    if (selectedBooks.size) {
+      const entry = await findPath('docs/cabinets.json')
+      if (entry) {
+        if (!isRegularFile(entry)) throw new NotebookStoreError('conflict', '远端书柜目录不是普通文件，请检查后重试。')
+        const blob = await gitRequest(`blobs/${encodeURIComponent(entry.sha)}`) as GitHubFile
+        catalog = checkedCatalog(decode(blob))
+        let changed = false
+        for (const bookId of selectedBooks.keys()) {
+          if (Object.prototype.hasOwnProperty.call(catalog.assignments, bookId)) { delete catalog.assignments[bookId]; changed = true }
+        }
+        if (changed) {
+          const content = catalogText(catalog)
+          catalogSha = await blobSha(content)
+          catalogChange = { path: 'docs/cabinets.json', mode: entry.mode, type: 'blob', content }
+        }
+      }
+    }
+    const createdTree = await gitRequest('trees', 'POST', {
+      base_tree: baseTree,
+      tree: catalogChange ? [...deletions, catalogChange] : deletions
+    }) as { sha?: string }
+    if (!createdTree?.sha) throw new NotebookStoreError('github', 'GitHub 未返回文件树版本；请保留本地内容。')
+    const createdCommit = await gitRequest('commits', 'POST', {
+      message: `Delete ${books.length} notebook(s), ${chapters.length} chapter(s)`, tree: createdTree.sha, parents: [parent]
+    }) as { sha?: string }
+    if (!createdCommit?.sha) throw new NotebookStoreError('github', 'GitHub 未返回提交版本；请保留本地内容。')
+    await gitRequest('refs/heads/main', 'PATCH', { sha: createdCommit.sha, force: false })
+    return { parent, head: createdCommit.sha, ...(catalog && catalogSha ? { catalog: { catalog, sha: catalogSha } } : {}) }
   }
 
   async function file(path: string): Promise<GitHubFile> {
@@ -315,6 +433,7 @@ export function createNotebookStore() {
       return ref.object.sha
     },
     syncBatch,
+    deleteBatch,
     async readCatalog(snapshot = true): Promise<CatalogVersion> {
       if (snapshot) {
         const raw = snapshotCatalogFile['../../cabinets.json']

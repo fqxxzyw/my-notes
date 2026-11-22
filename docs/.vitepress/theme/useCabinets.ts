@@ -145,5 +145,13 @@ export function useCabinets() {
     }
   }
   function fail() { inFlight = null }
-  return { cabinets, pending, journal, assigned, create, move, restore, latest, prepare, acknowledge, fail }
+  function discardMoves(bookIds: string[]) {
+    if (inFlight) throw new Error('书柜同步正在进行，请稍后再删除。')
+    const previous = journal.value.moves
+    const next = { ...previous }
+    for (const id of bookIds) delete next[id]
+    journal.value.moves = next
+    try { persist() } catch (error) { journal.value.moves = previous; throw error }
+  }
+  return { cabinets, pending, journal, assigned, create, move, restore, latest, prepare, acknowledge, fail, discardMoves }
 }

@@ -214,6 +214,13 @@ function openCabinet(id = '') {
   busy.value = false
   clearMessages()
 }
+function backToChapters() {
+  if (!saveDraft()) return
+  selectedChapter.value = null
+  view.value = 'read'
+  clearMessages()
+  void nextTick(() => document.getElementById('bookshelf')?.scrollIntoView({ block: 'start' }))
+}
 function addCabinet() {
   clearMessages()
   try {
@@ -593,7 +600,7 @@ async function openSearchResult(chapter: Chapter) {
 
 <template>
   <div class="desk">
-    <section class="intro" aria-labelledby="desk-title">
+    <section v-show="!selectedChapter || view !== 'edit'" class="intro" aria-labelledby="desk-title">
       <div class="intro-copy">
         <nav v-if="chosenCabinet" class="crumbs" aria-label="当前位置">
           <button @click="openCabinet()">全部书柜</button>
@@ -610,7 +617,7 @@ async function openSearchResult(chapter: Chapter) {
       </div>
     </section>
 
-    <section id="bookshelf" class="library" aria-label="笔记本与章节">
+    <section v-show="!selectedChapter || view !== 'edit'" id="bookshelf" class="library" aria-label="笔记本与章节">
       <div class="tools">
         <label class="search">
           <span class="lens" aria-hidden="true"></span><span class="sr-only">搜索笔记</span>
@@ -719,6 +726,7 @@ async function openSearchResult(chapter: Chapter) {
     <section v-if="selectedChapter" class="writing" aria-labelledby="writing-title">
       <div class="writing-top">
         <div>
+          <button v-if="view === 'edit'" class="back-to-chapters" type="button" @click="backToChapters">← 返回章节目录</button>
           <p>{{ selectedBook?.title }}</p><h2 id="writing-title">{{ selectedChapter.title }}</h2>
           <p>{{ !selectedChapter.sha ? '本地章节，尚未同步' : dirty ? '本机有未同步的修改' : 'GitHub 已收录此版本' }}</p>
         </div>

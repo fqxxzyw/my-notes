@@ -121,6 +121,16 @@
 #writing-title, #connection { scroll-margin-top: 82px; }
 .feedback a, .connection p a { color: var(--red); text-decoration: underline; }
 .writing { padding: 24px 0 36px; scroll-margin-top: 65px; }
+.back-to-chapters {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 0;
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.back-to-chapters:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 4px; }
 .writing-top { align-items: end; margin-bottom: 14px; }
 .writing h2 { font-size: 27px; overflow-wrap: anywhere; }
 .writing-top p { font-size: 13px; color: var(--muted); line-height: 1.6; }
@@ -128,11 +138,7 @@
 .view-actions button { padding: 8px 14px; }
 .view-actions button.chosen { background: var(--button); color: white; }
 .paper { border: 2px solid #111; border-radius: 8px; min-height: 240px; padding: clamp(18px,3vw,32px); }
-.editor textarea {
-  width: 100%; min-height: 320px; resize: vertical; padding: 16px 4px;
-  margin: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
-  color: var(--ink); font: 15px/1.85 ui-monospace, monospace;
-}
+.paper.editor { padding: clamp(16px, 2.5vw, 26px); border: 1px solid #dedede; border-radius: 4px; }
 .editor label small, .editor-footer, .privacy { color: var(--muted); font-size: 12px; }
 .remote-box { background: var(--vp-c-bg-soft); margin-top: 14px; padding: 18px; }
 .remote-box pre { max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }

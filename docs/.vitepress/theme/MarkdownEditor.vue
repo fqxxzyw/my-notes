@@ -5,7 +5,7 @@ import ChapterMarkdown from './ChapterMarkdown.vue'
 const props = defineProps<{ modelValue: string; readonly?: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 const editor = ref<HTMLTextAreaElement | null>(null)
-const mode = ref<'edit' | 'split' | 'preview'>('split')
+const mode = ref<'edit' | 'split' | 'preview'>('edit')
 
 type Action = 'h1' | 'h2' | 'h3' | 'bold' | 'italic' | 'inline-code' | 'code-block' | 'link' | 'unordered' | 'ordered' | 'quote'
 const tools: { action: Action; label: string; description: string; shortcut?: string }[] = [

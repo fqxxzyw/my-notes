@@ -37,7 +37,7 @@ function measurePointer() {
     if (!rect) return 0
     const distance = Math.abs(pointerX - (rect.left + rect.width / 2))
     // A smooth falloff gives nearby volumes a smaller, continuous response.
-    return Math.exp(-0.5 * (distance / 76) ** 2)
+    return Math.exp(-0.5 * (distance / 68) ** 2)
   })
   let nearest = -1
   let best = 0
@@ -65,7 +65,7 @@ function leave() {
 function bookStyle(index: number) {
   const scale = scales.value[index] || 1
   return {
-    '--book-width': `${125 * scale}px`,
+    '--book-width': `${104 * scale}px`,
     '--scale': scale,
     '--lift': `${(scale - 1) * -43}px`,
     '--stack-order': Math.round(scale * 100)

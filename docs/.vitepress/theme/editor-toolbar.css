@@ -21,29 +21,32 @@
 .markdown-toolbar button:focus-visible { outline: 2px solid var(--vp-c-brand-1, #344e64); outline-offset: 2px; }
 .markdown-toolbar button:disabled { opacity: .55; cursor: default; }
 .markdown-shortcuts { margin: 3px 0 9px; color: var(--muted, #59616a); font-size: 12px; line-height: 1.6; }
-.editor-panes { display: grid; grid-template-columns: minmax(0, 1fr); border: 1px solid var(--line, #dce0e4); border-radius: 5px; }
+.editor-panes { display: grid; grid-template-columns: minmax(0, 1fr); border-top: 1px solid #e6e6e6; }
 .editor-panes--split { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-.editor-pane, .editor-preview { min-width: 0; padding: 12px 16px; }
-.editor-panes--split .editor-preview { border-left: 1px solid var(--line, #dce0e4); }
+.editor-pane, .editor-preview { min-width: 0; padding: 24px clamp(16px, 3vw, 44px); }
+.editor-panes--split .editor-pane, .editor-panes--split .editor-preview { padding-inline: 22px; }
+.editor-panes--split .editor-preview { border-left: 1px solid #e6e6e6; }
 .pane-heading { display: block; margin: 0; color: var(--muted, #59616a); font-size: 12px; font-weight: 600; }
 .editor-preview { overflow-wrap: anywhere; }
 .preview-empty { color: var(--muted, #59616a); font-size: 13px; }
 .markdown-editor textarea {
   display: block;
   width: 100%;
-  min-height: 400px;
+  min-height: max(65vh, 600px);
   resize: vertical;
-  padding: 12px 0;
+  padding: 14px 0 48px;
   margin: 0;
   border: 0;
   background: transparent;
   color: var(--ink, #202328);
-  font: 15px/1.85 ui-monospace, monospace;
+  font: 16px/1.9 ui-monospace, "Microsoft YaHei", monospace;
+  outline: none;
 }
 @media (max-width: 600px) {
   .markdown-toolbar { gap: 5px; }
   .markdown-toolbar button { padding: 6px 8px; }
   .editor-panes--split { grid-template-columns: minmax(0, 1fr); }
-  .editor-panes--split .editor-preview { border-left: 0; border-top: 1px solid var(--line, #dce0e4); }
-  .markdown-editor textarea { min-height: 280px; }
+  .editor-panes--split .editor-preview { border-left: 0; border-top: 1px solid #e6e6e6; }
+  .editor-pane, .editor-preview, .editor-panes--split .editor-pane, .editor-panes--split .editor-preview { padding: 18px 8px; }
+  .markdown-editor textarea { min-height: max(60vh, 420px); }
 }

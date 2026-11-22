@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { createNotebookStore, type Notebook, type Chapter } from './notebookStore'
 import ChapterMarkdown from './ChapterMarkdown.vue'
+import MarkdownEditor from './MarkdownEditor.vue'
 import BookShelf from './BookShelf.vue'
 import CabinetGallery from './CabinetGallery.vue'
 import { useCabinets } from './useCabinets'
@@ -76,6 +77,38 @@ const batchItems = computed(() => {
   for (const [key, draft] of Object.entries(drafts.value)) byKey.set(key, { ...draft.base, content: draft.content })
   return Array.from(byKey, ([key, chapter]) => ({ key, bookId: chapter.bookId, bookTitle: books.value.find(book => book.id === chapter.bookId)?.title || chapter.bookId, title: chapter.title, chapter }))
 })
+const batchGroups = computed(() => {
+  const groups = new Map<string, { id: string; title: string; isNew: boolean; items: typeof batchItems.value }>()
+  for (const book of localBooks.value) {
+    if (!book.sha) groups.set(book.id, { id: book.id, title: book.title, isNew: true, items: [] })
+  }
+  for (const item of batchItems.value) {
+    let group = groups.get(item.bookId)
+    if (!group) {
+      group = { id: item.bookId, title: item.bookTitle, isNew: false, items: [] }
+      groups.set(item.bookId, group)
+    }
+    group.items.push(item)
+  }
+  return Array.from(groups.values())
+})
+const pendingBatchCount = computed(() => batchGroups.value.reduce((count, group) => count + group.items.length + Number(group.isNew), 0))
+function batchGroupKeys(group: typeof batchGroups.value[number]): string[] {
+  return [...(group.isNew ? [`book:${group.id}`] : []), ...group.items.map(item => item.key)]
+}
+function isBatchGroupSelected(group: typeof batchGroups.value[number]): boolean {
+  const keys = batchGroupKeys(group)
+  return keys.length > 0 && keys.every(key => selectedKeys.value.includes(key))
+}
+function toggleBatchGroup(group: typeof batchGroups.value[number], event: Event) {
+  const keys = batchGroupKeys(group)
+  const selected = new Set(selectedKeys.value)
+  for (const key of keys) {
+    if ((event.target as HTMLInputElement).checked) selected.add(key)
+    else selected.delete(key)
+  }
+  selectedKeys.value = [...selected]
+}
 async function getChapters(book: Notebook): Promise<Chapter[]> {
   const useSnapshot = snapshot.value
   const key = `${useSnapshot ? 'snapshot' : 'remote'}:${book.id}`
@@ -275,7 +308,7 @@ async function connect() {
   store.setToken(tokenInput.value)
   tokenInput.value = ''
   const success = await run(async () => { await store.listNotebooks() })
-  if (success) { connected.value = true; if (isHosted.value) autoSave.value = true; notice.value = '已连接 GitHub；令牌仅保存在当前页面内存中。已有本地草稿需手动选择同步。' }
+  if (success) { connected.value = true; if (isHosted.value) autoSave.value = true; notice.value = '令牌已设置，写入权限将在同步时验证。令牌仅保存在当前页面内存中，已有本地草稿需手动选择同步。' }
   else store.clearToken()
 }
 function disconnect() {
@@ -429,11 +462,14 @@ async function performBatch(keys: string[], bookIds: string[], cabinetIds: strin
 async function syncSelected() {
   if (!connected.value) { error.value = '请先连接 GitHub，再同步勾选的章节。'; goToConnection(); return }
   if (!saveDraft()) return
-  const keys = [...selectedKeys.value]
-  if (!keys.some(key => batchItems.value.some(item => item.key === key))) { error.value = '请先勾选要同步的章节。'; return }
+  const validChapterKeys = new Set(batchItems.value.map(item => item.key))
+  const validBookIds = new Set(localBooks.value.filter(book => !book.sha).map(book => book.id))
+  const keys = selectedKeys.value.filter(key => validChapterKeys.has(key))
+  const bookIds = selectedKeys.value.filter(key => key.startsWith('book:') && validBookIds.has(key.slice(5))).map(key => key.slice(5))
+  if (!keys.length && !bookIds.length) { error.value = '请先勾选要同步的笔记本或章节。'; return }
   clearMessages()
-  const success = await run(() => performBatch(keys, []))
-  if (success) { selectedKeys.value = selectedKeys.value.filter(key => !keys.includes(key)); notice.value = '所选章节已同步到 GitHub。' }
+  const success = await run(() => performBatch(keys, bookIds))
+  if (success) { const sent = new Set([...keys, ...bookIds.map(id => `book:${id}`)]); selectedKeys.value = selectedKeys.value.filter(key => !sent.has(key)); notice.value = '所选笔记已同步到 GitHub。' }
   if (autoSave.value && (autoKeys.size || autoBooks.size || autoCabinets.size || autoMoves.size)) scheduleAuto()
 }
 function scheduleAuto() {
@@ -569,7 +605,7 @@ async function openSearchResult(chapter: Chapter) {
         </p>
         <a href="#connection" class="sync-link" @click="revealConnection">
           <span class="sync-dot" :class="{ online: connected }" aria-hidden="true"></span>
-          {{ connected ? (isHosted ? autoStatus : '已连接 GitHub') : '本机草稿 · 连接 GitHub' }}
+          {{ connected ? (isHosted ? autoStatus : '令牌已设置') : '本机草稿 · 连接 GitHub' }}
         </a>
       </div>
     </section>
@@ -649,16 +685,29 @@ async function openSearchResult(chapter: Chapter) {
           <p v-else class="chapter-placeholder">选一本笔记，在这里查看目录。</p>
       </div>
       <button v-if="catalog.pending.value" class="text-button sync-catalog" :disabled="busy" @click="syncCatalog">同步书柜整理</button>
-      <details v-if="!isHosted" class="batch-box">
-        <summary>批量同步<span>{{ batchItems.length }} 项待同步</span></summary>
-        <p v-if="!batchItems.length">目前没有待提交的章节。</p>
+      <details class="batch-box">
+        <summary>批量同步<span>{{ pendingBatchCount }} 项待同步</span></summary>
+        <p v-if="!batchGroups.length">目前没有待提交的笔记本或章节。</p>
         <template v-else>
-          <p>勾选要公开的章节，一次提交到 GitHub。新笔记本会随章节一起创建。</p>
+          <p>勾选笔记本或章节，一次提交到 GitHub。选中整本会包括其中全部待同步章节。新笔记本会随所选章节一起创建。</p>
           <div class="batch-list">
-            <label v-for="item in batchItems" :key="item.key">
-              <input v-model="selectedKeys" type="checkbox" :disabled="busy" :value="item.key">
-              <span>{{ item.bookTitle }} ／ {{ item.title }}</span>
-            </label>
+            <fieldset v-for="group in batchGroups" :key="group.id" class="batch-group">
+              <legend class="sr-only">{{ group.title }}</legend>
+              <label class="batch-group-heading">
+                <input type="checkbox" :checked="isBatchGroupSelected(group)" :disabled="busy" @change="toggleBatchGroup(group, $event)">
+                <strong>{{ group.title }}</strong><small>全选本册</small>
+              </label>
+              <div class="batch-children">
+                <label v-if="group.isNew">
+                  <input v-model="selectedKeys" type="checkbox" :disabled="busy" :value="`book:${group.id}`">
+                  <span>笔记本本身（新建）</span>
+                </label>
+                <label v-for="item in group.items" :key="item.key">
+                  <input v-model="selectedKeys" type="checkbox" :disabled="busy" :value="item.key">
+                  <span>{{ item.title }}</span>
+                </label>
+              </div>
+            </fieldset>
           </div>
           <button class="primary-button" :disabled="busy || !selectedKeys.length" @click="syncSelected">
             同步所选（{{ selectedKeys.length }}）
@@ -682,8 +731,7 @@ async function openSearchResult(chapter: Chapter) {
         <ChapterMarkdown :source="content.replace(/^# [^\r\n]+(?:\r?\n|$)/, '')" />
       </div>
       <div v-else class="paper editor">
-        <label for="chapter-content">Markdown 正文 <small>· 自动保存本机草稿</small></label>
-        <textarea id="chapter-content" v-model="content" :readonly="busy" spellcheck="false"></textarea>
+        <MarkdownEditor v-model="content" :readonly="busy" />
         <div class="editor-footer">
           <span>{{ content.length }} 字符<span v-if="isHosted && connected" aria-live="polite"> · {{ autoStatus }}</span></span>
           <button class="primary-button" :disabled="busy || (!dirty && !!selectedChapter.sha)" @click="sync">同步到 GitHub ↗</button>
@@ -719,7 +767,7 @@ async function openSearchResult(chapter: Chapter) {
           </div>
         </form>
         <template v-else>
-          <p class="connected">已连接 GitHub</p>
+          <p class="connected">令牌已设置，写入权限将在同步时验证。</p>
           <label v-if="isHosted" class="auto-setting">
             <input v-model="autoSave" type="checkbox"> 自动保存到 GitHub
           </label>
@@ -734,3 +782,4 @@ async function openSearchResult(chapter: Chapter) {
 </template>
 
 <style scoped src="./notebook.css"></style>
+<style scoped src="./batch.css"></style>

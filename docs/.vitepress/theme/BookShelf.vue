@@ -8,6 +8,8 @@ const emit = defineEmits<{ select: [book: Notebook] }>()
 const refs = new Map<number, HTMLElement>()
 const weights = ref<number[]>([])
 const focused = ref<number | null>(null)
+const hovered = ref<number | null>(null)
+const lastActive = ref<number | null>(null)
 const pointerInside = ref(false)
 const reducedMotion = ref(false)
 let motionQuery: MediaQueryList | undefined
@@ -21,6 +23,7 @@ const scales = computed(() => props.books.map((book, index) => {
   const selectedWeight = book.id === props.selectedId ? 0.18 : 0
   return 1 + Math.max(pointerWeight, focusWeight, selectedWeight) * 0.3
 }))
+const activeBook = computed(() => props.books[focused.value ?? hovered.value ?? lastActive.value ?? -1] || null)
 
 function setBookRef(element: unknown, index: number) {
   if (typeof HTMLElement !== 'undefined' && element instanceof HTMLElement) refs.set(index, element)
@@ -36,6 +39,13 @@ function measurePointer() {
     // A smooth falloff gives nearby volumes a smaller, continuous response.
     return Math.exp(-0.5 * (distance / 76) ** 2)
   })
+  let nearest = -1
+  let best = 0
+  weights.value.forEach((weight, index) => {
+    if (weight > best) { best = weight; nearest = index }
+  })
+  hovered.value = best > 0.35 ? nearest : null
+  if (hovered.value !== null) lastActive.value = hovered.value
 }
 
 function move(event: PointerEvent) {
@@ -47,6 +57,7 @@ function move(event: PointerEvent) {
 
 function leave() {
   pointerInside.value = false
+  hovered.value = null
   if (frame) cancelAnimationFrame(frame)
   frame = 0
 }
@@ -54,7 +65,7 @@ function leave() {
 function bookStyle(index: number) {
   const scale = scales.value[index] || 1
   return {
-    '--book-width': `${65 * scale}px`,
+    '--book-width': `${125 * scale}px`,
     '--scale': scale,
     '--lift': `${(scale - 1) * -43}px`,
     '--stack-order': Math.round(scale * 100)
@@ -75,7 +86,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="bookshelf" aria-label="笔记本书架">
-    <div class="bookshelf__back" aria-hidden="true"></div>
+    <div class="bookshelf__stage">
     <div class="bookshelf__scroll" @pointermove="move" @pointerleave="leave" @scroll="leave">
       <div v-if="books.length" class="bookshelf__row">
         <button
@@ -90,17 +101,22 @@ onBeforeUnmount(() => {
           :aria-pressed="book.id === selectedId"
           :title="book.title"
           type="button"
-          @focus="focused = index"
+          @focus="focused = index; lastActive = index"
           @blur="focused = null"
           @click="emit('select', book)"
         >
           <span class="volume__body" aria-hidden="true">
-            <span class="volume__pages"></span>
             <span class="volume__top"></span>
             <span class="volume__spine">
-              <span class="volume__headband"></span>
+              <span class="volume__number">{{ String(index + 1).padStart(2, '0') }}</span>
               <span class="volume__title">{{ book.title }}</span>
               <span class="volume__tailband"></span>
+            </span>
+            <span class="volume__cover">
+              <span class="volume__cover-frame"></span>
+              <span class="volume__cover-label">NOTEBOOK</span>
+              <span class="volume__cover-title">{{ book.title }}</span>
+              <span class="volume__cover-rule"></span>
             </span>
           </span>
         </button>
@@ -108,6 +124,15 @@ onBeforeUnmount(() => {
       <div v-else class="bookshelf__empty">创建第一本笔记本，开始记录。</div>
     </div>
     <div class="bookshelf__board" aria-hidden="true"></div>
+    </div>
+    <div class="bookshelf__info">
+      <div class="bookshelf__info-copy">
+        <span class="bookshelf__info-label">当前笔记本</span>
+        <strong v-if="activeBook">{{ activeBook.title }}</strong>
+        <span v-else>移动鼠标或用键盘选择书本</span>
+      </div>
+      <button v-if="activeBook" class="bookshelf__open" type="button" :disabled="disabled" @click="emit('select', activeBook)">打开目录 →</button>
+    </div>
   </section>
 </template>
 

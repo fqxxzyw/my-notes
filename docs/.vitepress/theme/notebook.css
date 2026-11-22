@@ -1,11 +1,11 @@
 .desk {
-  --ink: var(--vp-c-text-1);
-  --muted: var(--vp-c-text-2);
-  --line: var(--vp-c-divider);
-  --red: var(--vp-c-brand-1);
+  --ink: #111;
+  --muted: #555;
+  --line: #111;
+  --red: #6e4726;
   --panel: #ffffff;
   --shelf: #f0f2f4;
-  --button: #272e37;
+  --button: #111;
   max-width: 1192px;
   margin: 0 auto;
   padding: 0 clamp(20px, 4vw, 56px) 48px;
@@ -34,12 +34,12 @@
 .move-book select { max-width: 100%; width: fit-content; border: 1px solid var(--line); border-radius: 4px; background: white; padding: 5px 8px; color: var(--ink); }
 .sync-catalog { margin-top: 12px; }
 .intro h1 {
-  font-family: var(--vp-font-family-base);
-  font-size: clamp(38px, 4.5vw, 60px);
+  font-family: var(--paper-serif);
+  font-size: clamp(28px, 3vw, 36px);
   line-height: 1.15;
-  letter-spacing: -.045em;
-  font-weight: 600;
-  margin: 0 0 14px;
+  letter-spacing: 0;
+  font-weight: 700;
+  margin: 0 0 8px;
 }
 .intro-text { grid-column: 1; color: var(--muted); line-height: 1.8; font-size: 15px; }
 .sync-link { grid-column: 2; grid-row: 1 / span 3; align-self: end; display: inline-flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; margin-top: 10px; }
@@ -57,7 +57,7 @@
 .tools { flex-wrap: wrap; margin: 14px 0 16px; }
 .search {
   display: flex; align-items: center; gap: 9px;
-  flex: 1; max-width: 540px; border-bottom: 1px solid var(--line);
+  flex: 1; max-width: 400px; border: 1.5px solid #111; border-radius: 7px; padding: 0 10px;
 }
 .search span:first-child { font: 24px/1 Georgia,serif; color: var(--red); }
 .search input, .inline-form input, .token-row input {
@@ -68,9 +68,9 @@
   font-size: 14px; line-height: 1.5; font-weight: 500; white-space: nowrap;
 }
 .desk .primary-button {
-  color: #ffffff; background: var(--button); padding: 9px 17px; border-radius: 3px;
+  color: #fff; background: #111; padding: 9px 17px; border: 1.5px solid #111; border-radius: 7px; font-weight: 600;
 }
-.desk .primary-button:hover:enabled { background: #475562; }
+.desk .primary-button:hover:enabled { background: #fff; color: #111; box-shadow: 3px 3px #111; transform: translate(-1px,-1px); }
 .desk .text-button { color: var(--red); padding: 8px 3px; }
 .text-button:hover:enabled { text-decoration: underline; text-underline-offset: 4px; }
 .tools .text-button { margin-left: auto; }
@@ -78,7 +78,10 @@
   display: grid;
   grid-template-columns: minmax(140px,.75fr) minmax(0,1.8fr);
   gap: 15px 32px;
-  padding: clamp(18px, 2.2vw, 30px) 0 10px;
+  padding: clamp(18px, 2.2vw, 30px);
+  border: 2px solid #111;
+  border-radius: 10px;
+  box-shadow: 4px 4px #111;
 }
 .panel-heading { display: flex; gap: 14px; align-items: center; color: var(--muted); font-size: 12px; }
 .paper { background: var(--panel); }
@@ -106,7 +109,7 @@
 .feedback { padding: 9px 14px; margin: 10px 0; background: var(--vp-c-bg-soft); border-left: 2px solid var(--button); }
 .feedback.error { color: var(--red); border-color: var(--red); }
 .source-note { margin-top: 9px; }
-.batch-box { margin-top: 14px; padding: 0 15px; border: 1px solid var(--line); border-radius: 4px; }
+.batch-box { margin-top: 20px; padding: 0 15px; border: 2px solid #111; border-radius: 8px; }
 .batch-box summary { cursor: pointer; padding: 12px 0; font-weight: 600; }
 .batch-box summary span { color: var(--muted); font-size: 12px; font-weight: 400; margin-left: 14px; }
 .batch-box p, .search-results p { font-size: 13px; color: var(--muted); line-height: 1.7; }
@@ -124,7 +127,7 @@
 .view-actions { display: flex; border: 1px solid var(--line); border-radius: 3px; }
 .view-actions button { padding: 8px 14px; }
 .view-actions button.chosen { background: var(--button); color: white; }
-.paper { border: 1px solid var(--line); min-height: 240px; padding: clamp(18px,4vw,54px); }
+.paper { border: 2px solid #111; border-radius: 8px; min-height: 240px; padding: clamp(18px,3vw,32px); }
 .editor textarea {
   width: 100%; min-height: 320px; resize: vertical; padding: 16px 4px;
   margin: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
@@ -149,7 +152,7 @@
 @media (max-width: 700px) {
   .desk { padding: 0 17px 25px; }
   .intro { min-height: 0; }
-  .intro h1 { font-size: clamp(34px, 7.6vw, 48px); margin: 0 0 8px; }
+  .intro h1 { font-size: 28px; margin: 0 0 8px; }
   .intro-copy { padding: 20px 0 14px; }
   .intro-text { font-size: 13px; max-width: 26em; }
   .library { padding: 0 0 12px; }

@@ -14,6 +14,11 @@ const hovered = ref<number | null>(null)
 const lastActive = ref<number | null>(null)
 const reducedMotion = ref(false)
 const isMobile = ref(false)
+const dragging = ref(false)
+let dragPointer: number | null = null
+let dragStartX = 0
+let dragStartScroll = 0
+let suppressDragClick = false
 let motionQuery: MediaQueryList | undefined
 let sizeQuery: MediaQueryList | undefined
 let frame = 0
@@ -79,10 +84,48 @@ function setTargets(center: number, preferred: number | null = null) {
 function move(event: PointerEvent) {
   const element = scroll.value
   if (!element || event.pointerType === 'touch' || props.disabled) return
+  if (event.pointerId === dragPointer && !(event.buttons & 1)) endDrag(event)
+  if (event.pointerId === dragPointer) {
+    const offset = event.clientX - dragStartX
+    if (!dragging.value && Math.abs(offset) > 6) {
+      dragging.value = true
+      suppressDragClick = true
+      element.setPointerCapture(event.pointerId)
+      leave()
+    }
+    if (dragging.value) {
+      event.preventDefault()
+      element.scrollLeft = dragStartScroll - offset
+      return
+    }
+  }
   const target = event.target instanceof Element ? event.target.closest('.volume') : null
   let preferred: number | null = null
   refs.forEach((item, index) => { if (item === target) preferred = index })
   setTargets(event.clientX, preferred)
+}
+
+function startDrag(event: PointerEvent) {
+  const element = scroll.value
+  suppressDragClick = false
+  if (!element || event.pointerType === 'touch' || event.button !== 0 ||
+    element.scrollWidth <= element.clientWidth + 1) return
+  dragPointer = event.pointerId
+  dragStartX = event.clientX
+  dragStartScroll = element.scrollLeft
+}
+
+function endDrag(event: PointerEvent) {
+  if (event.pointerId !== dragPointer) return
+  dragPointer = null
+  dragging.value = false
+}
+
+function guardDragClick(event: MouseEvent) {
+  if (!suppressDragClick) return
+  suppressDragClick = false
+  event.preventDefault()
+  event.stopPropagation()
 }
 
 function leave() {
@@ -153,7 +196,10 @@ onBeforeUnmount(() => {
       <span>3D 书脊 · 笔记本</span>
       <span>移动鼠标放大 · 点击打开</span>
     </div>
-    <div ref="scroll" class="bookshelf__scroll" @pointermove="move" @pointerleave="leave" @scroll="leave">
+    <div ref="scroll" class="bookshelf__scroll" :class="{ 'is-dragging': dragging }"
+      @pointerdown="startDrag" @pointermove="move" @pointerup="endDrag" @pointercancel="endDrag"
+      @lostpointercapture="endDrag" @pointerleave="leave" @scroll="leave" @click.capture="guardDragClick"
+      @dragstart.prevent>
       <div v-if="books.length" class="bookshelf__row" :style="{ '--rest-spacing': `${metrics.gap}px` }">
         <button
           v-for="(book, index) in books"

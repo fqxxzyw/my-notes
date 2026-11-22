@@ -48,7 +48,7 @@ const emit = defineEmits<{ select: [id: string]; create: [] }>()
 .cabinet {
   display: flex; flex-direction: column; gap: 24px; justify-content: space-between;
   min-width: 0; min-height: 184px; padding: 24px; background: #fff;
-  border: 2px solid #111; border-radius: 10px; color: #111; text-align: left;
+  border: 2px solid #111; border-radius: 7px; color: #111; text-align: left;
   transition: transform .16s ease, box-shadow .16s ease;
 }
 .cabinet:hover, .cabinet:focus-visible { transform: translate(-2px,-2px); box-shadow: 4px 4px #111; }
@@ -57,12 +57,12 @@ const emit = defineEmits<{ select: [id: string]; create: [] }>()
 .cabinet__top { align-items: stretch; }
 .cabinet__information { flex: 0 1 32%; min-width: 0; display: grid; align-content: start; gap: 10px; }
 .cabinet__meta { color: #555; font-size: 12px; font-weight: 600; }
-.case-number { display: inline-block; margin-right: 6px; padding: 2px 7px; color: #111; border: 1.5px solid #111; border-radius: 4px; font: 700 11px ui-monospace,monospace; }
+.case-number { display: inline-block; margin-right: 6px; padding: 2px 7px; color: #111; border: 1.5px solid #111; border-radius: 2px; box-shadow: 1px 1px 0 currentColor; font: 700 11px ui-monospace,monospace; letter-spacing: .04em; }
 .cabinet__name { font-family: var(--paper-serif); font-size: 22px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
-.cabinet__drawing { flex: 1 1 0; min-width: 0; position: relative; height: 144px; border: 2px solid #111; background: #fff; }
+.cabinet__drawing { flex: 1 1 0; min-width: 0; position: relative; height: 144px; border: 2px solid #111; background: #fff; box-shadow: 2px 2px 0 currentColor; }
 .cabinet__books { position: absolute; inset: 0 0 13px; display: flex; align-items: end; gap: 1px; padding: 0 7px; overflow: hidden; }
 .cabinet__book { display: flex; flex: 1 1 0; max-width: 72px; height: calc(100% - 13px); min-width: 0; flex-direction: column; align-items: center; padding: 5px 2px; border: 1.5px solid #111; box-shadow: inset 1px 0 #ddd, inset -1px 0 #ddd; background: #fff; }
-.cabinet__book-number { flex: none; padding: 1px 2px; border-block: 1px solid #111; font: 700 9px/1 ui-monospace, monospace; }
+.cabinet__book-number { flex: none; padding: 1px 2px; border-block: 1px solid #111; font: 700 9px/1 ui-monospace, monospace; letter-spacing: .04em; }
 .cabinet__book-title { min-height: 0; max-height: 86px; margin: auto 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; writing-mode: vertical-rl; text-orientation: upright; color: #6e4726; font: 700 13px/1.1 var(--paper-serif, serif); }
 .cabinet__book-rule { flex: none; width: 12px; height: 1px; background: #111; }
 .cabinet__more { position: absolute; top: 3px; right: 4px; font: 700 9px/1 ui-monospace, monospace; }

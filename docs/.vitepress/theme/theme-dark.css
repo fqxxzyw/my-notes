@@ -76,3 +76,9 @@ html.paper-night .desk {
 .paper-night .desk :is(input, textarea)::placeholder { color: #aaa59c; }
 .paper-night .desk :is(.chapter-prose code, .chapter-prose pre) { color: #ede9e2; }
 @media (max-width: 700px) { .desk .theme-toggle { padding: 5px 6px; font-size: 11px; } }
+
+/* Readable labels and the outlined sync panel in night mode. */
+.paper-night .desk .archive-kicker { color: #ede9e2; }
+.paper-night .desk .connection-details { border-color: #97938a; background: #222427; }
+.paper-night .desk .connection-details summary { color: #ede9e2; border-color: #97938a; }
+.paper-night .desk .connection-meta { color: #bcb6ad; }

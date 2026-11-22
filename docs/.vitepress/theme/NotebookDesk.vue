@@ -979,7 +979,7 @@ async function openSearchResult(chapter: Chapter) {
     </section>
 
     <details id="connection" class="connection-details">
-      <summary>GitHub 同步设置</summary>
+      <summary><span class="connection-label">GitHub 同步设置</span><span class="connection-meta" aria-hidden="true">GITHUB · SYNC</span></summary>
       <div class="connection">
       <div>
         <p>{{ isHosted ? '连接后，本次新建和编辑的笔记将自动保存到公开仓库' : '勾选章节再点同步，原文将通过一次提交保存到公开仓库' }}

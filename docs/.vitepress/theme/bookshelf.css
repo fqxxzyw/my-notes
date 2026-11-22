@@ -30,7 +30,10 @@
   scrollbar-width: thin;
   scrollbar-color: #111 #fff;
   overscroll-behavior-x: contain;
+  user-select: none;
+  -webkit-user-select: none;
 }
+.bookshelf__scroll.is-dragging, .bookshelf__scroll.is-dragging .volume { cursor: grabbing; }
 .bookshelf__row {
   display: flex;
   justify-content: center;

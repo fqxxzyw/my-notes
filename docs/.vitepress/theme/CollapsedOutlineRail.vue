@@ -4,7 +4,7 @@ import type { OutlineHeading } from './markdownOutline'
 import { nearestHeadingIndex } from './outlineRail'
 
 const props = defineProps<{ headings: OutlineHeading[]; sourceLength: number }>()
-const emit = defineEmits<{ jump: [offset: number] }>()
+const emit = defineEmits<{ jump: [offset: number]; expand: [] }>()
 
 const rail = ref<HTMLElement | null>(null)
 const active = ref(0)
@@ -30,7 +30,8 @@ function placeTooltip(clientY: number) {
   tooltipSide.value = bounds.left >= 72 ? 'left' : 'right'
   tooltipLeft.value = tooltipSide.value === 'left' ? bounds.left - 8 : bounds.right + 8
   tooltipWidth.value = tooltipSide.value === 'left' ? Math.min(230, bounds.left - 16) : Math.min(160, window.innerWidth - bounds.right - 16)
-  pointerTop.value = Math.max(32, Math.min(window.innerHeight - 32, clientY))
+  const headerBottom = document.querySelector('.archive-header')?.getBoundingClientRect().bottom || 0
+  pointerTop.value = Math.max(headerBottom + 24, Math.min(window.innerHeight - 32, clientY))
 }
 
 function point(event: PointerEvent) {
@@ -67,6 +68,7 @@ const bulge = computed(() => {
 
 <template>
   <nav class="collapsed-outline" aria-label="折叠目录">
+    <button id="editor-show-chapters" type="button" class="collapsed-outline__expand" aria-controls="editor-chapters" aria-expanded="false" aria-label="显示目录" title="显示目录" @click="emit('expand')">☰</button>
     <div ref="rail" class="collapsed-outline__rail" :class="{ 'is-active': visible }"
       :role="headings.length ? 'slider' : undefined" tabindex="0"
       :aria-label="headings.length ? '目录标题，方向键切换，回车跳转' : '当前文档暂无标题'"
@@ -93,9 +95,11 @@ const bulge = computed(() => {
 </template>
 
 <style scoped>
-.collapsed-outline { min-width: 0; align-self: stretch; }
+.collapsed-outline { position: sticky; top: var(--editor-sticky-top, 66px); align-self: start; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 8px; z-index: 10; }
+.collapsed-outline__expand { width: 24px; height: 28px; flex: none; border: 1px solid var(--ink, #111); border-radius: 4px; background: var(--panel, #fff); color: var(--ink, #111); font-size: 14px; line-height: 1; }
+.collapsed-outline__expand:hover, .collapsed-outline__expand:focus-visible { background: var(--ink, #111); color: var(--panel, #fff); }
 .collapsed-outline__rail {
-  position: sticky; top: 100px; width: 24px; height: min(54vh, 420px); min-height: 180px;
+  width: 24px; height: min(54vh, 420px, calc(100vh - var(--editor-sticky-top, 66px) - 48px)); min-height: 90px;
   cursor: pointer; touch-action: none; color: var(--ink, #111); outline: 0;
 }
 .collapsed-outline__rail:focus-visible { outline: 2px solid var(--ink, #111); outline-offset: 2px; border-radius: 4px; }

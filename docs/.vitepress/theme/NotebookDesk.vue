@@ -11,6 +11,7 @@ import { useCabinets } from './useCabinets'
 import { readRemoteCache, writeRemoteCache, clearRemoteCache, type RemoteSnapshot } from './remoteCache'
 import { addWelcomeNotebook } from './welcomeStore'
 import { markdownOutline } from './markdownOutline'
+import OutlineTree from './OutlineTree.vue'
 import { createSyncIndicator, type TransferState } from './syncIndicator'
 import { hasUserData } from './workspaceData'
 import { readDroppedMarkdown, type DroppedMarkdownResult } from './readDroppedMarkdown'
@@ -64,7 +65,10 @@ const editorSidebarOpen = ref(true)
 const editorSidebarPreference = 'paper-notes-editor-sidebar-open'
 const editorSidebarTab = ref<'chapters' | 'outline'>('chapters')
 const editorSidebarTabPreference = 'paper-notes-editor-sidebar-tab'
-const markdownEditor = ref<{ focusHeading: (offset: number) => void } | null>(null)
+const archiveHeader = ref<HTMLElement | null>(null)
+const editorStickyTop = ref(66)
+let headerResizeObserver: ResizeObserver | undefined
+const markdownEditor = ref<{ focusHeading: (offset: number) => void; applyOutlineChange: (before: string, after: string, focus: number) => string } | null>(null)
 const currentOutline = computed(() => markdownOutline(content.value))
 const chapterTitle = ref('')
 const creatingBook = ref(false)
@@ -659,6 +663,11 @@ function setEditorSidebarTab(tab: 'chapters' | 'outline') {
   try { localStorage.setItem(editorSidebarTabPreference, tab) } catch { /* Current view remains usable. */ }
 }
 function goToOutlineHeading(offset: number) { markdownEditor.value?.focusHeading(offset) }
+function changeOutline(before: string, after: string, focus: number) {
+  const problem = markdownEditor.value?.applyOutlineChange(before, after, focus) ?? '编辑器尚未准备好，请稍后重试。'
+  if (problem) error.value = problem
+  else error.value = ''
+}
 function openNewNote() {
   if (!saveDraft()) return
   clearMessages()
@@ -1443,6 +1452,12 @@ async function updateFromRemoteInBackground() {
   }
 }
 onMounted(() => {
+  const updateStickyTop = () => { if (archiveHeader.value) editorStickyTop.value = Math.ceil(archiveHeader.value.getBoundingClientRect().height) + 10 }
+  updateStickyTop()
+  if (typeof ResizeObserver !== 'undefined' && archiveHeader.value) {
+    headerResizeObserver = new ResizeObserver(updateStickyTop)
+    headerResizeObserver.observe(archiveHeader.value)
+  }
   try { editorSidebarOpen.value = localStorage.getItem(editorSidebarPreference) !== 'false' } catch { /* Use the default expanded view. */ }
   try { editorSidebarTab.value = localStorage.getItem(editorSidebarTabPreference) === 'outline' ? 'outline' : 'chapters' } catch { /* Use the default chapter view. */ }
   isDesktop.value = location.hostname === 'paper.local' && (location.pathname === '/my-notes' || location.pathname.startsWith('/my-notes/'))
@@ -1514,6 +1529,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   disposed = true
+  headerResizeObserver?.disconnect()
   window.removeEventListener('focus', scheduleDesktopRemoteCheck)
   clearTimeout(backgroundTimer)
   clearTimeout(autoTimer)
@@ -1549,8 +1565,8 @@ async function openSearchResult(chapter: Chapter) {
 </script>
 
 <template>
-  <div class="desk" @dragover="dragOverImport" @dragleave.self="draggingFiles = false" @drop="dropImport">
-    <header class="archive-header" :class="{ 'desktop-header': isDesktop, 'has-transfer': transferState.phase !== 'idle' }" @mousedown="dragWindow" @dblclick="maximizeWindow">
+  <div class="desk" :style="{ '--editor-sticky-top': `${editorStickyTop}px` }" @dragover="dragOverImport" @dragleave.self="draggingFiles = false" @drop="dropImport">
+    <header ref="archiveHeader" class="archive-header" :class="{ 'desktop-header': isDesktop, 'has-transfer': transferState.phase !== 'idle' }" @mousedown="dragWindow" @dblclick="maximizeWindow">
       <div class="archive-header-inner">
         <div class="archive-path">
           <button class="archive-brand" type="button" @click="openCabinet()"><span aria-hidden="true"></span>纸间</button>
@@ -1866,28 +1882,22 @@ async function openSearchResult(chapter: Chapter) {
         <ChapterMarkdown :source="content.replace(/^# [^\r\n]+(?:\r?\n|$)/, '')" />
       </div>
       <div v-else class="reference-editor-workspace" :class="{ 'is-sidebar-collapsed': !editorSidebarOpen }">
-        <CollapsedOutlineRail v-if="!editorSidebarOpen" :headings="currentOutline" :source-length="content.length" @jump="goToOutlineHeading" />
+        <CollapsedOutlineRail v-if="!editorSidebarOpen" :headings="currentOutline" :source-length="content.length" @jump="goToOutlineHeading" @expand="setEditorSidebar(true)" />
         <aside v-show="editorSidebarOpen" id="editor-chapters" class="reference-editor-sidebar" aria-label="章节目录">
           <div class="reference-sidebar-heading"><strong :title="selectedBook?.title">{{ selectedBook?.title }}</strong><button id="editor-hide-chapters" type="button" class="reference-sidebar-toggle" aria-controls="editor-chapters" :aria-expanded="editorSidebarOpen" @click="setEditorSidebar(false)">收起目录</button></div>
           <div class="reference-sidebar-tabs" role="group" aria-label="侧栏显示内容">
             <button type="button" :aria-pressed="editorSidebarTab === 'chapters'" @click="setEditorSidebarTab('chapters')">章节</button>
             <button type="button" :aria-pressed="editorSidebarTab === 'outline'" @click="setEditorSidebarTab('outline')">目录</button>
           </div>
-          <div v-if="editorSidebarTab === 'chapters'">
+          <div v-if="editorSidebarTab === 'chapters'" class="reference-sidebar-list">
             <button v-for="chapter in chapters" :key="chapter.id" type="button" class="reference-sidebar-row"
               :class="{ active: selectedChapter.id === chapter.id }" :disabled="busy"
               :aria-label="chapter.title" :aria-current="selectedChapter.id === chapter.id ? 'page' : undefined" :title="chapter.title"
               @click="openChapter(chapter); view = 'edit'">{{ chapter.title }}</button>
           </div>
-          <nav v-else class="reference-outline" aria-label="当前章节标题">
-            <p v-if="!currentOutline.length" class="reference-outline-empty">暂无标题</p>
-            <button v-for="heading in currentOutline" :key="heading.offset" type="button" class="reference-outline-row"
-              :style="{ '--heading-indent': `${(heading.level - 1) * 10}px` }" :title="heading.title"
-              :aria-label="`${heading.level} 级标题：${heading.title}`" @click="goToOutlineHeading(heading.offset)">{{ heading.title }}</button>
-          </nav>
+          <OutlineTree v-else :headings="currentOutline" :source="content" :disabled="busy" @jump="goToOutlineHeading" @change="changeOutline" @error="error = $event" />
         </aside>
         <div class="paper editor">
-          <button v-if="!editorSidebarOpen" id="editor-show-chapters" type="button" class="reference-sidebar-toggle reference-sidebar-reopen" aria-controls="editor-chapters" :aria-expanded="editorSidebarOpen" @click="setEditorSidebar(true)">☰ 显示目录</button>
           <MarkdownEditor ref="markdownEditor" v-model="content" :readonly="busy" />
           <div class="editor-footer">
             <span>{{ content.length }} 字符<span v-if="isHosted && connected" aria-live="polite"> · {{ autoStatus }}</span></span>

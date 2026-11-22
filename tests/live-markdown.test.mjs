@@ -4,7 +4,7 @@ import { build } from 'esbuild'
 import { EditorState } from '@codemirror/state'
 
 const bundled = await build({ entryPoints: ['docs/.vitepress/theme/liveMarkdown.ts'], bundle: true, platform: 'node', format: 'esm', write: false })
-const { markdownBlocks, sourceOffsetForText, rawOffsetForTextarea, textareaOffsetForRaw, applyTextareaChange } = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString('base64')}`)
+const { markdownBlocks, markdownEnvironment, sourceOffsetForText, rawOffsetForTextarea, textareaOffsetForRaw, applyTextareaChange, tableCellRange, replaceInlineImage, renderInlineMarkdown } = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString('base64')}`)
 
 test('the editor document retains mixed newlines and unknown Markdown exactly', () => {
   const source = '# 标题\r\n\r\n文字 **粗体**\n\n::: custom\r\n<raw> & text\r\n:::\n'
@@ -22,6 +22,46 @@ test('renders common blocks while retaining their source offsets', () => {
   for (const block of blocks) assert.equal(source.slice(block.from, block.to), block.source)
   const html = blocks.map(block => block.html).join('')
   for (const fragment of ['<h1>', '<strong>', '<em>', '<code>', '<a ', '<blockquote>', '<pre>', '<table>', 'type="checkbox"', 'checked']) assert.ok(html.includes(fragment), fragment)
+})
+
+test('visual editing leaves prose, lists and image-containing paragraphs as native lines', () => {
+  const blocks = markdownBlocks('# 标题\n\n文字 **加粗** 与 [链接](https://example.com)\n\n- 一项\n- [x] 完成\n\n![图片](photo.png)\n')
+  assert.deepEqual(blocks.map(block => [block.type, block.direct]), [
+    ['heading_open', true], ['paragraph_open', true], ['bullet_list_open', true], ['paragraph_open', true]
+  ])
+})
+
+test('table cell edits locate only plain target text and preserve other cells', () => {
+  const raw = '| 姓名 | 内容 |\r\n| --- | --- |\r\n| 甲 | 两个字 |\r\n| **乙** | `代码` |'
+  const target = tableCellRange(raw, 1, 1)
+  assert.equal(raw.slice(target.from, target.to), '两个字')
+  assert.equal(raw.slice(0, target.from) + '新内容' + raw.slice(target.to), raw.replace('两个字', '新内容'))
+  assert.equal(tableCellRange(raw, 2, 0), null)
+  assert.equal(tableCellRange(raw, 2, 1), null)
+  assert.equal(tableCellRange(raw, 100, 0), null)
+})
+
+test('image editing preserves titles and rejects unsafe unsupported structures', () => {
+  const updated = replaceInlineImage('![原图](images/a.png "说明")', '描述]', 'images/b.png')
+  assert.equal(updated, '![描述\\]](<images/b.png> "说明")')
+  assert.equal(replaceInlineImage('![图][reference]', '图', 'a.png'), null)
+  assert.equal(replaceInlineImage('![图](a.png)', '图', 'bad\nurl'), null)
+  assert.ok(!renderInlineMarkdown('![bad](javascript:alert(1))').includes('src="javascript:'))
+})
+
+test('reference images use the current document definitions without changing source', () => {
+  const one = '![ref][id]\n\n[id]: https://example.com/a.png'
+  const two = one.replace('a.png', 'b.png')
+  assert.match(renderInlineMarkdown('![ref][id]', markdownEnvironment(one)), /src="https:\/\/example\.com\/a\.png"/)
+  assert.match(renderInlineMarkdown('![ref][id]', markdownEnvironment(two)), /src="https:\/\/example\.com\/b\.png"/)
+  assert.equal(replaceInlineImage('![ref][id]', 'ref', 'x.png'), null)
+})
+
+test('block offsets remain exact with mixed CR-only, CRLF, LF and emoji', () => {
+  const source = '# 😀 标题\r\n\r正文\r\n\n```js\rlet x = 1;\r```\n\n结尾'
+  const blocks = markdownBlocks(source)
+  assert.deepEqual(blocks.map(block => block.source), ['# 😀 标题', '正文', '```js\rlet x = 1;\r```', '结尾'])
+  assert.ok(blocks.every(block => source.slice(block.from, block.to) === block.source))
 })
 
 test('never turns raw HTML or unsafe links into executable markup', () => {

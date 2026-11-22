@@ -1,4 +1,5 @@
 import MarkdownIt from 'markdown-it'
+import { maskFrontmatter } from './outlineSource'
 
 export type OutlineHeading = { level: number; title: string; offset: number }
 
@@ -14,7 +15,7 @@ export function markdownOutline(source: string): OutlineHeading[] {
       offsets.push(i + 1)
     } else if (code === 10) offsets.push(i + 1)
   }
-  const tokens = parser.parse(source, {})
+  const tokens = parser.parse(maskFrontmatter(source), {})
   const result: OutlineHeading[] = []
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i]

@@ -58,12 +58,54 @@
 :deep(.cm-paper-h4), :deep(.cm-paper-h5), :deep(.cm-paper-h6) { font-size: 1.1em; }
 :deep(.cm-paper-strong) { font-weight: 700; }
 :deep(.cm-paper-emphasis) { font-style: italic; }
+:deep(.cm-paper-strike) { text-decoration: line-through; }
+:deep(.cm-paper-link) { color: var(--red, #6e4726); text-decoration: underline; text-underline-offset: 3px; }
+:deep(.cm-paper-quote) { border-left: 3px solid var(--line, #aaa); padding-left: 12px; color: var(--muted, #555); }
+:deep(.cm-paper-marker) { color: var(--ink, #111); }
+:deep(.cm-paper-image) { position: relative; display: inline-block; max-width: 100%; vertical-align: middle; }
+:deep(.cm-paper-image img) { display: block; max-width: 100%; height: auto; cursor: pointer; }
+:deep(.cm-paper-image-form) { position: relative; z-index: 2; display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; padding: 10px; border: 1px solid var(--line, #aaa); border-radius: 6px; background: var(--panel, #fff); font: 12px/1.4 var(--vp-font-family-base, sans-serif); }
+:deep(.cm-paper-image-form input) { min-width: 120px; flex: 1 1 150px; padding: 5px 7px; border: 1px solid var(--line, #aaa); border-radius: 4px; background: var(--panel, #fff); color: var(--ink, #111); }
+:deep(.cm-paper-image-form button) { padding: 4px 8px; border: 1px solid var(--line, #aaa); border-radius: 4px; background: var(--panel, #fff); color: var(--ink, #111); }
+:deep(.cm-paper-image-form [role='status']) { flex-basis: 100%; color: var(--muted, #666); }
+:deep(.cm-paper-cell-input) { width: 100%; min-width: 5em; padding: 3px 5px; border: 1px solid var(--line, #aaa); background: var(--panel, #fff); color: var(--ink, #111); font: inherit; }
+:deep(.cm-paper-widget-notice) { margin: 4px 0; color: var(--muted, #666); font-size: 12px; line-height: 1.5; }
 :deep(.cm-paper-code) { padding: 0 .2em; border-radius: 3px; background: var(--vp-c-bg-soft, #f3f3f3); }
-:deep(.cm-paper-rendered) { cursor: text; overflow-wrap: anywhere; line-height: 1.8; font-family: var(--vp-font-family-base, sans-serif); color: var(--ink, #202328); }
+:deep(.cm-paper-rendered) { cursor: text; overflow-wrap: anywhere; white-space: normal; line-height: 1.8; font-family: var(--vp-font-family-base, sans-serif); color: var(--ink, #202328); }
 :deep(.cm-paper-rendered > :first-child) { margin-top: 0; }
 :deep(.cm-paper-rendered > :last-child) { margin-bottom: 0; }
 :deep(.cm-paper-rendered input[type='checkbox']) { margin-right: .4em; accent-color: var(--ink, #202328); }
 :deep(.cm-paper-rendered a) { cursor: text; }
+:deep(.cm-paper-prose) { font-family: var(--vp-font-family-base, sans-serif); line-height: 1.8; }
+:deep(.live-markdown-legacy) { margin: 8px 0; color: var(--muted, #666); font: 12px/1.5 var(--vp-font-family-base, sans-serif); }
+/* Fenced code remains editable lines rather than swapping a preview widget for
+   raw Markdown on click. The fence rows are represented by a small language
+   caption and a matching bottom edge while the exact source stays untouched. */
+:deep(.cm-paper-code-line) {
+  padding: 0 14px;
+  border-left: 1px solid var(--paper-code-border, #ddd9d1);
+  border-right: 1px solid var(--paper-code-border, #ddd9d1);
+  background: var(--paper-code-bg, #f4f3f0);
+  font: 13px/1.7 ui-monospace, Consolas, 'Microsoft YaHei', monospace;
+}
+:deep(.cm-paper-code-open) {
+  padding-top: 7px;
+  border-top: 1px solid var(--paper-code-border, #ddd9d1);
+  border-radius: 6px 6px 0 0;
+  color: var(--paper-code-comment, #777);
+}
+:deep(.cm-paper-code-open)::before { content: attr(data-language); font: 600 10px/1.4 ui-monospace, monospace; text-transform: uppercase; }
+:deep(.cm-paper-code-close) { min-height: 8px; height: 8px; line-height: 0; font-size: 0; border-bottom: 1px solid var(--paper-code-border, #ddd9d1); border-radius: 0 0 6px 6px; }
+:deep(.cm-paper-code-indented-start) { padding-top: 8px; border-top: 1px solid var(--paper-code-border, #ddd9d1); border-radius: 6px 6px 0 0; }
+:deep(.cm-paper-code-indented-end) { padding-bottom: 8px; border-bottom: 1px solid var(--paper-code-border, #ddd9d1); border-radius: 0 0 6px 6px; }
+:deep(.cm-paper-code-revealed) { height: auto; min-height: 1.7em; line-height: 1.7; font-size: 13px; }
+:deep(.cm-paper-code-open.cm-paper-code-revealed)::before { content: none; }
+:global(.paper-night) :deep(.cm-paper-code-line) {
+  --paper-code-bg: #1b1c1f; --paper-code-border: #55534e;
+  --paper-code-keyword: #c5a0e2; --paper-code-string: #a4cc9e;
+  --paper-code-number: #e4ae7a; --paper-code-comment: #a5a19a;
+  --paper-code-function: #93bfe8; --paper-code-type: #e0c18e;
+}
 :deep(.live-markdown-fallback) {
   display: block;
   width: 100%;
@@ -82,4 +124,20 @@
   .markdown-toolbar button { padding: 6px 8px; }
   .editor-pane { padding: 18px 8px; }
   :deep(.cm-content), :deep(.live-markdown-fallback) { min-height: max(60vh, 420px); }
+}
+.editor-toolbar-sticky {
+  position: sticky;
+  /* The sidebar is inset by 10px, but the toolbar must touch the header so
+     scrolling text cannot show through the gap above it. */
+  top: max(0px, calc(var(--editor-sticky-top, 66px) - 10px));
+  z-index: 15;
+  max-height: min(45vh, max(80px, calc(100vh - var(--editor-sticky-top, 66px) - 96px)));
+  margin-bottom: 12px;
+  padding: 12px 12px 3px;
+  overflow-y: auto;
+  border: 1.5px solid var(--line, #111);
+  border-radius: 8px;
+  background: var(--panel, #fff);
+  /* Cover the rounded top corners where the document passes underneath. */
+  box-shadow: 0 -10px 0 var(--panel, #fff);
 }

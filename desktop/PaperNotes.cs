@@ -198,6 +198,7 @@ namespace PaperNotesDesktop
             credentialDirectory = Path.Combine(Path.GetDirectoryName(profile), "Credentials");
             Text = "纸间";
             FormBorderStyle = FormBorderStyle.None;
+            BackColor = Color.White;
             StartPosition = FormStartPosition.CenterScreen;
             ClientSize = new Size(1280, 820);
             MinimumSize = new Size(760, 520);
@@ -262,7 +263,11 @@ namespace PaperNotesDesktop
             if (resizeGrips.Count != 8) return;
             bool normal = WindowState == FormWindowState.Normal;
             int width = ClientSize.Width, height = ClientSize.Height;
-            const int edge = 7, corner = 14;
+            // Reserve the native resize strip outside WebView2. The scrollbar
+            // then keeps its entire hit target instead of sharing it with a grip.
+            const int edge = 7, corner = 7;
+            Padding wantedPadding = normal ? new Padding(0, 0, edge, edge) : Padding.Empty;
+            if (Padding != wantedPadding) Padding = wantedPadding;
             Rectangle[] bounds = {
                 new Rectangle(0, corner, edge, Math.Max(0, height - 2 * corner)),
                 new Rectangle(Math.Max(0, width - edge), corner, edge, Math.Max(0, height - 2 * corner)),
@@ -386,6 +391,7 @@ namespace PaperNotesDesktop
             if (request == null || GetString(request, "channel") != "paper-notes") return;
             string action = GetString(request, "action");
             if (action == "ui.ready") { RevealStartup(); return; }
+            if (action == "ui.theme") { BackColor = GetString(request, "theme") == "dark" ? Color.FromArgb(23, 25, 28) : Color.White; return; }
             if (action == "window.minimize") { WindowState = FormWindowState.Minimized; return; }
             if (action == "window.maximize")
             {

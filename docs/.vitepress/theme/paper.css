@@ -13,9 +13,14 @@
   --paper-serif: "Baskerville", "Noto Serif CJK SC", "Songti SC", "STSong", "SimSun", serif;
 }
 
-/* Keep page scrolling available while hiding the browser's outer scrollbar. */
-html, body { scrollbar-width: none; }
-html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; }
+/* Keep the document scrollbar visible and easy to drag without dominating the page. */
+html, body { scrollbar-width: auto; scrollbar-color: #929292 transparent; }
+html::-webkit-scrollbar, body::-webkit-scrollbar { width: 14px; height: 14px; }
+html::-webkit-scrollbar-track, body::-webkit-scrollbar-track { background: transparent; }
+html::-webkit-scrollbar-thumb, body::-webkit-scrollbar-thumb {
+  border: 3px solid transparent; border-radius: 8px; background: #929292; background-clip: padding-box;
+}
+html.paper-night, html.paper-night body { scrollbar-color: #aaa59c transparent; }
 
 .VPNav .VPNavBar {
   background: var(--vp-c-bg);

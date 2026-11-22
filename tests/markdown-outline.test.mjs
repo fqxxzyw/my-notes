@@ -37,3 +37,10 @@ test('keeps distinct offsets for repeated identical headings', () => {
   assert.equal(headings[0].offset, 0)
   assert.equal(headings[1].offset, source.lastIndexOf('# 相同标题'))
 })
+
+test('does not treat front matter as headings and retains exact content offsets', () => {
+  const source = '\uFEFF---\r\ntitle: 😀 note\r\n---\r\n# 实际标题\r\n'
+  const headings = markdownOutline(source)
+  assert.deepEqual(headings.map(item => item.title), ['实际标题'])
+  assert.equal(headings[0].offset, source.indexOf('# 实际标题'))
+})

@@ -107,11 +107,25 @@ function handleKeydown(event: KeyboardEvent) {
   }
 }
 function focusHeading(offset: number) { editor.value?.focusHeading(offset) }
-defineExpose({ focusHeading })
+/** Apply one isolated editor transaction, keeping existing undo history intact. */
+function applyOutlineChange(before: string, after: string, focus: number): string {
+  const field = editor.value
+  if (!field?.canReorganize() || props.readonly) return '当前编辑器暂不支持调整标题，请稍后重试。'
+  if (field.currentText() !== before) return '正文已经发生变化，请重新调整标题。'
+  if (before === after) return ''
+  let start = 0
+  while (start < before.length && start < after.length && before[start] === after[start]) start++
+  let suffix = 0
+  while (suffix < before.length - start && suffix < after.length - start && before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix++
+  field.replace(start, before.length - suffix, after.slice(start, after.length - suffix), focus, focus, true)
+  return ''
+}
+defineExpose({ focusHeading, applyOutlineChange })
 </script>
 
 <template>
   <div class="markdown-editor">
+    <div class="editor-toolbar-sticky">
     <div class="editor-header">
       <span class="editor-caption">Markdown <small>· 自动保存本机草稿</small></span>
       <div class="editor-modes" role="group" aria-label="编辑器显示方式">
@@ -142,6 +156,7 @@ defineExpose({ focusHeading })
     </div>
     <p class="markdown-shortcuts">快捷键：{{ shortcut('B') }} 粗体 · {{ shortcut('I') }} 斜体 · {{ shortcut('E') }} 行内代码 · {{ shortcut('Shift+C') }} 代码块 · {{ shortcut('K') }} 链接 · {{ shortcut('Alt+1') }}–{{ shortcut('Alt+3') }} 标题</p>
     <p v-if="editorFallback" class="markdown-error" role="alert">排版编辑器无法启动，已切换到源代码编辑；正文和草稿没有改变。</p>
+    </div>
     <div class="editor-panes">
       <div class="editor-pane">
         <span class="pane-heading">正文 <span v-if="mode === 'visual'">· 点击文字直接编辑</span></span>

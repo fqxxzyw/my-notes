@@ -14,6 +14,8 @@
   font-family: var(--vp-font-family-base);
 }
 .desk * { box-sizing: border-box; }
+/* Writing needs the available width; keep the compact archive layout elsewhere. */
+.desk:has(.reference-editor-workspace) { max-width: none; padding-inline: clamp(12px, 1.5vw, 24px); }
 .desk button, .desk input, .desk textarea { font: inherit; }
 .desk button { cursor: pointer; }
 .desk button:disabled { cursor: default; opacity: .6; }

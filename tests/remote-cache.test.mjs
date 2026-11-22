@@ -35,6 +35,17 @@ test('a complete remote snapshot survives reload without storing unrelated field
   assert.equal(storage.values.get('paper-notes-draft:book1/chapter1'), 'unsynchronized draft')
 })
 
+test('standalone pages survive offline reload while legacy snapshots remain readable', () => {
+  const storage = fakeStorage()
+  writeRemoteCache(snapshot, 'old/repo', storage)
+  assert.equal(readRemoteCache('old/repo', storage).pages, undefined)
+  const pages = [{ id: 'page1', title: '独立书页', content: '原文\r\n', sha: sha('f') }]
+  writeRemoteCache({ ...snapshot, pages }, 'new/repo', storage)
+  assert.deepEqual(readRemoteCache('new/repo', storage).pages, pages)
+  assert.throws(() => writeRemoteCache({ ...snapshot, pages: [pages[0], pages[0]] }, 'new/repo', storage))
+  assert.deepEqual(readRemoteCache('new/repo', storage).pages, pages)
+})
+
 test('invalid or incomplete new snapshots never replace the previous cache', () => {
   const storage = fakeStorage()
   writeRemoteCache(snapshot, 'example/repo', storage)

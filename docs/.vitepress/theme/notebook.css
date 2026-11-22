@@ -190,6 +190,24 @@
   background: #fff; border-bottom: 2px solid #111;
 }
 .archive-header-inner { min-height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.archive-header.has-transfer { border-bottom-color: transparent; }
+.transfer-rail {
+  position: absolute; left: 0; right: 0; bottom: -2px; z-index: 2; height: 14px;
+  pointer-events: none;
+  background: repeating-linear-gradient(90deg, var(--ink, #111) 0 12px, var(--panel, #fff) 12px 24px);
+  background-size: 24px 100%;
+  animation: transfer-flow .8s linear infinite;
+  transition: height .45s ease;
+}
+.transfer-rail.is-success, .transfer-rail.is-settling { background: var(--ink, #111); animation: none; }
+.transfer-rail.is-settling { height: 2px; background: var(--line, #111); }
+.transfer-rail-label {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  padding: 0 6px; background: var(--ink, #111); color: var(--panel, #fff);
+  font-size: 10px; line-height: 14px; white-space: nowrap;
+}
+@keyframes transfer-flow { to { background-position: 24px 0; } }
+@media (prefers-reduced-motion: reduce) { .transfer-rail { animation: none; transition: none; } }
 .desktop-header { padding-right: 3px; user-select: none; }
 .window-controls { display: flex; align-self: stretch; align-items: stretch; margin-left: 6px; }
 .window-controls button { width: 36px; min-height: 42px; font: 19px/1 Arial, sans-serif; color: #111; }
@@ -223,6 +241,14 @@
 .archive-dialog-heading button { width: 28px; height: 28px; border: 1.5px solid #111; border-radius: 5px; }
 .archive-dialog label { font-size: 12px; font-weight: 700; }
 .archive-dialog input, .archive-dialog select { width: 100%; padding: 9px; border: 1.5px solid #111; border-radius: 7px; background: #fff; }
+.archive-dialog select { appearance: none; padding-right: 38px; color: var(--ink); background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%); background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%; background-size: 5px 5px; background-repeat: no-repeat; }
+.note-kind { display: flex; gap: 8px; margin: 0; padding: 0; border: 0; }
+.note-kind legend { width: 100%; margin-bottom: 7px; font-size: 12px; font-weight: 700; }
+.note-kind label { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 4px 7px; flex: 1; padding: 9px; border: 1.5px solid var(--ink); border-radius: 7px; cursor: pointer; }
+.note-kind input { grid-row: 1 / span 2; width: auto; padding: 0; accent-color: #111; }
+.note-kind small { grid-column: 2; color: var(--muted); font-weight: 400; }
+.import-dialog p { margin: 0; font-size: 13px; line-height: 1.6; }
+.import-drop-indicator { position: fixed; z-index: 100; inset: 18px; display: grid; place-items: center; border: 3px dashed var(--ink); background: color-mix(in srgb, var(--panel) 92%, transparent); color: var(--ink); font-weight: 700; pointer-events: none; }
 .archive-dialog-actions { display: flex; justify-content: end; gap: 8px; margin-top: 5px; }
 @media (min-width: 701px) { .archive-mobile-tools { display: none; } }
 @media (max-width: 700px) {

@@ -1,0 +1,20 @@
+/* Only applied to the desktop WebView after the Vue page has mounted. */
+html.paper-desktop-starting #app {
+  opacity: 0;
+  transform: translateY(7px);
+  pointer-events: none;
+}
+
+html.paper-desktop-revealed #app {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 320ms ease-out, transform 380ms cubic-bezier(.2, .7, .25, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.paper-desktop-starting #app,
+  html.paper-desktop-revealed #app {
+    transform: none;
+    transition: none;
+  }
+}

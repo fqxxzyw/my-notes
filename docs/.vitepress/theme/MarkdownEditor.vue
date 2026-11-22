@@ -1,37 +1,40 @@
 <script setup lang="ts">
-import { nextTick, ref } from 'vue'
-import ChapterMarkdown from './ChapterMarkdown.vue'
+import { onMounted, ref } from 'vue'
+import LiveMarkdown from './LiveMarkdown.vue'
 
 const props = defineProps<{ modelValue: string; readonly?: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
-const editor = ref<HTMLTextAreaElement | null>(null)
-const mode = ref<'edit' | 'split' | 'preview'>('edit')
+const editor = ref<InstanceType<typeof LiveMarkdown> | null>(null)
+const mode = ref<'source' | 'visual'>('visual')
+const editorFallback = ref(false)
 const codeLanguage = ref('')
+const isMac = ref(false)
+onMounted(() => { isMac.value = /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent) })
 
 type Action = 'h1' | 'h2' | 'h3' | 'bold' | 'italic' | 'strike' | 'inline-code' | 'code-block' | 'link' | 'unordered' | 'ordered' | 'task' | 'quote' | 'table'
-const tools: { action: Action; label: string; description: string; shortcut?: string; hint?: string }[] = [
-  { action: 'h1', label: 'H1', description: '一级标题', shortcut: 'Ctrl/⌘ Alt 1', hint: '⌃⌥1' },
-  { action: 'h2', label: 'H2', description: '二级标题', shortcut: 'Ctrl/⌘ Alt 2', hint: '⌃⌥2' },
-  { action: 'h3', label: 'H3', description: '三级标题', shortcut: 'Ctrl/⌘ Alt 3', hint: '⌃⌥3' },
-  { action: 'code-block', label: '</> 代码块', description: '将选中内容变为代码块', shortcut: 'Ctrl/⌘ Shift C', hint: '⌃⇧C' },
-  { action: 'inline-code', label: '`代码`', description: '行内代码', shortcut: 'Ctrl/⌘ E', hint: '⌃E' },
-  { action: 'bold', label: 'B', description: '粗体', shortcut: 'Ctrl/⌘ B', hint: '⌃B' },
-  { action: 'italic', label: 'I', description: '斜体', shortcut: 'Ctrl/⌘ I', hint: '⌃I' },
+const tools: { action: Action; label: string; description: string; keys?: string }[] = [
+  { action: 'h1', label: 'H1', description: '一级标题', keys: 'Alt+1' },
+  { action: 'h2', label: 'H2', description: '二级标题', keys: 'Alt+2' },
+  { action: 'h3', label: 'H3', description: '三级标题', keys: 'Alt+3' },
+  { action: 'code-block', label: '</> 代码块', description: '将选中内容变为代码块', keys: 'Shift+C' },
+  { action: 'inline-code', label: '`代码`', description: '行内代码', keys: 'E' },
+  { action: 'bold', label: 'B', description: '粗体', keys: 'B' },
+  { action: 'italic', label: 'I', description: '斜体', keys: 'I' },
   { action: 'strike', label: 'S', description: '删除线' },
   { action: 'unordered', label: '• 列表', description: '无序列表' },
   { action: 'ordered', label: '1. 有序', description: '有序列表' },
   { action: 'task', label: '☑ 任务', description: '任务清单' },
   { action: 'quote', label: '❝ 引用', description: '引用' },
   { action: 'table', label: '▦ 表格', description: '插入表格' },
-  { action: 'link', label: '链接', description: '插入链接', shortcut: 'Ctrl/⌘ K' },
+  { action: 'link', label: '链接', description: '插入链接', keys: 'K' },
 ]
+const shortcut = (keys: string) => `${isMac.value ? '⌘' : 'Ctrl'}+${isMac.value ? keys.replace('Alt', 'Option') : keys}`
 
 function apply(action: Action) {
   const field = editor.value
   if (!field || props.readonly) return
-  const source = props.modelValue
-  const start = field.selectionStart
-  const end = field.selectionEnd
+  const source = field.currentText()
+  const { start, end } = field.selectionRange()
   const selected = source.slice(start, end)
   let replaceStart = start
   let replaceEnd = end
@@ -81,11 +84,7 @@ function apply(action: Action) {
     selectionEnd = selectionStart + placeholder.length
   }
 
-  emit('update:modelValue', source.slice(0, replaceStart) + replacement + source.slice(replaceEnd))
-  void nextTick(() => {
-    field.focus()
-    field.setSelectionRange(selectionStart, selectionEnd)
-  })
+  field.replace(replaceStart, replaceEnd, replacement, selectionStart, selectionEnd)
 }
 
 function handleKeydown(event: KeyboardEvent) {
@@ -99,14 +98,16 @@ function handleKeydown(event: KeyboardEvent) {
     else if (key === 'e') action = 'inline-code'
   } else if (!event.altKey && event.shiftKey && key === 'c') {
     action = 'code-block'
-  } else if (event.altKey && !event.shiftKey && ['1', '2', '3'].includes(key)) {
-    action = `h${key}` as Action
+  } else if (event.altKey && !event.shiftKey && /^Digit[123]$/.test(event.code)) {
+    action = `h${event.code.slice(-1)}` as Action
   }
   if (action) {
     event.preventDefault()
     apply(action)
   }
 }
+function focusHeading(offset: number) { editor.value?.focusHeading(offset) }
+defineExpose({ focusHeading })
 </script>
 
 <template>
@@ -114,17 +115,16 @@ function handleKeydown(event: KeyboardEvent) {
     <div class="editor-header">
       <span class="editor-caption">Markdown <small>· 自动保存本机草稿</small></span>
       <div class="editor-modes" role="group" aria-label="编辑器显示方式">
-        <button type="button" :aria-pressed="mode === 'edit'" @click="mode = 'edit'">仅编辑</button>
-        <button type="button" :aria-pressed="mode === 'split'" @click="mode = 'split'">分栏</button>
-        <button type="button" :aria-pressed="mode === 'preview'" @click="mode = 'preview'">纯预览</button>
+        <button type="button" :aria-pressed="mode === 'source'" @click="mode = 'source'">源代码</button>
+        <button type="button" :disabled="editorFallback" :aria-pressed="mode === 'visual'" @click="mode = 'visual'">所见即写</button>
       </div>
     </div>
-    <div v-show="mode !== 'preview'" class="markdown-toolbar" role="toolbar" aria-label="Markdown 格式">
+    <div class="markdown-toolbar" role="toolbar" aria-label="Markdown 格式">
       <template v-for="tool in tools" :key="tool.action">
         <div v-if="tool.action === 'code-block'" class="code-tool">
-          <button type="button" :disabled="readonly" :title="`${tool.description}（${tool.shortcut}）`"
-            :aria-label="`${tool.description}，${tool.shortcut}`" @mousedown.prevent @click="apply(tool.action)">
-            {{ tool.label }} <span v-if="tool.hint" class="kbd-tag">{{ tool.hint }}</span>
+          <button type="button" :disabled="readonly" :title="`${tool.description}（${shortcut(tool.keys!)}）`"
+            :aria-label="`${tool.description}，${shortcut(tool.keys!)}`" @mousedown.prevent @click="apply(tool.action)">
+            {{ tool.label }} <span v-if="tool.keys" class="kbd-tag">{{ shortcut(tool.keys) }}</span>
           </button>
           <select v-model="codeLanguage" :disabled="readonly" aria-label="代码块语言" title="选择代码块语言">
             <option value="">语言</option>
@@ -133,32 +133,21 @@ function handleKeydown(event: KeyboardEvent) {
           </select>
         </div>
         <button v-else type="button" :disabled="readonly"
-          :title="tool.shortcut ? `${tool.description}（${tool.shortcut}）` : tool.description"
-          :aria-label="tool.shortcut ? `${tool.description}，${tool.shortcut}` : tool.description"
+          :title="tool.keys ? `${tool.description}（${shortcut(tool.keys)}）` : tool.description"
+          :aria-label="tool.keys ? `${tool.description}，${shortcut(tool.keys)}` : tool.description"
           @mousedown.prevent @click="apply(tool.action)">
-          {{ tool.label }} <span v-if="tool.hint" class="kbd-tag">{{ tool.hint }}</span>
+          {{ tool.label }} <span v-if="tool.keys" class="kbd-tag">{{ shortcut(tool.keys) }}</span>
         </button>
       </template>
     </div>
-    <p v-show="mode !== 'preview'" class="markdown-shortcuts">快捷键：Ctrl/⌘ B 粗体 · Ctrl/⌘ I 斜体 · Ctrl/⌘ E 行内代码 · Ctrl/⌘ Shift C 代码块 · Ctrl/⌘ K 链接 · Ctrl/⌘ Alt 1–3 标题</p>
-    <div class="editor-panes" :class="{ 'editor-panes--split': mode === 'split' }">
-      <div v-show="mode !== 'preview'" class="editor-pane">
-        <label class="pane-heading" for="chapter-content">正文</label>
-        <textarea
-          id="chapter-content"
-          ref="editor"
-          :value="modelValue"
-          :readonly="readonly"
-          spellcheck="false"
-          @input="emit('update:modelValue', ($event.target as HTMLTextAreaElement).value)"
-          @keydown="handleKeydown"
-        ></textarea>
+    <p class="markdown-shortcuts">快捷键：{{ shortcut('B') }} 粗体 · {{ shortcut('I') }} 斜体 · {{ shortcut('E') }} 行内代码 · {{ shortcut('Shift+C') }} 代码块 · {{ shortcut('K') }} 链接 · {{ shortcut('Alt+1') }}–{{ shortcut('Alt+3') }} 标题</p>
+    <p v-if="editorFallback" class="markdown-error" role="alert">排版编辑器无法启动，已切换到源代码编辑；正文和草稿没有改变。</p>
+    <div class="editor-panes">
+      <div class="editor-pane">
+        <span class="pane-heading">正文 <span v-if="mode === 'visual'">· 点击文字直接编辑</span></span>
+        <LiveMarkdown ref="editor" :model-value="modelValue" :mode="mode" :readonly="readonly"
+          @update:model-value="emit('update:modelValue', $event)" @keydown="handleKeydown" @failure="editorFallback = true; mode = 'source'" />
       </div>
-      <section v-show="mode !== 'edit'" class="editor-preview" aria-label="Markdown 实时预览">
-        <p class="pane-heading">实时预览</p>
-        <ChapterMarkdown :source="modelValue" />
-        <p v-if="!modelValue.trim()" class="preview-empty">输入内容后在这里预览。</p>
-      </section>
     </div>
   </div>
 </template>

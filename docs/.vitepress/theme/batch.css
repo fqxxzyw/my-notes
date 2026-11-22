@@ -47,3 +47,8 @@
 .bulk-move { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
 .bulk-move select { min-width: 150px; max-width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--ink); }
 .removed-cabinet-row { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.cabinet-manage-row { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.delete-manager-list .cabinet-manage-row label, .cabinet-manage-default { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; padding: 6px 0; }
+.cabinet-manage-default span { overflow-wrap: anywhere; }
+.cabinet-manage-default small { margin-left: auto; color: var(--muted); white-space: nowrap; }
+.cabinet-manage-row button { flex: none; }

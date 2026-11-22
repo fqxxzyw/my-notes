@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Notebook } from './notebookStore'
-type Cabinet = { id: string; title: string; books: Notebook[] }
+type Cabinet = { id: string; title: string; books: (Notebook & { kind?: 'page' })[] }
 defineProps<{ items: Cabinet[] }>()
 const emit = defineEmits<{ select: [id: string]; create: [] }>()
 </script>
@@ -8,16 +8,17 @@ const emit = defineEmits<{ select: [id: string]; create: [] }>()
 <template>
   <div class="cabinet-gallery" aria-label="书柜列表">
     <button v-for="(item, index) in items" :key="item.id" class="cabinet" type="button"
-      :aria-label="`${item.title}，${item.books.length} 本笔记本${item.books.length ? '：' + item.books.slice(0, 4).map(book => book.title).join('、') + (item.books.length > 4 ? '等' : '') : ''}`" @click="emit('select', item.id)">
+      :aria-label="`${item.title}，${item.books.length} 项笔记${item.books.length ? '：' + item.books.slice(0, 4).map(book => book.title).join('、') + (item.books.length > 4 ? '等' : '') : ''}`" @click="emit('select', item.id)">
       <span class="cabinet__top">
         <span class="cabinet__information">
-          <span class="cabinet__meta"><span class="case-number">CASE {{ String(index + 1).padStart(2, '0') }}</span> {{ item.books.length }} 册</span>
+          <span class="cabinet__meta"><span class="case-number">CASE {{ String(index + 1).padStart(2, '0') }}</span> {{ item.books.length }} 项</span>
           <span class="cabinet__name">{{ item.title }}</span>
         </span>
         <span class="cabinet__drawing" aria-hidden="true">
           <span class="cabinet__books">
-            <span v-for="(book, bookIndex) in item.books.slice(0, 4)" :key="book.id" class="cabinet__book">
-              <span class="cabinet__book-number">{{ String(bookIndex + 1).padStart(2, '0') }}</span>
+            <span v-for="(book, bookIndex) in item.books.slice(0, 4)" :key="book.id" class="cabinet__book" :class="{ 'cabinet__book--page': book.kind === 'page' }">
+              <span v-if="book.kind === 'page'" class="cabinet__page-tab"></span>
+              <span class="cabinet__book-number">{{ book.kind === 'page' ? 'MD' : String(bookIndex + 1).padStart(2, '0') }}</span>
               <span class="cabinet__book-title">{{ book.title }}</span>
               <span class="cabinet__book-rule"></span>
             </span>
@@ -30,7 +31,7 @@ const emit = defineEmits<{ select: [id: string]; create: [] }>()
         <span class="cabinet__tags">
           <span v-for="book in item.books.slice(0, 3)" :key="book.id">{{ book.title }}</span>
           <span v-if="item.books.length > 3">+{{ item.books.length - 3 }}</span>
-          <span v-if="!item.books.length" class="cabinet__empty">暂无笔记本</span>
+          <span v-if="!item.books.length" class="cabinet__empty">暂无笔记</span>
         </span>
         <strong>进入书柜 →</strong>
       </span>
@@ -38,7 +39,7 @@ const emit = defineEmits<{ select: [id: string]; create: [] }>()
     <button class="cabinet cabinet--create" type="button" @click="emit('create')">
       <span class="create-plus">+</span>
       <strong>新建书柜</strong>
-      <span>创建知识分类并收纳笔记本</span>
+      <span>创建知识分类并收纳笔记</span>
     </button>
   </div>
 </template>
@@ -62,6 +63,10 @@ const emit = defineEmits<{ select: [id: string]; create: [] }>()
 .cabinet__drawing { flex: 1 1 0; min-width: 0; position: relative; height: 144px; border: 2px solid #111; background: #fff; box-shadow: 2px 2px 0 currentColor; }
 .cabinet__books { position: absolute; inset: 0 0 13px; display: flex; align-items: end; gap: 1px; padding: 0 7px; overflow: hidden; }
 .cabinet__book { display: flex; flex: 0 1 28px; width: 28px; height: calc(100% - 13px); min-width: 0; flex-direction: column; align-items: center; padding: 5px 2px; border: 1.5px solid #111; box-shadow: inset 1px 0 #ddd, inset -1px 0 #ddd; background: #fff; }
+.cabinet__book--page { position: relative; }
+.cabinet__page-tab { position: absolute; top: -1px; left: 2px; width: 10px; height: 4px; border: 1px solid currentColor; border-top: 0; }
+.cabinet__book--page .cabinet__book-number { margin-top: 5px; border-block: 0; font-size: 8px; }
+.cabinet__book--page .cabinet__book-rule { width: 12px; background: currentColor; box-shadow: 0 -3px currentColor, 0 -6px currentColor; }
 .cabinet__book-number { flex: none; padding: 1px 2px; border-block: 1px solid #111; font: 700 9px/1 ui-monospace, monospace; letter-spacing: .04em; }
 .cabinet__book-title { min-height: 0; max-height: 86px; margin: auto 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; writing-mode: vertical-rl; text-orientation: upright; color: #6e4726; font: 700 13px/1.1 var(--paper-serif, serif); }
 .cabinet__book-rule { flex: none; width: 12px; height: 1px; background: #111; }

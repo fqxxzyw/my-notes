@@ -5,6 +5,8 @@ export { normalizeRepository } from './repository'
 export type { CabinetCatalog, CatalogVersion } from './cabinetStore'
 export type Notebook = { id: string; title: string; sha: string }
 export type Chapter = { bookId: string; id: string; title: string; content: string; sha: string }
+/** A standalone Markdown file in docs/pages, independent of notebooks. */
+export type Page = { id: string; title: string; content: string; sha: string }
 export type NotebookStoreErrorCode = 'auth' | 'not-found' | 'conflict' | 'network' | 'invalid' | 'github'
 
 export class NotebookStoreError extends Error {
@@ -18,7 +20,7 @@ type GitHubFile = { type: 'file'; name: string; path: string; sha: string; encod
 type GitHubEntry = { type: string; name: string; path: string; sha: string }
 type GitTreeEntry = { path: string; type: string; mode: string; sha: string }
 type GitTree = { tree: GitTreeEntry[]; truncated?: boolean }
-type BatchResult = { books: Notebook[]; chapters: Chapter[]; catalog?: CatalogVersion; parent: string; head: string }
+type BatchResult = { books: Notebook[]; chapters: Chapter[]; pages: Page[]; catalog?: CatalogVersion; parent: string; head: string }
 export type BookDeletion = { book: Notebook; chapters: Chapter[] }
 
 const ROOT = 'notebooks'
@@ -57,6 +59,37 @@ function checkChapterId(value: string): string {
   checkId(value)
   if (value.toLowerCase() === 'index') throw new NotebookStoreError('invalid', '章节标识不能是 index。')
   return value
+}
+
+/** Preserve an imported filename without inserting metadata into its Markdown. */
+function encodedIdFromTitle(prefix: 'p' | 'c', title: string): string {
+  const name = checkTitle(title)
+  const bytes = new TextEncoder().encode(name)
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  const encoded = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  const id = `${prefix}_${crypto.randomUUID().replaceAll('-', '')}_${encoded}`
+  if (id.length > 251) throw new NotebookStoreError('invalid', '文件名过长，请缩短后重试。')
+  return id
+}
+export function pageIdFromTitle(title: string): string { return encodedIdFromTitle('p', title) }
+export function chapterIdFromTitle(title: string): string { return encodedIdFromTitle('c', title) }
+
+function checkPageId(id: string): string {
+  checkId(id)
+  if (id.length > 251) throw new NotebookStoreError('invalid', '书页文件名过长。')
+  return id
+}
+
+function titleFromEncodedId(id: string, prefix: 'p' | 'c'): string {
+  const match = new RegExp(`^${prefix}_[a-f0-9]{32}_([A-Za-z0-9_-]+)$`).exec(id)
+  if (!match) return id
+  try {
+    const base64 = match[1].replace(/-/g, '+').replace(/_/g, '/')
+    const binary = atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, '='))
+    const name = new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(binary, char => char.charCodeAt(0)))
+    return checkTitle(name)
+  } catch { return id }
 }
 
 function checkTitle(title: string): string {
@@ -154,9 +187,9 @@ export function createNotebookStore(repository?: string | null) {
     }
   }
 
-  async function syncBatch(newBooks: Notebook[], chapters: Chapter[], catalogChange?: CatalogVersion): Promise<BatchResult> {
+  async function syncBatch(newBooks: Notebook[], chapters: Chapter[], catalogChange?: CatalogVersion, pages: Page[] = []): Promise<BatchResult> {
     if (!token) throw new NotebookStoreError('auth', '请先输入具有仓库内容写入权限的 GitHub 令牌。')
-    if (!newBooks.length && !chapters.length && !catalogChange) throw new NotebookStoreError('invalid', '请至少选择一本新笔记本、一篇章节或书柜目录。')
+    if (!newBooks.length && !chapters.length && !pages.length && !catalogChange) throw new NotebookStoreError('invalid', '请至少选择一本新笔记本、一篇章节、书页或书柜目录。')
 
     const paths = new Set<string>()
     const changes: Array<{ path: string; content: string; baseline: string; desired: string; mode?: string }> = []
@@ -186,6 +219,14 @@ export function createNotebookStore(repository?: string | null) {
       if (paths.has(path)) throw new NotebookStoreError('invalid', '同步列表包含重复的章节。')
       paths.add(path)
       changes.push({ path, content: chapter.content, baseline: chapter.sha, desired: await blobSha(chapter.content) })
+    }
+    for (const page of pages) {
+      checkPageId(page.id)
+      if (typeof page.content !== 'string' || typeof page.sha !== 'string') throw new NotebookStoreError('invalid', '书页内容或版本号无效。')
+      const path = `docs/pages/${page.id}.md`
+      if (paths.has(path)) throw new NotebookStoreError('invalid', '同步列表包含重复的书页。')
+      paths.add(path)
+      changes.push({ path, content: page.content, baseline: page.sha, desired: await blobSha(page.content) })
     }
 
     const ref = await gitRequest('ref/heads/main') as { object?: { sha?: string } }
@@ -256,6 +297,7 @@ export function createNotebookStore(repository?: string | null) {
       const summary = [
         newBooks.length ? `${newBooks.length} notebook${newBooks.length === 1 ? '' : 's'}` : '',
         chapters.length ? `${chapters.length} note${chapters.length === 1 ? '' : 's'}` : '',
+        pages.length ? `${pages.length} page${pages.length === 1 ? '' : 's'}` : '',
         catalogChange ? 'cabinet catalog' : ''
       ].filter(Boolean).join(', ')
       const createdCommit = await gitRequest('commits', 'POST', {
@@ -271,15 +313,16 @@ export function createNotebookStore(repository?: string | null) {
     return {
       parent, head,
       books: newBooks.map(book => ({ ...book, title: checkTitle(book.title), sha: desiredByPath.get(`docs/${ROOT}/${book.id}/index.md`)! })),
-      chapters: chapters.map(chapter => ({ ...chapter, title: titleFrom(chapter.content, chapter.id), sha: desiredByPath.get(`docs/${ROOT}/${chapter.bookId}/${chapter.id}.md`)! })),
+      chapters: chapters.map(chapter => ({ ...chapter, title: titleFrom(chapter.content, titleFromEncodedId(chapter.id, 'c')), sha: desiredByPath.get(`docs/${ROOT}/${chapter.bookId}/${chapter.id}.md`)! })),
+      pages: pages.map(page => ({ ...page, title: titleFrom(page.content, page.title || page.id), sha: desiredByPath.get(`docs/pages/${page.id}.md`)! })),
       ...(catalog ? { catalog: { catalog, sha: desiredByPath.get('docs/cabinets.json')! } } : {})
     }
   }
 
   /** Delete only the exact files reviewed by the caller, in a single Git commit. */
-  async function deleteBatch(books: BookDeletion[], chapters: Chapter[]): Promise<{ parent: string; head: string; catalog?: CatalogVersion }> {
+  async function deleteBatch(books: BookDeletion[], chapters: Chapter[], pages: Page[] = []): Promise<{ parent: string; head: string; catalog?: CatalogVersion }> {
     if (!token) throw new NotebookStoreError('auth', '请先连接有仓库内容写入权限的 GitHub 令牌。')
-    if (!books.length && !chapters.length) throw new NotebookStoreError('invalid', '请先选择要删除的笔记本或章节。')
+    if (!books.length && !chapters.length && !pages.length) throw new NotebookStoreError('invalid', '请先选择要删除的笔记本、章节或书页。')
 
     const expected = new Map<string, string>()
     const selectedBooks = new Map<string, Map<string, string>>()
@@ -312,6 +355,7 @@ export function createNotebookStore(repository?: string | null) {
       if (selectedBooks.has(bookId)) throw new NotebookStoreError('invalid', '整本笔记和其中章节不能重复选择。')
       addExpected(`docs/${ROOT}/${bookId}/${chapterId}.md`, chapter.sha)
     }
+    for (const page of pages) addExpected(`docs/pages/${checkPageId(page.id)}.md`, page.sha)
 
     const ref = await gitRequest('ref/heads/main') as { object?: { sha?: string } }
     const parent = requireSha(ref?.object?.sha || '')
@@ -358,7 +402,7 @@ export function createNotebookStore(repository?: string | null) {
     let catalog: CabinetCatalog | undefined
     let catalogSha: string | undefined
     let catalogChange: { path: string; mode: string; type: 'blob'; content: string } | undefined
-    if (selectedBooks.size) {
+    if (selectedBooks.size || pages.length) {
       const entry = await findPath('docs/cabinets.json')
       if (entry) {
         if (!isRegularFile(entry)) throw new NotebookStoreError('conflict', '远端书柜目录不是普通文件，请检查后重试。')
@@ -367,6 +411,10 @@ export function createNotebookStore(repository?: string | null) {
         let changed = false
         for (const bookId of selectedBooks.keys()) {
           if (Object.prototype.hasOwnProperty.call(catalog.assignments, bookId)) { delete catalog.assignments[bookId]; changed = true }
+        }
+        for (const page of pages) {
+          const key = `page_${page.id}`
+          if (Object.prototype.hasOwnProperty.call(catalog.assignments, key)) { delete catalog.assignments[key]; changed = true }
         }
         if (changed) {
           const content = catalogText(catalog)
@@ -381,7 +429,7 @@ export function createNotebookStore(repository?: string | null) {
     }) as { sha?: string }
     if (!createdTree?.sha) throw new NotebookStoreError('github', 'GitHub 未返回文件树版本；请保留本地内容。')
     const createdCommit = await gitRequest('commits', 'POST', {
-      message: `Delete ${books.length} notebook(s), ${chapters.length} chapter(s)`, tree: createdTree.sha, parents: [parent]
+      message: `Delete ${books.length} notebook(s), ${chapters.length} chapter(s), ${pages.length} page(s)`, tree: createdTree.sha, parents: [parent]
     }) as { sha?: string }
     if (!createdCommit?.sha) throw new NotebookStoreError('github', 'GitHub 未返回提交版本；请保留本地内容。')
     await gitRequest('refs/heads/main', 'PATCH', { sha: createdCommit.sha, force: false })
@@ -408,8 +456,22 @@ export function createNotebookStore(repository?: string | null) {
   async function readChapter(bookId: string, chapterId: string): Promise<Chapter> {
     checkId(bookId); checkChapterId(chapterId)
     const data = await file(`${ROOT}/${bookId}/${chapterId}.md`)
-    const content = decode(data)
-    return { bookId, id: chapterId, title: titleFrom(content, chapterId), content, sha: data.sha }
+    const content = await fileContent(data)
+    return { bookId, id: chapterId, title: titleFrom(content, titleFromEncodedId(chapterId, 'c')), content, sha: data.sha }
+  }
+
+  async function readPage(id: string): Promise<Page> {
+    checkPageId(id)
+    const data = await file(`pages/${id}.md`)
+    const content = await fileContent(data)
+    return { id, title: titleFrom(content, titleFromEncodedId(id, 'p')), content, sha: data.sha }
+  }
+
+  // Contents may omit base64 for files over 1 MB; Git blobs still provide it.
+  async function fileContent(data: GitHubFile): Promise<string> {
+    if (data.encoding === 'base64' && typeof data.content === 'string') return decode(data)
+    if (!/^[a-f0-9]{40}$/.test(data.sha)) throw new NotebookStoreError('github', 'GitHub 返回的文件版本号无效。')
+    return decode(await gitRequest(`blobs/${encodeURIComponent(data.sha)}`) as GitHubFile)
   }
 
   return {
@@ -460,6 +522,12 @@ export function createNotebookStore(repository?: string | null) {
       const chapters = list.filter(item => item.type === 'file' && item.name.endsWith('.md') && item.name.toLowerCase() !== 'index.md' && ID.test(item.name.slice(0, -3)))
       return Promise.all(chapters.map(item => readChapter(bookId, item.name.slice(0, -3))))
     },
+    async listPages(): Promise<Page[]> {
+      const list = await entries('pages', true)
+      const pages = list.filter(item => item.type === 'file' && item.name.endsWith('.md') && ID.test(item.name.slice(0, -3)))
+      return Promise.all(pages.map(item => readPage(item.name.slice(0, -3))))
+    },
     readChapter,
+    readPage,
   }
 }

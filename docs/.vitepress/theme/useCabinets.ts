@@ -8,11 +8,13 @@ const fallback: CabinetCatalog = { schemaVersion: 2, cabinets: [{ id: 'general',
 // `via` records destinations submitted before an uncertain response. They are
 // valid intermediate remote states on retry, but not arbitrary remote edits.
 type Move = { from: string; to: string; via?: string[] }
-type Removed = { title: string; sha: string; redirected?: Record<string, { before: Move; after?: Move }> }
+type Rename = { from: string; to: string; via?: string[] }
+type Removed = { title: string; sha: string; redirected?: Record<string, { before: Move; after?: Move }>; renamedBefore?: Rename }
 type Journal = {
   created: Record<string, string>
   moves: Record<string, Move>
   removed?: Record<string, Removed | string>
+  renamed?: Record<string, Rename>
   defaultMigration?: { legacyShas: string[] }
   saved?: CatalogVersion
   snapshotSha?: string
@@ -23,18 +25,18 @@ export function useCabinets(repository?: string | null) {
   const base = ref<CatalogVersion>({ catalog: fallback, sha: '' })
   const journal = ref<Journal>({ created: {}, moves: {} })
   let snapshotSha = ''
-  let inFlight: { moves: Record<string, Move>; removed: Record<string, Removed> } | null = null
+  let inFlight: { moves: Record<string, Move>; removed: Record<string, Removed>; renamed: Record<string, Rename>; created: Record<string, string> } | null = null
   const persist = () => {
     try { localStorage.setItem(storageKey, JSON.stringify(journal.value)) }
     catch { throw new Error('无法保存书柜更改，请检查本机存储后重试。') }
   }
   const cabinets = computed(() => [
-    ...base.value.catalog.cabinets,
+    ...base.value.catalog.cabinets.map(cabinet => ({ ...cabinet, title: journal.value.renamed?.[cabinet.id]?.to || cabinet.title })),
     ...Object.entries(journal.value.created)
       .filter(([id]) => !base.value.catalog.cabinets.some(c => c.id === id))
       .map(([id, title]) => ({ id, title }))
   ].filter(cabinet => !journal.value.removed?.[cabinet.id]))
-  const pending = computed(() => Object.keys(journal.value.created).length + Object.keys(journal.value.moves).length + Object.keys(journal.value.removed || {}).length)
+  const pending = computed(() => Object.keys(journal.value.created).length + Object.keys(journal.value.moves).length + Object.keys(journal.value.removed || {}).length + Object.keys(journal.value.renamed || {}).length)
   function assigned(id: string) {
     const target = journal.value.moves[id]?.to || base.value.catalog.assignments[id] || 'general'
     return journal.value.removed?.[target] ? 'general' : target
@@ -87,6 +89,28 @@ export function useCabinets(repository?: string | null) {
     try { persist() } catch (error) { journal.value.created = previous; throw error }
     return id
   }
+  function rename(id: string, title: string) {
+    if (inFlight) throw new Error('书柜同步正在进行，请稍后再修改名称。')
+    if (typeof title !== 'string' || !title.trim() || title.trim().length > 120 || /[\r\n]/.test(title)) throw new Error('请输入 1 至 120 字的单行书柜名称。')
+    if (!cabinets.value.some(cabinet => cabinet.id === id)) throw new Error('书柜不存在或已经删除。')
+    const nextTitle = title.trim()
+    const before = journal.value
+    const created = { ...before.created }
+    const renamed = { ...(before.renamed || {}) }
+    const remote = base.value.catalog.cabinets.find(cabinet => cabinet.id === id)
+    if (!remote) {
+      if (!Object.prototype.hasOwnProperty.call(created, id)) throw new Error('书柜不存在，请恢复目录后重试。')
+      created[id] = nextTitle
+    } else {
+      const old = renamed[id]
+      const from = old?.from ?? remote.title
+      const via = old?.via ? [...old.via] : []
+      if (nextTitle === from && !via.length) delete renamed[id]
+      else renamed[id] = { from, to: nextTitle, ...(via.length ? { via } : {}) }
+    }
+    journal.value = { ...before, created, renamed }
+    try { persist() } catch (error) { journal.value = before; throw error }
+  }
   function move(book: string, to: string) {
     if (!cabinets.value.some(c => c.id === to)) throw new Error('目标书柜不存在。')
     const previous = journal.value.moves
@@ -122,9 +146,11 @@ export function useCabinets(repository?: string | null) {
     const cabinet = cabinets.value.find(item => item.id === id)
     if (!cabinet) throw new Error('书柜不存在或已经删除。')
     const before = journal.value
-    const created = { ...before.created }, moves = { ...before.moves }, removed = { ...(before.removed || {}) }
-    const isRemote = base.value.catalog.cabinets.some(item => item.id === id)
+    const created = { ...before.created }, moves = { ...before.moves }, removed = { ...(before.removed || {}) }, renamed = { ...(before.renamed || {}) }
+    const remote = base.value.catalog.cabinets.find(item => item.id === id)
     delete created[id]
+    const renamedBefore = renamed[id]
+    delete renamed[id]
     const redirected: Record<string, { before: Move; after?: Move }> = {}
     for (const [book, move] of Object.entries(moves)) {
       if (move.to !== id) continue
@@ -133,8 +159,8 @@ export function useCabinets(repository?: string | null) {
       else moves[book] = { from: move.from, to: 'general', ...(via.length ? { via } : {}) }
       redirected[book] = { before: move, ...(moves[book] ? { after: moves[book] } : {}) }
     }
-    if (isRemote) removed[id] = { title: cabinet.title, sha: base.value.sha, redirected }
-    journal.value = { ...before, created, moves, removed }
+    if (remote) removed[id] = { title: remote.title, sha: base.value.sha, redirected, ...(renamedBefore ? { renamedBefore } : {}) }
+    journal.value = { ...before, created, moves, removed, renamed }
     try { persist() } catch (error) { journal.value = before; throw error }
   }
   function undoRemove(id: string) {
@@ -143,15 +169,16 @@ export function useCabinets(repository?: string | null) {
     if (!record) throw new Error('没有待撤销的书柜删除。')
     if (!base.value.catalog.cabinets.some(item => item.id === id)) throw new Error('远程书柜已不存在，请同步删除状态。')
     const before = journal.value
-    const removed = { ...(before.removed || {}) }, moves = { ...before.moves }
+    const removed = { ...(before.removed || {}) }, moves = { ...before.moves }, renamed = { ...(before.renamed || {}) }
     if (typeof record !== 'string') {
+      if (record.renamedBefore && !renamed[id]) renamed[id] = record.renamedBefore
       for (const [book, pair] of Object.entries(record.redirected || {})) {
         // Do not discard a move the user made after deleting the cabinet.
         if (JSON.stringify(moves[book] ?? null) === JSON.stringify(pair.after ?? null)) moves[book] = pair.before
       }
     }
     delete removed[id]
-    journal.value = { ...before, moves, removed }
+    journal.value = { ...before, moves, removed, renamed }
     try { persist() } catch (error) { journal.value = before; throw error }
   }
   // Only include cabinet changes needed by the selected books or explicitly requested cabinets.
@@ -176,13 +203,26 @@ export function useCabinets(repository?: string | null) {
       submittedRemoved[id] = removal
       changed = true
     }
+    const submittedCreated: Record<string, string> = {}
     for (const id of needed) {
       const title = journal.value.created[id]
       if (!title) continue
+      submittedCreated[id] = title
       changed = true
       const existing = next.cabinets.find(c => c.id === id)
       if (!existing) next.cabinets.push({ id, title })
       else if (existing.title !== title) throw new Error('远程书柜名称发生变化，请读取最新目录。')
+    }
+    const submittedRenamed: Record<string, Rename> = {}
+    for (const id of needed) {
+      const rename = journal.value.renamed?.[id]
+      if (!rename) continue
+      const current = source.cabinets.find(cabinet => cabinet.id === id)
+      if (!current || !next.cabinets.some(cabinet => cabinet.id === id)) throw new Error('远程书柜已删除，请恢复后重新检查。')
+      if (current.title !== rename.from && current.title !== rename.to && !rename.via?.includes(current.title)) throw new Error('远程书柜名称已更改，请恢复后重新检查。')
+      next.cabinets = next.cabinets.map(cabinet => cabinet.id === id ? { ...cabinet, title: rename.to } : cabinet)
+      submittedRenamed[id] = { ...rename, ...(rename.via ? { via: [...rename.via] } : {}) }
+      changed = true
     }
     for (const id of bookIds) {
       const move = journal.value.moves[id]
@@ -203,27 +243,42 @@ export function useCabinets(repository?: string | null) {
       via.add(move.to)
       journal.value.moves[id] = { ...move, via: [...via] }
     }
+    for (const [id, rename] of Object.entries(submittedRenamed)) {
+      const via = new Set(rename.via || [])
+      via.add(rename.to)
+      journal.value.renamed![id] = { ...rename, via: [...via] }
+    }
     // Save the attempted intermediate before any request so reloads can retry.
     persist()
-    inFlight = { moves: submitted, removed: submittedRemoved }
+    inFlight = { moves: submitted, removed: submittedRemoved, renamed: submittedRenamed, created: submittedCreated }
     return { catalog: next, sha: base.value.sha }
   }
   function acknowledge(version: CatalogVersion) {
     if (!inFlight) throw new Error('没有正在进行的书柜同步。')
     const submitted = inFlight.moves
     const submittedRemoved = inFlight.removed
+    const submittedRenamed = inFlight.renamed
+    const submittedCreated = inFlight.created
     const beforeCreated = { ...journal.value.created }
     const beforeRemoved = { ...(journal.value.removed || {}) }
+    const beforeRenamed = Object.fromEntries(Object.entries(journal.value.renamed || {}).map(([id, rename]) => [id, { ...rename, ...(rename.via ? { via: [...rename.via] } : {}) }])) as Record<string, Rename>
     const beforeMoves = Object.fromEntries(Object.entries(journal.value.moves).map(([id, move]) => [
       id, { ...move, ...(move.via ? { via: [...move.via] } : {}) }
     ])) as Record<string, Move>
     base.value = version
     for (const c of version.catalog.cabinets) {
-      if (journal.value.created[c.id] === c.title) delete journal.value.created[c.id]
+      // An earlier uncertain create may now exist remotely and be renamed in
+      // this commit; acknowledge the submitted creation even if its title changed.
+      if (journal.value.created[c.id] === c.title || (submittedCreated[c.id] !== undefined && journal.value.created[c.id] === submittedCreated[c.id])) delete journal.value.created[c.id]
     }
     for (const [id, removal] of Object.entries(submittedRemoved)) {
       const pendingRemoval = journal.value.removed?.[id]
       if ((typeof pendingRemoval === 'string' ? pendingRemoval === removal.title : pendingRemoval?.title === removal.title && pendingRemoval.sha === removal.sha) && !version.catalog.cabinets.some(c => c.id === id)) delete journal.value.removed![id]
+    }
+    for (const [id, rename] of Object.entries(journal.value.renamed || {})) {
+      const current = version.catalog.cabinets.find(cabinet => cabinet.id === id)?.title
+      if (current === rename.to) delete journal.value.renamed![id]
+      else if (submittedRenamed[id] && current === submittedRenamed[id].to) journal.value.renamed![id] = { from: current, to: rename.to }
     }
     for (const [id, move] of Object.entries(journal.value.moves)) {
       const current = version.catalog.assignments[id] || 'general'
@@ -242,6 +297,7 @@ export function useCabinets(repository?: string | null) {
       journal.value.created = beforeCreated
       journal.value.moves = beforeMoves
       journal.value.removed = beforeRemoved
+      journal.value.renamed = beforeRenamed
       for (const [id, move] of Object.entries(journal.value.moves)) {
         const current = version.catalog.assignments[id] || 'general'
         if (submitted[id] && current === submitted[id].to) {
@@ -260,5 +316,5 @@ export function useCabinets(repository?: string | null) {
     journal.value.moves = next
     try { persist() } catch (error) { journal.value.moves = previous; throw error }
   }
-  return { cabinets, pending, journal, assigned, create, move, moveMany, remove, undoRemove, restore, latest, prepare, acknowledge, fail, discardMoves }
+  return { cabinets, pending, journal, assigned, create, rename, move, moveMany, remove, undoRemove, restore, latest, prepare, acknowledge, fail, discardMoves }
 }

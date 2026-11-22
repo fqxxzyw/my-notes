@@ -32,15 +32,29 @@
 .code-tool button { border: 0; border-radius: 0; }
 .code-tool select { border: 0; border-left: 1.5px solid #111; padding: 0 6px; background: #fff; color: #111; font: 600 11px ui-monospace, monospace; cursor: pointer; }
 .markdown-shortcuts { margin: 3px 0 9px; color: var(--muted, #59616a); font-size: 12px; line-height: 1.6; }
+.markdown-error { margin: 8px 0; color: #a12626; font-size: 13px; }
 .editor-panes { display: grid; grid-template-columns: minmax(0, 1fr); border: 2px solid #111; border-radius: 9px; overflow: hidden; background: #fff; }
-.editor-panes--split { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-.editor-pane, .editor-preview { min-width: 0; padding: 24px clamp(16px, 3vw, 44px); }
-.editor-panes--split .editor-pane, .editor-panes--split .editor-preview { padding-inline: 22px; }
-.editor-panes--split .editor-preview { border-left: 2px solid #111; }
+.editor-pane { min-width: 0; padding: 24px clamp(16px, 3vw, 44px); }
 .pane-heading { display: block; margin: 0; color: var(--muted, #59616a); font-size: 12px; font-weight: 600; }
-.editor-preview { overflow-wrap: anywhere; }
-.preview-empty { color: var(--muted, #59616a); font-size: 13px; }
-.markdown-editor textarea {
+:deep(.cm-editor) { background: transparent; color: var(--ink, #202328); font-size: 15px; }
+:deep(.cm-editor.cm-focused) { outline: none; }
+:deep(.cm-scroller) { font-family: ui-monospace, "Microsoft YaHei", monospace; line-height: 1.8; }
+:deep(.cm-content) { min-height: max(65vh, 600px); padding: 14px 0 48px; caret-color: var(--ink, #202328); }
+:deep(.cm-line) { padding: 0; }
+:deep(.cm-paper-heading) { font-family: var(--vp-font-family-base, sans-serif); font-weight: 700; line-height: 1.4; }
+:deep(.cm-paper-h1) { font-size: 2em; }
+:deep(.cm-paper-h2) { font-size: 1.6em; }
+:deep(.cm-paper-h3) { font-size: 1.3em; }
+:deep(.cm-paper-h4), :deep(.cm-paper-h5), :deep(.cm-paper-h6) { font-size: 1.1em; }
+:deep(.cm-paper-strong) { font-weight: 700; }
+:deep(.cm-paper-emphasis) { font-style: italic; }
+:deep(.cm-paper-code) { padding: 0 .2em; border-radius: 3px; background: var(--vp-c-bg-soft, #f3f3f3); }
+:deep(.cm-paper-rendered) { cursor: text; overflow-wrap: anywhere; line-height: 1.8; font-family: var(--vp-font-family-base, sans-serif); color: var(--ink, #202328); }
+:deep(.cm-paper-rendered > :first-child) { margin-top: 0; }
+:deep(.cm-paper-rendered > :last-child) { margin-bottom: 0; }
+:deep(.cm-paper-rendered input[type='checkbox']) { margin-right: .4em; accent-color: var(--ink, #202328); }
+:deep(.cm-paper-rendered a) { cursor: text; }
+:deep(.live-markdown-fallback) {
   display: block;
   width: 100%;
   min-height: max(65vh, 600px);
@@ -56,8 +70,6 @@
 @media (max-width: 600px) {
   .markdown-toolbar { gap: 5px; }
   .markdown-toolbar button { padding: 6px 8px; }
-  .editor-panes--split { grid-template-columns: minmax(0, 1fr); }
-  .editor-panes--split .editor-preview { border-left: 0; border-top: 2px solid #111; }
-  .editor-pane, .editor-preview, .editor-panes--split .editor-pane, .editor-panes--split .editor-preview { padding: 18px 8px; }
-  .markdown-editor textarea { min-height: max(60vh, 420px); }
+  .editor-pane { padding: 18px 8px; }
+  :deep(.cm-content), :deep(.live-markdown-fallback) { min-height: max(60vh, 420px); }
 }

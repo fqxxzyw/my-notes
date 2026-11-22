@@ -76,6 +76,7 @@ try {
         ('/out:' + $outputPath), ('/win32icon:' + (Join-Path $PSScriptRoot 'app.ico')),
         ('/win32manifest:' + (Join-Path $PSScriptRoot 'app.manifest')),
         ('/resource:' + $payloadZip + ',PaperNotes.Payload'),
+        ('/resource:' + (Join-Path $PSScriptRoot 'app.ico') + ',PaperNotes.Logo'),
         '/reference:System.dll', '/reference:System.Drawing.dll', '/reference:System.Windows.Forms.dll',
         '/reference:System.Security.dll', '/reference:System.Web.Extensions.dll')
     foreach ($reference in $references) { $args += '/reference:' + $reference }

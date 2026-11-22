@@ -2,8 +2,9 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Notebook } from './notebookStore'
 
-const props = defineProps<{ books: Notebook[]; selectedId?: string; disabled?: boolean }>()
-const emit = defineEmits<{ select: [book: Notebook] }>()
+type ShelfItem = Notebook & { kind?: 'page' }
+const props = defineProps<{ books: ShelfItem[]; selectedId?: string; disabled?: boolean }>()
+const emit = defineEmits<{ select: [book: ShelfItem] }>()
 
 const refs = new Map<number, HTMLElement>()
 const scroll = ref<HTMLElement | null>(null)
@@ -137,11 +138,15 @@ function leave() {
 function bookStyle(index: number) {
   const f = weights.value[index] || 0
   const m = metrics.value
+  const page = props.books[index]?.kind === 'page'
   const width = m.baseW + (m.maxW - m.baseW) * f
   const tiltY = -26 - 14 * f
+  const touchesPage = page || props.books[index + 1]?.kind === 'page'
+  const baseline = touchesPage ? Math.max(m.gap, spacingFor(width, tiltY)) : m.gap
+  const spacing = baseline + (Math.max(baseline, spacingFor(width, tiltY)) - baseline) * f
   return {
     '--book-width': `${width}px`,
-    '--book-spacing': `${m.gap + (spacingFor(width, tiltY) - m.gap) * f}px`,
+    '--book-spacing': `${spacing}px`,
     '--book-height': `${m.baseH + (m.maxH - m.baseH) * f}px`,
     '--tilt-y': `${tiltY}deg`,
     '--tilt-x': `${-6 + 2.5 * f}deg`,
@@ -193,7 +198,7 @@ onBeforeUnmount(() => {
   <section class="bookshelf" aria-label="笔记本书架">
     <div class="bookshelf__stage">
     <div class="bookshelf__stage-heading">
-      <span>3D 书脊 · 笔记本</span>
+      <span>3D 书脊 · 笔记本与书页</span>
       <span>移动鼠标放大 · 点击打开</span>
     </div>
     <div ref="scroll" class="bookshelf__scroll" :class="{ 'is-dragging': dragging }"
@@ -206,10 +211,10 @@ onBeforeUnmount(() => {
           :key="book.id"
           :ref="element => setBookRef(element, index)"
           class="volume"
-          :class="{ 'volume--selected': book.id === selectedId }"
+          :class="{ 'volume--selected': book.id === selectedId, 'volume--page': book.kind === 'page' }"
           :style="bookStyle(index)"
           :disabled="disabled"
-          :aria-label="book.title"
+          :aria-label="`${book.kind === 'page' ? '书页' : '笔记本'}：${book.title}`"
           :title="book.title"
           type="button"
           @focus="focusBook(index)"
@@ -219,7 +224,23 @@ onBeforeUnmount(() => {
           @click="emit('select', book)"
         >
           <span class="volume__floor-shadow" aria-hidden="true"></span>
-          <span class="volume__body" aria-hidden="true">
+          <span v-if="book.kind === 'page'" class="volume__body page__body" aria-hidden="true">
+            <span class="volume__top"></span>
+            <span class="volume__spine page__sheet">
+              <span class="volume__number">MD</span>
+              <span class="volume__title">{{ book.title }}</span>
+              <span class="page__lines"><span></span><span></span><span></span></span>
+              <span class="volume__tag">PAGE</span>
+            </span>
+            <span class="volume__cover page__cover">
+              <span class="page__folder-tab">ARCHIVE</span>
+              <span class="volume__cover-frame"></span>
+              <span class="volume__cover-label"><span>FILE.{{ String(index + 1).padStart(2, '0') }}</span><span>MD</span></span>
+              <span class="volume__cover-title">{{ book.title }}<span class="volume__cover-lines"><span></span><span></span><span></span></span></span>
+              <span class="volume__cover-rule">SINGLE PAGE</span>
+            </span>
+          </span>
+          <span v-else class="volume__body" aria-hidden="true">
             <span class="volume__top"></span>
             <span class="volume__spine">
               <span class="volume__number">{{ String(index + 1).padStart(2, '0') }}</span>
@@ -241,11 +262,11 @@ onBeforeUnmount(() => {
     </div>
     <div class="bookshelf__info">
       <div class="bookshelf__info-copy">
-        <span class="bookshelf__info-label">当前笔记本</span>
+        <span class="bookshelf__info-label">{{ activeBook?.kind === 'page' ? '当前书页' : '当前笔记本' }}</span>
         <strong v-if="activeBook">{{ activeBook.title }}</strong>
         <span v-else>移动鼠标或用键盘选择书本</span>
       </div>
-      <button v-if="activeBook" class="bookshelf__open" type="button" :disabled="disabled" @click="emit('select', activeBook)">打开目录 →</button>
+      <button v-if="activeBook" class="bookshelf__open" type="button" :disabled="disabled" @click="emit('select', activeBook)">{{ activeBook.kind === 'page' ? '打开书页' : '打开目录' }} →</button>
     </div>
   </section>
 </template>

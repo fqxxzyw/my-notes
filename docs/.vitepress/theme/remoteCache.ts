@@ -1,5 +1,5 @@
 import { validateCatalog, type CatalogVersion } from './cabinetStore'
-import type { Chapter, Notebook } from './notebookStore'
+import type { Chapter, Notebook, Page } from './notebookStore'
 import { namespaceKey } from './repository'
 
 /** A complete GitHub revision, separate from unsynchronized local drafts. */
@@ -7,6 +7,8 @@ export type RemoteSnapshot = {
   head: string
   books: Notebook[]
   chapters: Record<string, Chapter[]>
+  /** Older snapshots predate standalone pages; callers should restore before assuming none exist. */
+  pages?: Page[]
   catalog: CatalogVersion
   /** True means the locally cached revision has known gaps and needs a full restore. */
   stale?: boolean
@@ -60,9 +62,22 @@ function cleanSnapshot(value: unknown): RemoteSnapshot {
     })
   }
   const rawCatalog = input.catalog as Record<string, unknown>
+  let pages: Page[] | undefined
+  if (input.pages !== undefined) {
+    if (!Array.isArray(input.pages)) throw new Error('远端书页数据无效。')
+    const seen = new Set<string>()
+    pages = input.pages.map((raw: unknown): Page => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('远端书页数据无效。')
+      const page = raw as Record<string, unknown>
+      if (typeof page.id !== 'string' || !ID.test(page.id) || page.id.length > 251 || seen.has(page.id) ||
+          typeof page.title !== 'string' || typeof page.content !== 'string' || typeof page.sha !== 'string' || !SHA.test(page.sha)) throw new Error('远端书页数据无效。')
+      seen.add(page.id)
+      return { id: page.id, title: page.title, content: page.content, sha: page.sha }
+    })
+  }
   if (typeof rawCatalog.sha !== 'string' || (rawCatalog.sha !== '' && !SHA.test(rawCatalog.sha))) throw new Error('远端书柜版本无效。')
   if (input.stale !== undefined && typeof input.stale !== 'boolean') throw new Error('远端快照状态无效。')
-  return { head: input.head, books, chapters, catalog: { catalog: validateCatalog(rawCatalog.catalog), sha: rawCatalog.sha }, ...(input.stale === undefined ? {} : { stale: input.stale }) }
+  return { head: input.head, books, chapters, ...(pages === undefined ? {} : { pages }), catalog: { catalog: validateCatalog(rawCatalog.catalog), sha: rawCatalog.sha }, ...(input.stale === undefined ? {} : { stale: input.stale }) }
 }
 
 /** Returns null for an absent, incomplete or unreadable cache; never alters drafts or a damaged cache. */

@@ -162,6 +162,10 @@ namespace PaperNotesDesktop
         private readonly string credentialDirectory;
         private readonly JavaScriptSerializer json = new JavaScriptSerializer();
         private Microsoft.Web.WebView2.WinForms.WebView2 webView;
+        private readonly StartupScreen startupScreen;
+        private readonly List<ResizeGrip> resizeGrips = new List<ResizeGrip>();
+        private readonly Stopwatch startupClock = Stopwatch.StartNew();
+        private bool startupRevealed;
 
         [DllImport("user32.dll")]
         private static extern bool ReleaseCapture();
@@ -198,6 +202,16 @@ namespace PaperNotesDesktop
             ClientSize = new Size(1280, 820);
             MinimumSize = new Size(760, 520);
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+            startupScreen = new StartupScreen(Icon);
+            startupScreen.Dock = DockStyle.Fill;
+            Controls.Add(startupScreen);
+            for (int hit = 10; hit <= 17; hit++)
+            {
+                var grip = new ResizeGrip(this, hit);
+                resizeGrips.Add(grip);
+                Controls.Add(grip);
+            }
+            LayoutResizeGrips();
             Shown += StartWebView;
         }
 
@@ -209,6 +223,8 @@ namespace PaperNotesDesktop
                 webView = new Microsoft.Web.WebView2.WinForms.WebView2();
                 webView.Dock = DockStyle.Fill;
                 Controls.Add(webView);
+                startupScreen.BringToFront();
+                foreach (ResizeGrip grip in resizeGrips) grip.BringToFront();
 
                 var environment = await Microsoft.Web.WebView2.Core.CoreWebView2Environment.CreateAsync(null, profile);
                 await webView.EnsureCoreWebView2Async(environment);
@@ -221,6 +237,7 @@ namespace PaperNotesDesktop
                     AppHost, Path.Combine(root, "site"),
                     Microsoft.Web.WebView2.Core.CoreWebView2HostResourceAccessKind.DenyCors);
                 core.NavigationStarting += NavigationStarting;
+                core.NavigationCompleted += StartupNavigationCompleted;
                 core.NewWindowRequested += NewWindowRequested;
                 core.PermissionRequested += PermissionRequested;
                 core.WebMessageReceived += WebMessageReceived;
@@ -232,6 +249,61 @@ namespace PaperNotesDesktop
                     exception.Message, "纸间", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 Close();
             }
+        }
+
+        protected override void OnResize(EventArgs args)
+        {
+            base.OnResize(args);
+            if (resizeGrips != null) LayoutResizeGrips();
+        }
+
+        private void LayoutResizeGrips()
+        {
+            if (resizeGrips.Count != 8) return;
+            bool normal = WindowState == FormWindowState.Normal;
+            int width = ClientSize.Width, height = ClientSize.Height;
+            const int edge = 7, corner = 14;
+            Rectangle[] bounds = {
+                new Rectangle(0, corner, edge, Math.Max(0, height - 2 * corner)),
+                new Rectangle(Math.Max(0, width - edge), corner, edge, Math.Max(0, height - 2 * corner)),
+                new Rectangle(corner, 0, Math.Max(0, width - 2 * corner), edge),
+                new Rectangle(0, 0, corner, corner),
+                new Rectangle(Math.Max(0, width - corner), 0, corner, corner),
+                new Rectangle(corner, Math.Max(0, height - edge), Math.Max(0, width - 2 * corner), edge),
+                new Rectangle(0, Math.Max(0, height - corner), corner, corner),
+                new Rectangle(Math.Max(0, width - corner), Math.Max(0, height - corner), corner, corner)
+            };
+            for (int i = 0; i < resizeGrips.Count; i++)
+            {
+                resizeGrips[i].Bounds = bounds[i];
+                resizeGrips[i].Visible = normal;
+            }
+        }
+
+        private void StartupNavigationCompleted(object sender, Microsoft.Web.WebView2.Core.CoreWebView2NavigationCompletedEventArgs args)
+        {
+            if (!startupRevealed && !args.IsSuccess)
+            {
+                startupScreen.ShowFailure("无法加载笔记界面，请重新启动应用。");
+            }
+        }
+
+        private async void RevealStartup()
+        {
+            if (startupRevealed)
+            {
+                if (webView != null && webView.CoreWebView2 != null)
+                    webView.CoreWebView2.PostWebMessageAsJson("{\"channel\":\"paper-notes\",\"action\":\"ui.reveal\"}");
+                return;
+            }
+            startupRevealed = true;
+            // Let the two pieces of the mark finish assembling before the page appears.
+            int remaining = (startupScreen.AnimationsEnabled ? 1400 : 150) - (int)startupClock.ElapsedMilliseconds;
+            if (remaining > 0) await Task.Delay(remaining);
+            if (IsDisposed || webView == null || webView.CoreWebView2 == null) return;
+            startupScreen.StopAnimation();
+            startupScreen.Visible = false;
+            webView.CoreWebView2.PostWebMessageAsJson("{\"channel\":\"paper-notes\",\"action\":\"ui.reveal\"}");
         }
 
         // Retain native window sizing and snapping while suppressing the entire caption.
@@ -313,6 +385,7 @@ namespace PaperNotesDesktop
             catch { return; }
             if (request == null || GetString(request, "channel") != "paper-notes") return;
             string action = GetString(request, "action");
+            if (action == "ui.ready") { RevealStartup(); return; }
             if (action == "window.minimize") { WindowState = FormWindowState.Minimized; return; }
             if (action == "window.maximize")
             {
@@ -484,6 +557,204 @@ namespace PaperNotesDesktop
         private static void PermissionRequested(object sender, Microsoft.Web.WebView2.Core.CoreWebView2PermissionRequestedEventArgs args)
         {
             args.State = Microsoft.Web.WebView2.Core.CoreWebView2PermissionState.Deny;
+        }
+    }
+
+    // WebView2 has its own child HWNDs, which otherwise consume edge mouse
+    // events before the captionless form can enter Windows' native sizing loop.
+    internal sealed class ResizeGrip : Control
+    {
+        [DllImport("user32.dll")]
+        private static extern bool SetLayeredWindowAttributes(IntPtr window, uint color, byte alpha, uint flags);
+        private readonly Form owner;
+        private readonly int hit;
+        private bool dragging;
+        private Point dragOrigin;
+        private Rectangle initialBounds;
+
+        public ResizeGrip(Form owner, int hit)
+        {
+            this.owner = owner; this.hit = hit;
+            BackColor = Color.Black;
+            Cursor = hit == 10 || hit == 11 ? Cursors.SizeWE : hit == 12 || hit == 15 ? Cursors.SizeNS :
+                hit == 13 || hit == 17 ? Cursors.SizeNWSE : Cursors.SizeNESW;
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get { var parameters = base.CreateParams; parameters.ExStyle |= 0x00080000; return parameters; }
+        }
+
+        protected override void OnHandleCreated(EventArgs args)
+        {
+            base.OnHandleCreated(args);
+            // One alpha level is visually imperceptible but remains hit-testable.
+            SetLayeredWindowAttributes(Handle, 0, 1, 2);
+        }
+
+        protected override void OnMouseDown(MouseEventArgs args)
+        {
+            base.OnMouseDown(args);
+            if (args.Button != MouseButtons.Left || owner.WindowState != FormWindowState.Normal) return;
+            dragging = true;
+            dragOrigin = Cursor.Position;
+            initialBounds = owner.Bounds;
+            Capture = true;
+        }
+
+        protected override void OnMouseMove(MouseEventArgs args)
+        {
+            base.OnMouseMove(args);
+            if (!dragging || !Capture) return;
+            Point position = Cursor.Position;
+            int dx = position.X - dragOrigin.X, dy = position.Y - dragOrigin.Y;
+            int left = initialBounds.Left, right = initialBounds.Right, top = initialBounds.Top, bottom = initialBounds.Bottom;
+            if (hit == 10 || hit == 13 || hit == 16) left = Math.Min(right - owner.MinimumSize.Width, left + dx);
+            if (hit == 11 || hit == 14 || hit == 17) right = Math.Max(left + owner.MinimumSize.Width, right + dx);
+            if (hit == 12 || hit == 13 || hit == 14) top = Math.Min(bottom - owner.MinimumSize.Height, top + dy);
+            if (hit == 15 || hit == 16 || hit == 17) bottom = Math.Max(top + owner.MinimumSize.Height, bottom + dy);
+            owner.Bounds = Rectangle.FromLTRB(left, top, right, bottom);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs args)
+        {
+            base.OnMouseUp(args);
+            dragging = false;
+            Capture = false;
+        }
+
+        protected override void OnMouseCaptureChanged(EventArgs args)
+        {
+            base.OnMouseCaptureChanged(args);
+            if (!Capture) dragging = false;
+        }
+    }
+
+    // A native placeholder is painted before WebView2 starts, so its runtime
+    // initialization cannot leave the application looking like an empty window.
+    internal sealed class StartupScreen : Control
+    {
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SystemParametersInfo(uint action, uint parameter, out bool value, uint flags);
+
+        private readonly Timer timer = new Timer();
+        private readonly Stopwatch clock = Stopwatch.StartNew();
+        private readonly Image logo;
+        private readonly bool animate;
+        private string failure;
+        public bool AnimationsEnabled { get { return animate; } }
+
+        public StartupScreen(Icon icon)
+        {
+            DoubleBuffered = true;
+            BackColor = Color.White;
+            // The icon's frames are PNG-encoded. Icon.ToBitmap in .NET Framework
+            // cannot reliably decode these, so load the selected frame as an image.
+            try
+            {
+                using (Stream resource = Assembly.GetExecutingAssembly().GetManifestResourceStream("PaperNotes.Logo"))
+                using (var reader = resource == null ? null : new BinaryReader(resource))
+                {
+                    if (reader != null)
+                    {
+                        reader.ReadUInt16(); reader.ReadUInt16();
+                        int count = reader.ReadUInt16();
+                        int bestDifference = Int32.MaxValue, bestLength = 0, bestOffset = 0;
+                        for (int i = 0; i < count; i++)
+                        {
+                            int width = reader.ReadByte();
+                            reader.ReadByte(); reader.ReadByte(); reader.ReadByte();
+                            reader.ReadUInt16(); reader.ReadUInt16();
+                            int length = reader.ReadInt32(), offset = reader.ReadInt32();
+                            int difference = Math.Abs((width == 0 ? 256 : width) - 128);
+                            if (difference < bestDifference) { bestDifference = difference; bestLength = length; bestOffset = offset; }
+                        }
+                        if (bestLength > 0 && bestOffset >= 0 && (long)bestOffset + bestLength <= resource.Length)
+                        {
+                            resource.Position = bestOffset;
+                            using (var frame = new MemoryStream(reader.ReadBytes(bestLength)))
+                            using (var image = Image.FromStream(frame)) logo = new Bitmap(image);
+                        }
+                    }
+                }
+            }
+            catch (Exception) { /* Keep a usable loading screen if the icon is unavailable. */ }
+            bool enabled;
+            animate = !SystemParametersInfo(0x1042, 0, out enabled, 0) || enabled;
+            timer.Interval = animate ? 60 : 1000;
+            timer.Tick += delegate { Invalidate(); };
+            timer.Start();
+        }
+
+        public void StopAnimation() { timer.Stop(); }
+
+        public void ShowFailure(string message)
+        {
+            failure = message + "（按 Alt+F4 关闭）";
+            timer.Stop();
+            Invalidate();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            var g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            float centerX = ClientSize.Width / 2f;
+            float centerY = ClientSize.Height / 2f - 24f;
+            double phase = clock.Elapsed.TotalSeconds * 2.7;
+            if (logo != null)
+            {
+                // Separate the book spine from the frame, then reassemble the
+                // original icon. At rest both pieces occupy their exact source bounds.
+                double time = clock.Elapsed.TotalSeconds % 3.0;
+                double separation = 0;
+                if (animate && failure == null)
+                {
+                    if (time < 0.18) separation = 1;
+                    else if (time < 1.18) { double t = (time - 0.18); separation = 1 - t * t * (3 - 2 * t); }
+                    else if (time > 2.45) { double t = (time - 2.45) / 0.55; separation = t * t * (3 - 2 * t); }
+                }
+                float frameX = centerX - 38 - (float)(separation * 11);
+                float frameY = centerY - 68 + (float)(Math.Sin(time * 7) * 2 * separation);
+                var spineSource = new Rectangle(45, 28, 27, 61);
+                var spineOriginal = new RectangleF(frameX + 76f * spineSource.X / 128f, frameY + 76f * spineSource.Y / 128f,
+                    76f * spineSource.Width / 128f, 76f * spineSource.Height / 128f);
+                var saved = g.Save();
+                g.SetClip(spineOriginal, System.Drawing.Drawing2D.CombineMode.Exclude);
+                g.DrawImage(logo, frameX, frameY, 76, 76);
+                g.Restore(saved);
+                var spineDestination = new RectangleF(spineOriginal.X + (float)(separation * 22),
+                    spineOriginal.Y - (float)(separation * (6 + Math.Sin(time * 9) * 3)), spineOriginal.Width, spineOriginal.Height);
+                g.DrawImage(logo, new PointF[] { new PointF(spineDestination.Left, spineDestination.Top),
+                    new PointF(spineDestination.Right, spineDestination.Top), new PointF(spineDestination.Left, spineDestination.Bottom) },
+                    spineSource, GraphicsUnit.Pixel);
+            }
+            using (var titleFont = new Font("Microsoft YaHei UI", 15f, FontStyle.Regular))
+            using (var hintFont = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular))
+            using (var ink = new SolidBrush(Color.FromArgb(22, 22, 22)))
+            using (var muted = new SolidBrush(Color.FromArgb(105, 105, 105)))
+            using (var centered = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+            {
+                g.DrawString("纸间", titleFont, ink, new RectangleF(0, centerY + 24, Width, 30), centered);
+                string status = failure ?? (clock.Elapsed.TotalSeconds >= 15 ? "启动时间较长，请检查 WebView2 运行环境" : "正在打开你的笔记");
+                g.DrawString(status, hintFont, muted, new RectangleF(0, centerY + 63, Width, 24), centered);
+                if (failure == null && clock.Elapsed.TotalSeconds < 15)
+                {
+                    for (int i = 0; i < 3; i++)
+                    {
+                        float size = animate ? 3f + (float)((Math.Sin(phase - i * 0.8) + 1) * 1.3) : 4f;
+                        g.FillEllipse(ink, centerX - 14 + i * 14 - size / 2, centerY + 105 - size / 2, size, size);
+                    }
+                }
+            }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) { timer.Dispose(); if (logo != null) logo.Dispose(); }
+            base.Dispose(disposing);
         }
     }
 }

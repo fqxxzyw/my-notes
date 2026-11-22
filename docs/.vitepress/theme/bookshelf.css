@@ -213,6 +213,17 @@
   background: #fff;
   backface-visibility: visible;
 }
+/* A standalone page is housed in a slim archive folder, using the same
+   perspective and dimensions as its neighbouring books. */
+.volume--page .page__sheet { padding: 16px 6px 12px; border-color: var(--book-ink); }
+.page__cover { padding-top: 25px; }
+.page__cover .volume__cover-frame { top: 17px; }
+.page__folder-tab { position: absolute; top: 0; left: 8px; padding: 2px 5px; border: 1px solid var(--book-ink); border-top: 0; color: var(--book-ink); font: 700 7px/1 ui-monospace, monospace; letter-spacing: .04em; }
+.page__lines { display: flex; flex-direction: column; gap: 4px; width: 60%; margin-bottom: 8px; }
+.page__lines span { height: 1px; background: var(--book-ink); }
+.page__lines span:nth-child(2) { width: 75%; }
+.page__lines span:nth-child(3) { width: 48%; }
+.volume--page .volume__tag { color: var(--book-ink); }
 .bookshelf__board {
   height: 18px;
   border: 2px solid #111;

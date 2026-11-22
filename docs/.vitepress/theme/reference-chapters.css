@@ -1,0 +1,232 @@
+/* Chapter directory and editor sidebar follow the supplied monochrome reference. */
+.chapter-panel {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr);
+  align-items: start;
+  gap: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  margin-top: 28px;
+}
+.reference-book-card {
+  min-width: 0;
+  border: 2px solid #111;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 4px 4px 0 #111;
+}
+.reference-hero-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  perspective: 1100px;
+  min-height: 288px;
+  padding: 28px 16px 24px;
+  border-bottom: 2px solid #111;
+}
+.reference-hero-book {
+  position: relative;
+  width: 74px;
+  height: 236px;
+  transform-style: preserve-3d;
+  transform: rotateX(-7deg) rotateY(-36deg) translateX(-28px);
+  transition: transform .35s cubic-bezier(.22,1,.36,1);
+}
+.reference-hero-stage:hover .reference-hero-book {
+  transform: rotateX(-5deg) rotateY(-46deg) translateX(-22px) translateY(-4px);
+}
+.reference-book-spine, .reference-book-cover, .reference-book-top {
+  position: absolute;
+  background: #fff;
+  border: 2px solid #111;
+}
+.reference-book-spine {
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 6px;
+  backface-visibility: hidden;
+}
+.reference-book-spine::before, .reference-book-spine::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: #111;
+  opacity: .16;
+}
+.reference-book-spine::before { left: 5px; }
+.reference-book-spine::after { right: 5px; }
+.reference-book-number {
+  font: 700 10px/1.1 ui-monospace, monospace;
+  border-block: 1.5px solid #111;
+  padding: 2px 5px;
+}
+.reference-book-spine-title {
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-height: 0;
+  max-height: 150px;
+  margin: auto 0;
+  color: #6e4726;
+  font: 700 15px/1.2 var(--paper-serif, serif);
+  letter-spacing: .08em;
+}
+.reference-book-rule { flex: 0 0 auto; width: 18px; height: 2px; background: #111; }
+.reference-book-cover {
+  top: 0;
+  left: 100%;
+  width: 158px;
+  height: 100%;
+  padding: 16px 14px;
+  transform-origin: left center;
+  transform: rotateY(90deg);
+  backface-visibility: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  overflow: hidden;
+}
+.reference-cover-frame { position: absolute; inset: 8px; border: 1px solid #111; pointer-events: none; }
+.reference-cover-meta { position: relative; font: 700 9px ui-monospace, monospace; border-bottom: 1px solid #111; padding-bottom: 6px; }
+.reference-cover-title {
+  position: relative;
+  max-height: 100px;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font: 700 16px/1.4 var(--paper-serif, serif);
+}
+.reference-cover-rule { position: relative; display: block; border-bottom: 1px solid #111; }
+.reference-book-top {
+  top: 0;
+  left: 0;
+  width: 74px;
+  height: 158px;
+  transform-origin: top center;
+  transform: rotateX(-90deg);
+  backface-visibility: hidden;
+  background: repeating-linear-gradient(90deg, #fff 0 5px, #777 5px 6px);
+}
+.reference-book-details { padding: 20px; }
+.reference-book-details h2 {
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+  font: 700 20px/1.45 var(--paper-serif, serif);
+}
+.reference-book-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 16px;
+  border-top: 1.5px solid #111;
+  font-size: 12px;
+  font-weight: 600;
+}
+.reference-outline-button {
+  padding: 6px 10px;
+  border: 1.5px solid #111;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  background: #fff;
+}
+.reference-outline-button:hover { color: #fff; background: #111; }
+.contents-list { min-width: 0; }
+.chapter-title.reference-chapter-heading {
+  align-items: center;
+  gap: 12px;
+  padding: 0 0 16px;
+  margin-bottom: 16px;
+  border-bottom: 2px solid #111;
+  color: #111;
+}
+.reference-chapter-heading small {
+  display: block;
+  font: 700 11px ui-monospace, monospace;
+  letter-spacing: .05em;
+}
+.reference-chapter-heading h2 { font-size: 18px; font-weight: 700; margin: 2px 0 0; }
+.chapter-row {
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  margin-bottom: 12px;
+  padding: 15px;
+  border: 1.5px solid #111;
+  border-radius: 9px;
+  background: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  transition: box-shadow .15s ease, transform .15s ease;
+}
+.chapter-row:hover, .chapter-row.selected { color: #111; box-shadow: 3px 3px 0 #111; transform: translate(-1px,-1px); }
+.chapter-row > span:nth-child(2) { min-width: 0; overflow-wrap: anywhere; }
+.chapter-index {
+  flex: 0 0 auto;
+  min-width: 28px;
+  padding: 4px;
+  border: 1px solid #111;
+  border-radius: 4px;
+  color: #111;
+  font: 700 11px ui-monospace, monospace;
+  text-align: center;
+}
+.reference-editor-workspace {
+  display: grid;
+  grid-template-columns: minmax(190px, 240px) minmax(0, 1fr);
+  align-items: stretch;
+  gap: 16px;
+  min-height: calc(100vh - 150px);
+}
+.reference-editor-sidebar {
+  min-width: 0;
+  padding: 12px;
+  border: 2px solid #111;
+  border-radius: 12px;
+  background: #fff;
+}
+.reference-sidebar-heading {
+  padding: 0 0 10px;
+  margin-bottom: 8px;
+  border-bottom: 1.5px solid #111;
+  cursor: pointer;
+  font-size: 13px;
+}
+.reference-sidebar-heading strong { overflow-wrap: anywhere; }
+.reference-sidebar-row {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: #fff;
+  text-align: left;
+  line-height: 1.5;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.reference-sidebar-row:hover, .reference-sidebar-row.active { border-color: #111; background: #f7f7f7; }
+.reference-editor-workspace .paper.editor {
+  min-width: 0;
+  padding: 18px;
+  border: 2px solid #111;
+  border-radius: 12px;
+  overflow: hidden;
+}
+@media (max-width: 850px) {
+  .chapter-panel { grid-template-columns: 1fr; }
+  .reference-editor-workspace { grid-template-columns: 1fr; }
+  .reference-editor-sidebar { padding: 8px 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reference-hero-book, .chapter-row { transition: none; }
+}

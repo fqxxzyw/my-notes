@@ -37,3 +37,8 @@
 }
 
 .vp-doc h1, .vp-doc h2 { font-family: var(--paper-serif); }
+
+/* The archive has its own compact navigation. Documentation keeps VitePress navigation. */
+.Layout:has(.desk) .VPNav { display: none; }
+.Layout:has(.desk) .VPContent { padding-top: 0 !important; }
+.Layout:has(.desk) { overflow-x: clip; }

@@ -2,16 +2,16 @@
 import type { Notebook } from './notebookStore'
 type Cabinet = { id: string; title: string; books: Notebook[] }
 defineProps<{ items: Cabinet[] }>()
-const emit = defineEmits<{ select: [id: string] }>()
+const emit = defineEmits<{ select: [id: string]; create: [] }>()
 </script>
 
 <template>
   <div class="cabinet-gallery" aria-label="书柜列表">
-    <button v-for="item in items" :key="item.id" class="cabinet" type="button"
+    <button v-for="(item, index) in items" :key="item.id" class="cabinet" type="button"
       :aria-label="`${item.title}，${item.books.length} 本笔记本`" @click="emit('select', item.id)">
       <span class="cabinet__top">
         <span class="cabinet__information">
-          <span class="cabinet__meta">{{ item.books.length }} 册笔记本</span>
+          <span class="cabinet__meta"><span class="case-number">CASE {{ String(index + 1).padStart(2, '0') }}</span> {{ item.books.length }} 册</span>
           <span class="cabinet__name">{{ item.title }}</span>
         </span>
         <span class="cabinet__drawing" aria-hidden="true">
@@ -25,8 +25,13 @@ const emit = defineEmits<{ select: [id: string] }>()
           <span v-if="item.books.length > 3">+{{ item.books.length - 3 }}</span>
           <span v-if="!item.books.length" class="cabinet__empty">暂无笔记本</span>
         </span>
-        <strong>打开书柜 →</strong>
+        <strong>进入书柜 →</strong>
       </span>
+    </button>
+    <button class="cabinet cabinet--create" type="button" @click="emit('create')">
+      <span class="create-plus">+</span>
+      <strong>新建书柜</strong>
+      <span>创建知识分类并收纳笔记本</span>
     </button>
   </div>
 </template>
@@ -44,6 +49,7 @@ const emit = defineEmits<{ select: [id: string] }>()
 .cabinet__top, .cabinet__footer { display: flex; justify-content: space-between; gap: 16px; }
 .cabinet__information { min-width: 0; display: grid; align-content: start; gap: 10px; }
 .cabinet__meta { color: #555; font-size: 12px; font-weight: 600; }
+.case-number { display: inline-block; margin-right: 6px; padding: 2px 7px; color: #111; border: 1.5px solid #111; border-radius: 4px; font: 700 11px ui-monospace,monospace; }
 .cabinet__name { font-family: var(--paper-serif); font-size: 22px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
 .cabinet__drawing { flex: 0 0 80px; position: relative; height: 74px; border: 2px solid #111; background: #fff; }
 .cabinet__books { display: flex; align-items: end; gap: 3px; height: 52px; padding: 0 7px; overflow: hidden; }
@@ -55,6 +61,9 @@ const emit = defineEmits<{ select: [id: string] }>()
 .cabinet__tags { display: flex; min-width: 0; flex-wrap: wrap; gap: 5px; }
 .cabinet__tags span { border: 1px solid #111; border-radius: 4px; padding: 3px 6px; max-width: 140px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .cabinet__tags .cabinet__empty { border-color: transparent; color: #666; padding-left: 0; }
+.cabinet--create { border-style: dashed; align-items: center; justify-content: center; gap: 8px; min-height: 178px; font-size: 13px; }
+.cabinet--create span:last-child { color: #555; font-size: 12px; }
+.create-plus { display: grid; place-items: center; width: 40px; height: 40px; border: 2px solid #111; border-radius: 50%; font-size: 23px; }
 @media (max-width: 700px) { .cabinet-gallery { grid-template-columns: 1fr; gap: 14px; } .cabinet { min-height: 155px; padding: 18px; } }
 @media (prefers-reduced-motion: reduce) { .cabinet { transition: none; } }
 </style>

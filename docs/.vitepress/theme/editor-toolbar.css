@@ -1,31 +1,42 @@
 .markdown-editor { min-width: 0; }
-.editor-header { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; }
-.editor-caption { font-size: 14px; font-weight: 600; }
-.editor-caption small { color: var(--muted, #68717a); font-size: 12px; font-weight: 400; }
-.editor-modes { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--line, #dce0e4); border-radius: 5px; }
-.editor-modes button { padding: 5px 10px; border-radius: 3px; color: var(--muted, #59616a); font-size: 13px; }
-.editor-modes button[aria-pressed="true"] { color: var(--ink, #202328); background: var(--vp-c-bg-soft, #f3f5f6); font-weight: 600; }
+.editor-header { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; padding: 0 0 12px; }
+.editor-caption { font-size: 13px; font-weight: 700; }
+.editor-caption small { color: #555; font-size: 12px; font-weight: 400; }
+.editor-modes { display: flex; overflow: hidden; border: 1.5px solid #111; border-radius: 8px; background: white; }
+.editor-modes button { padding: 6px 12px; border-right: 1.5px solid #111; color: #111; font-size: 12px; font-weight: 600; }
+.editor-modes button:last-child { border-right: 0; }
+.editor-modes button[aria-pressed="true"] { color: #fff; background: #111; }
 .editor-modes button:focus-visible { outline: 2px solid var(--vp-c-brand-1, #344e64); outline-offset: 2px; }
-.markdown-toolbar { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 0 4px; }
+.markdown-toolbar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 0 8px; border-top: 2px solid #111; }
 .markdown-toolbar button {
-  border: 1px solid var(--line, #dce0e4);
-  border-radius: 4px;
-  background: var(--vp-c-bg, white);
-  color: var(--ink, #202328);
-  padding: 5px 9px;
-  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1.5px solid #111;
+  border-radius: 6px;
+  background: white;
+  color: #111;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 600;
   line-height: 1.5;
   cursor: pointer;
+  white-space: nowrap;
 }
-.markdown-toolbar button:hover:not(:disabled) { border-color: var(--vp-c-brand-1, #344e64); color: var(--vp-c-brand-1, #344e64); }
+.markdown-toolbar button:hover:not(:disabled) { background: #111; color: #fff; }
+.markdown-toolbar button:hover:not(:disabled) .kbd-tag { border-color: #fff; }
 .markdown-toolbar button:focus-visible { outline: 2px solid var(--vp-c-brand-1, #344e64); outline-offset: 2px; }
 .markdown-toolbar button:disabled { opacity: .55; cursor: default; }
+.kbd-tag { padding: 1px 4px; border: 1px solid currentColor; border-radius: 4px; font: 600 10px/1.1 ui-monospace, monospace; }
+.code-tool { display: flex; border: 1.5px solid #111; border-radius: 6px; overflow: hidden; background: #fff; }
+.code-tool button { border: 0; border-radius: 0; }
+.code-tool select { border: 0; border-left: 1.5px solid #111; padding: 0 6px; background: #fff; color: #111; font: 600 11px ui-monospace, monospace; cursor: pointer; }
 .markdown-shortcuts { margin: 3px 0 9px; color: var(--muted, #59616a); font-size: 12px; line-height: 1.6; }
-.editor-panes { display: grid; grid-template-columns: minmax(0, 1fr); border-top: 1px solid #e6e6e6; }
+.editor-panes { display: grid; grid-template-columns: minmax(0, 1fr); border: 2px solid #111; border-radius: 9px; overflow: hidden; background: #fff; }
 .editor-panes--split { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .editor-pane, .editor-preview { min-width: 0; padding: 24px clamp(16px, 3vw, 44px); }
 .editor-panes--split .editor-pane, .editor-panes--split .editor-preview { padding-inline: 22px; }
-.editor-panes--split .editor-preview { border-left: 1px solid #e6e6e6; }
+.editor-panes--split .editor-preview { border-left: 2px solid #111; }
 .pane-heading { display: block; margin: 0; color: var(--muted, #59616a); font-size: 12px; font-weight: 600; }
 .editor-preview { overflow-wrap: anywhere; }
 .preview-empty { color: var(--muted, #59616a); font-size: 13px; }
@@ -39,14 +50,14 @@
   border: 0;
   background: transparent;
   color: var(--ink, #202328);
-  font: 16px/1.9 ui-monospace, "Microsoft YaHei", monospace;
+  font: 15px/1.8 ui-monospace, "Microsoft YaHei", monospace;
   outline: none;
 }
 @media (max-width: 600px) {
   .markdown-toolbar { gap: 5px; }
   .markdown-toolbar button { padding: 6px 8px; }
   .editor-panes--split { grid-template-columns: minmax(0, 1fr); }
-  .editor-panes--split .editor-preview { border-left: 0; border-top: 1px solid #e6e6e6; }
+  .editor-panes--split .editor-preview { border-left: 0; border-top: 2px solid #111; }
   .editor-pane, .editor-preview, .editor-panes--split .editor-pane, .editor-panes--split .editor-preview { padding: 18px 8px; }
   .markdown-editor textarea { min-height: max(60vh, 420px); }
 }

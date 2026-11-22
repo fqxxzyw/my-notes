@@ -23,7 +23,7 @@ const scales = computed(() => props.books.map((book, index) => {
   const selectedWeight = book.id === props.selectedId ? 0.18 : 0
   return 1 + Math.max(pointerWeight, focusWeight, selectedWeight) * 0.3
 }))
-const activeBook = computed(() => props.books[focused.value ?? hovered.value ?? lastActive.value ?? -1] || null)
+const activeBook = computed(() => props.books[focused.value ?? hovered.value ?? lastActive.value ?? 0] || null)
 
 function setBookRef(element: unknown, index: number) {
   if (typeof HTMLElement !== 'undefined' && element instanceof HTMLElement) refs.set(index, element)
@@ -67,7 +67,10 @@ function bookStyle(index: number) {
   return {
     '--book-width': `${104 * scale}px`,
     '--scale': scale,
-    '--lift': `${(scale - 1) * -43}px`,
+    '--height-scale': 1 + (scale - 1) * 0.525,
+    '--tilt-y': `${-26 - ((scale - 1) / 0.3) * 14}deg`,
+    '--tilt-x': `${-6 + ((scale - 1) / 0.3) * 2.5}deg`,
+    '--lift': `${(scale - 1) * -60}px`,
     '--stack-order': Math.round(scale * 100)
   }
 }
@@ -87,6 +90,10 @@ onBeforeUnmount(() => {
 <template>
   <section class="bookshelf" aria-label="笔记本书架">
     <div class="bookshelf__stage">
+    <div class="bookshelf__stage-heading">
+      <span>3D 书脊 · 笔记本</span>
+      <span>移动鼠标放大 · 点击打开</span>
+    </div>
     <div class="bookshelf__scroll" @pointermove="move" @pointerleave="leave" @scroll="leave">
       <div v-if="books.length" class="bookshelf__row">
         <button
@@ -105,25 +112,26 @@ onBeforeUnmount(() => {
           @blur="focused = null"
           @click="emit('select', book)"
         >
+          <span class="volume__floor-shadow" aria-hidden="true"></span>
           <span class="volume__body" aria-hidden="true">
             <span class="volume__top"></span>
             <span class="volume__spine">
               <span class="volume__number">{{ String(index + 1).padStart(2, '0') }}</span>
               <span class="volume__title">{{ book.title }}</span>
-              <span class="volume__tailband"></span>
+              <span class="volume__footer"><span class="volume__tailband"></span><span class="volume__tag">NOTES</span></span>
             </span>
             <span class="volume__cover">
               <span class="volume__cover-frame"></span>
-              <span class="volume__cover-label">NOTEBOOK</span>
-              <span class="volume__cover-title">{{ book.title }}</span>
-              <span class="volume__cover-rule"></span>
+              <span class="volume__cover-label"><span>VOL.{{ String(index + 1).padStart(2, '0') }}</span><span>MD</span></span>
+              <span class="volume__cover-title">{{ book.title }}<span class="volume__cover-lines"><span></span><span></span><span></span></span></span>
+              <span class="volume__cover-rule">NOTES</span>
             </span>
           </span>
         </button>
       </div>
       <div v-else class="bookshelf__empty">创建第一本笔记本，开始记录。</div>
     </div>
-    <div class="bookshelf__board" aria-hidden="true"></div>
+    <div class="bookshelf__board" aria-hidden="true"><span></span><span>UNIFORM EDITION · PURE WHITE</span><span></span></div>
     </div>
     <div class="bookshelf__info">
       <div class="bookshelf__info-copy">

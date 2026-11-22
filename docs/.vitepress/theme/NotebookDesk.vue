@@ -29,6 +29,11 @@ const bookTitle = ref('')
 const chapterTitle = ref('')
 const creatingBook = ref(false)
 const creatingChapter = ref(false)
+watch([creatingCabinet, creatingBook], ([cabinetOpen, bookOpen]) => {
+  if (cabinetOpen || bookOpen) {
+    void nextTick(() => document.getElementById(cabinetOpen ? 'cabinet-name' : 'book-name')?.focus())
+  }
+})
 const remoteVersion = ref<Chapter | null>(null)
 const snapshot = ref(true)
 const searchIndex = ref<Chapter[]>([])
@@ -594,19 +599,61 @@ async function openSearchResult(chapter: Chapter) {
   await openBook(book)
   if (selectedBook.value?.id !== chapter.bookId) return
   const original = chapters.value.find(item => item.id === chapter.id)
-  if (original) openChapter(original)
+  if (original) {
+    query.value = ''
+    openChapter(original)
+  }
 }
 </script>
 
 <template>
   <div class="desk">
-    <section v-show="!selectedChapter || view !== 'edit'" class="intro" aria-labelledby="desk-title">
+    <header class="archive-header">
+      <div class="archive-header-inner">
+        <div class="archive-path">
+          <button class="archive-brand" type="button" @click="openCabinet()"><span aria-hidden="true"></span>纸间</button>
+          <span class="archive-divider" aria-hidden="true"></span>
+          <nav aria-label="当前位置">
+            <button type="button" @click="openCabinet()">全部书柜</button>
+            <template v-if="chosenCabinet">
+              <span aria-hidden="true"> / </span>
+              <button type="button" @click="openCabinet(chosenCabinet.id)">{{ chosenCabinet.title }}</button>
+            </template>
+            <template v-if="selectedBook">
+              <span aria-hidden="true"> / </span>
+              <button type="button" @click="openBook(selectedBook)">{{ selectedBook.title }}</button>
+            </template>
+            <template v-if="selectedChapter"><span aria-hidden="true"> / </span><span>{{ selectedChapter.title }}</span></template>
+          </nav>
+        </div>
+        <div class="archive-actions">
+          <div class="archive-search-wrap">
+            <label class="archive-search"><span class="sr-only">搜索笔记</span><input v-model="query" type="search" placeholder="搜索书柜 / 笔记本 / 章节..."></label>
+            <div v-if="selectedChapter && view === 'edit' && query.trim()" class="archive-search-results">
+              <p v-if="searching">正在查找章节…</p>
+              <template v-else>
+                <button v-for="result in searchResults" :key="result.bookId + '/' + result.id" type="button"
+                  :disabled="busy" @click="openSearchResult(result)">
+                  {{ books.find(book => book.id === result.bookId)?.title }} ／ {{ result.title }}
+                </button>
+                <p v-if="!searchResults.length">没有匹配的章节。</p>
+              </template>
+            </div>
+          </div>
+          <button class="archive-refresh" :disabled="busy" @click="refresh">刷新</button>
+          <a class="archive-sync" href="#connection" @click="revealConnection">同步</a>
+          <button v-if="!chosenCabinet" type="button" class="archive-new" :disabled="busy" @click="creatingCabinet = true">＋ 新建书柜</button>
+          <button v-else-if="!selectedBook" type="button" class="archive-new" :disabled="busy" @click="creatingBook = true">＋ 新建笔记本</button>
+          <button v-else type="button" class="archive-new" :disabled="busy" @click="creatingChapter = true; if (selectedChapter) backToChapters()">＋ 新建章节</button>
+        </div>
+      </div>
+    </header>
+    <section v-show="!selectedBook && (!selectedChapter || view !== 'edit')" class="intro" aria-labelledby="desk-title">
       <div class="intro-copy">
-        <nav v-if="chosenCabinet" class="crumbs" aria-label="当前位置">
-          <button @click="openCabinet()">全部书柜</button>
-          <template v-if="selectedBook"><span aria-hidden="true">/</span><button @click="openCabinet(chosenCabinet.id)">{{ chosenCabinet.title }}</button></template>
-        </nav>
-        <h1 id="desk-title">{{ selectedBook?.title || chosenCabinet?.title || '我的书柜' }}</h1>
+        <p v-if="!chosenCabinet" class="archive-kicker">LEVEL 01 · ARCHITECTURAL BOOKCASES</p>
+        <nav v-if="chosenCabinet && !selectedBook" class="crumbs"><button type="button" @click="openCabinet()">← 返回书柜</button></nav>
+        <h1 id="desk-title">{{ selectedBook?.title || chosenCabinet?.title || '全部书柜' }}</h1>
+        <p v-if="!chosenCabinet" class="archive-intro">点击书柜进入书架，整理和阅读笔记。</p>
         <p class="intro-text">
           {{ selectedBook ? chapters.length + ' 章' : chosenCabinet ? filteredBooks.length + ' 册笔记本' : cabinetItems.length + ' 个书柜 · ' + books.length + ' 册笔记本' }}
         </p>
@@ -618,7 +665,7 @@ async function openSearchResult(chapter: Chapter) {
     </section>
 
     <section v-show="!selectedChapter || view !== 'edit'" id="bookshelf" class="library" aria-label="笔记本与章节">
-      <div class="tools">
+      <div class="tools archive-mobile-tools">
         <label class="search">
           <span class="lens" aria-hidden="true"></span><span class="sr-only">搜索笔记</span>
           <input v-model="query" type="search" placeholder="搜索书柜、笔记本或章节">
@@ -628,18 +675,22 @@ async function openSearchResult(chapter: Chapter) {
         <button v-else-if="!selectedBook" class="primary-button" :disabled="busy" :aria-expanded="creatingBook" @click="creatingBook = !creatingBook">＋ 新建笔记本</button>
         <button v-else class="primary-button" :disabled="busy" :aria-expanded="creatingChapter" @click="creatingChapter = !creatingChapter">＋ 添加章节</button>
       </div>
-      <form v-if="creatingCabinet && !chosenCabinet" class="inline-form" @submit.prevent="addCabinet">
-        <label for="cabinet-name">书柜名称</label>
-        <input id="cabinet-name" v-model="cabinetName" maxlength="120" placeholder="例如，工作资料" required>
-        <button class="primary-button" :disabled="busy">创建</button>
-        <button type="button" class="text-button" @click="creatingCabinet = false">取消</button>
-      </form>
-      <form v-if="creatingBook" class="inline-form" @submit.prevent="addBook">
-        <label for="book-name">笔记本名称</label>
-        <input id="book-name" v-model="bookTitle" maxlength="120" placeholder="例如，Java 学习" required>
-        <button class="primary-button" :disabled="busy">创建</button>
-        <button type="button" class="text-button" @click="creatingBook = false">取消</button>
-      </form>
+      <div v-if="creatingCabinet && !chosenCabinet" class="archive-modal" @click.self="creatingCabinet = false" @keydown.esc="creatingCabinet = false">
+        <form class="archive-dialog" role="dialog" aria-modal="true" aria-labelledby="new-cabinet-title" @submit.prevent="addCabinet">
+          <div class="archive-dialog-heading"><h2 id="new-cabinet-title">新建书柜</h2><button type="button" aria-label="关闭" @click="creatingCabinet = false">×</button></div>
+          <label for="cabinet-name">书柜名称</label>
+          <input id="cabinet-name" v-model="cabinetName" maxlength="120" placeholder="例如，工作资料" required>
+          <div class="archive-dialog-actions"><button type="button" class="archive-new" @click="creatingCabinet = false">取消</button><button class="primary-button" :disabled="busy">确认创建</button></div>
+        </form>
+      </div>
+      <div v-if="creatingBook" class="archive-modal" @click.self="creatingBook = false" @keydown.esc="creatingBook = false">
+        <form class="archive-dialog" role="dialog" aria-modal="true" aria-labelledby="new-book-title" @submit.prevent="addBook">
+          <div class="archive-dialog-heading"><h2 id="new-book-title">新建笔记本</h2><button type="button" aria-label="关闭" @click="creatingBook = false">×</button></div>
+          <label for="book-name">笔记本名称</label>
+          <input id="book-name" v-model="bookTitle" maxlength="120" placeholder="例如，Java 学习" required>
+          <div class="archive-dialog-actions"><button type="button" class="archive-new" @click="creatingBook = false">取消</button><button class="primary-button" :disabled="busy">确认创建</button></div>
+        </form>
+      </div>
       <div v-if="query.trim()" class="search-results">
         <p v-if="searching" role="status">正在查找章节…</p>
         <template v-else>
@@ -653,27 +704,50 @@ async function openSearchResult(chapter: Chapter) {
       <div v-if="!selectedChapter && error" class="feedback error" role="alert">{{ error }}</div>
       <p v-if="!selectedChapter && notice" class="feedback" role="status">{{ notice }}</p>
       <p v-if="busy" class="feedback" role="status">正在读取或保存笔记…</p>
-      <CabinetGallery v-if="!chosenCabinet" :items="visibleCabinets" @select="openCabinet" />
+      <CabinetGallery v-if="!chosenCabinet" :items="visibleCabinets" @select="openCabinet" @create="creatingCabinet = true" />
       <p v-if="!chosenCabinet && !visibleCabinets.length" class="empty-shelf">没有匹配的书柜。</p>
       <BookShelf v-if="chosenCabinet && !selectedBook && filteredBooks.length" :books="filteredBooks"
         :disabled="busy" @select="openBook" />
       <p v-if="chosenCabinet && !selectedBook && !filteredBooks.length" class="empty-shelf">{{ query ? '没有匹配的书名。' : '书柜还是空的。新建一本笔记，或把其他柜里的笔记移到这里。' }}</p>
       <div v-if="selectedBook" class="chapter-panel">
-          <template v-if="selectedBook">
-            <div class="book-heading">
+        <aside class="reference-book-card">
+          <div class="reference-hero-stage" aria-hidden="true">
+            <div class="reference-hero-book">
+              <div class="reference-book-spine">
+                <span class="reference-book-number">01</span>
+                <span class="reference-book-spine-title">{{ selectedBook.title }}</span>
+                <span class="reference-book-rule"></span>
+              </div>
+              <div class="reference-book-cover">
+                <div class="reference-cover-frame"></div>
+                <span class="reference-cover-meta">NOTEBOOK</span>
+                <strong class="reference-cover-title">{{ selectedBook.title }}</strong>
+                <span class="reference-cover-rule"></span>
+              </div>
+              <div class="reference-book-top"></div>
+            </div>
+          </div>
+          <div class="reference-book-details">
             <div class="panel-heading">
               <span>{{ selectedBook.sha ? '已收录笔记本' : '本机笔记本' }}</span>
               <button v-if="!selectedBook.sha" class="text-button" :disabled="busy" @click="syncBook">同步笔记本</button>
             </div>
+            <h2>{{ selectedBook.title }}</h2>
             <label class="move-book">所在书柜
               <select :value="activeCabinet" :disabled="busy" @change="moveSelected">
                 <option v-for="cabinet in cabinetItems" :key="cabinet.id" :value="cabinet.id">{{ cabinet.title }}</option>
               </select>
             </label>
+            <div class="reference-book-bottom">
+              <button class="reference-outline-button" type="button" @click="openCabinet(activeCabinet)">← 返回书架</button>
+              <span>{{ chapters.length }} 篇章节</span>
             </div>
-            <div class="contents-list">
-            <div class="chapter-title">
-              <span>目录 · {{ chapters.length }} 章</span>
+          </div>
+        </aside>
+        <div class="contents-list">
+            <div class="chapter-title reference-chapter-heading">
+              <div><small>CHAPTER DIRECTORY</small><h2>章节目录</h2></div>
+              <button class="primary-button" :disabled="busy" :aria-expanded="creatingChapter" @click="creatingChapter = !creatingChapter">＋ 新建章节</button>
             </div>
             <form v-if="creatingChapter" class="inline-form" @submit.prevent="addChapter">
               <label for="chapter-name">章节名称</label>
@@ -687,9 +761,7 @@ async function openSearchResult(chapter: Chapter) {
               <span>{{ chapter.title }}</span><span class="arrow" aria-hidden="true">↗</span>
             </button>
             <p v-if="!filteredChapters.length" class="empty">{{ query ? '本册没有匹配的章节。' : '还没有章节。点「添加章节」写下第一页。' }}</p>
-            </div>
-          </template>
-          <p v-else class="chapter-placeholder">选一本笔记，在这里查看目录。</p>
+        </div>
       </div>
       <button v-if="catalog.pending.value" class="text-button sync-catalog" :disabled="busy" @click="syncCatalog">同步书柜整理</button>
       <details class="batch-box">
@@ -738,11 +810,20 @@ async function openSearchResult(chapter: Chapter) {
       <div v-if="view === 'read'" class="paper">
         <ChapterMarkdown :source="content.replace(/^# [^\r\n]+(?:\r?\n|$)/, '')" />
       </div>
-      <div v-else class="paper editor">
-        <MarkdownEditor v-model="content" :readonly="busy" />
-        <div class="editor-footer">
-          <span>{{ content.length }} 字符<span v-if="isHosted && connected" aria-live="polite"> · {{ autoStatus }}</span></span>
-          <button class="primary-button" :disabled="busy || (!dirty && !!selectedChapter.sha)" @click="sync">同步到 GitHub ↗</button>
+      <div v-else class="reference-editor-workspace">
+        <details class="reference-editor-sidebar" open aria-label="章节目录">
+          <summary class="reference-sidebar-heading"><strong :title="selectedBook?.title">{{ selectedBook?.title }}</strong></summary>
+          <button v-for="chapter in chapters" :key="chapter.id" type="button" class="reference-sidebar-row"
+            :class="{ active: selectedChapter.id === chapter.id }" :disabled="busy"
+            :aria-label="chapter.title" :aria-current="selectedChapter.id === chapter.id ? 'page' : undefined" :title="chapter.title"
+            @click="openChapter(chapter); view = 'edit'">{{ chapter.title }}</button>
+        </details>
+        <div class="paper editor">
+          <MarkdownEditor v-model="content" :readonly="busy" />
+          <div class="editor-footer">
+            <span>{{ content.length }} 字符<span v-if="isHosted && connected" aria-live="polite"> · {{ autoStatus }}</span></span>
+            <button class="primary-button" :disabled="busy || (!dirty && !!selectedChapter.sha)" @click="sync">同步到 GitHub ↗</button>
+          </div>
         </div>
       </div>
       <div v-if="error" class="feedback error" role="alert">
@@ -791,3 +872,4 @@ async function openSearchResult(chapter: Chapter) {
 
 <style scoped src="./notebook.css"></style>
 <style scoped src="./batch.css"></style>
+<style scoped src="./reference-chapters.css"></style>

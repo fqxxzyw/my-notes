@@ -31,8 +31,10 @@ namespace PaperNotesDesktop
 
             try
             {
-                string appData = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PaperNotes");
+                bool portable;
+                string appData = ResolveDataDirectory(Application.ExecutablePath,
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), out portable);
+                if (portable) EnsurePortableDataDirectory(appData);
                 runtimeDirectory = ExtractPayload(Path.Combine(appData, "Versions"));
                 AppDomain.CurrentDomain.AssemblyResolve += ResolveBundledAssembly;
                 if (!SetDllDirectory(runtimeDirectory))
@@ -42,8 +44,38 @@ namespace PaperNotesDesktop
             }
             catch (Exception exception)
             {
-                MessageBox.Show("无法启动纸间。请确认已安装 Microsoft Edge WebView2 Runtime。\n\n" +
+                MessageBox.Show("无法启动纸间。请检查程序所在目录的写入权限，并确认已安装 Microsoft Edge WebView2 Runtime。\n\n" +
                     exception.Message, "纸间", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        // The executable location, never the shell's working directory, controls
+        // portable mode. A standalone executable preserves the original profile.
+        private static string ResolveDataDirectory(string executablePath, string localAppData, out bool portable)
+        {
+            string executableDirectory = Path.GetDirectoryName(Path.GetFullPath(executablePath));
+            if (String.IsNullOrEmpty(executableDirectory)) throw new InvalidOperationException("无法确定程序所在目录。");
+            portable = File.Exists(Path.Combine(executableDirectory, "portable.mode"));
+            return portable ? Path.Combine(executableDirectory, "纸间数据") : Path.Combine(localAppData, "PaperNotes");
+        }
+
+        private static void EnsurePortableDataDirectory(string directory)
+        {
+            try
+            {
+                Directory.CreateDirectory(directory);
+                string probe = Path.Combine(directory, ".write-test-" + Guid.NewGuid().ToString("N"));
+                try
+                {
+                    using (FileStream stream = new FileStream(probe, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                        stream.WriteByte(0);
+                }
+                finally { if (File.Exists(probe)) File.Delete(probe); }
+            }
+            catch (Exception exception)
+            {
+                if (!(exception is UnauthorizedAccessException) && !(exception is IOException) && !(exception is System.Security.SecurityException)) throw;
+                throw new InvalidOperationException("便携版无法写入“纸间数据”。请先完整解压压缩包，并将文件夹放到有写入权限的位置后重试。", exception);
             }
         }
 

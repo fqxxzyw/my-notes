@@ -74,7 +74,13 @@ test('a readme-initialized empty notes repository accepts its first notebook', a
     throw new Error(`unexpected ${method} ${p}`)
   }
   const store = createNotebookStore('alice/notes'); store.setToken('fake')
-  const result = await store.syncBatch([{ id: 'test', title: 'Test', sha: '' }], [])
+  const chapters = [
+    { bookId: 'test', id: 'welcome', title: 'Welcome', content: '# Welcome\n', sha: '' },
+    { bookId: 'test', id: 'guide', title: 'Guide', content: '# Guide\n', sha: '' }
+  ]
+  const result = await store.syncBatch([{ id: 'test', title: 'Test', sha: '' }], chapters)
   assert.equal(result.head, h('d'))
-  assert.equal(paths.find(([p, m]) => p === 'trees' && m === 'POST')[2].tree[0].path, 'docs/notebooks/test/index.md')
+  assert.deepEqual(paths.find(([p, m]) => p === 'trees' && m === 'POST')[2].tree.map(entry => entry.path).sort(), [
+    'docs/notebooks/test/guide.md', 'docs/notebooks/test/index.md', 'docs/notebooks/test/welcome.md'
+  ])
 })

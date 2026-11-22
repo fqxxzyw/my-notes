@@ -8,6 +8,7 @@ import BookShelf from './BookShelf.vue'
 import CabinetGallery from './CabinetGallery.vue'
 import { useCabinets } from './useCabinets'
 import { readRemoteCache, writeRemoteCache, clearRemoteCache, type RemoteSnapshot } from './remoteCache'
+import { addWelcomeNotebook } from './welcomeStore'
 
 const initialRepository = getConfiguredRepository()
 const repository = ref(initialRepository)
@@ -58,24 +59,14 @@ let bookRun = 0
 let localMutationVersion = 0
 let suspendDraft = false
 const localBooks = ref<Notebook[]>([])
+const welcomeInitialized = ref(false)
+const welcomeBookId = ref('')
 const bookVersions = ref<Record<string, string>>({})
 const localChapters = ref<Chapter[]>([])
 const loadedBookIds = ref<string[]>([])
 type SyncedCopy = { chapter: Chapter; baseSha: string | null; snapshotVersion: string }
 const syncedCopies = ref<Record<string, SyncedCopy>>({})
 const snapshotFiles = import.meta.glob('./builtin/*.md', { eager: true, query: '?raw', import: 'default' }) as Record<string, string>
-const builtinBookId = ref('__paper_builtin_welcome__')
-const isBuiltin = (id: string | undefined) => !!id && id === builtinBookId.value
-const builtinChapters = computed<Chapter[]>(() => Object.entries(snapshotFiles)
-  .filter(([path]) => !path.endsWith('/index.md'))
-  .sort(([a], [b]) => a.localeCompare(b))
-  .map(([path, text]) => ({
-    bookId: builtinBookId.value,
-    id: path.split('/').pop()!.replace(/\.md$/, ''),
-    title: /^#\s+(.+)$/m.exec(text)?.[1]?.trim() || '使用教程',
-    content: text,
-    sha: '0'.repeat(40)
-  })))
 let snapshotVersion = ''
 async function identifySnapshot() {
   const text = JSON.stringify(Object.entries(snapshotFiles).sort(([a], [b]) => a.localeCompare(b)))
@@ -255,7 +246,7 @@ function maximizeWindow(event: MouseEvent) {
   windowCommand('window.maximize')
 }
 function persistLocal() {
-  try { localStorage.setItem(localKey, JSON.stringify({ books: localBooks.value, chapters: localChapters.value, synced: syncedCopies.value, bookVersions: bookVersions.value })) }
+  try { localStorage.setItem(localKey, JSON.stringify({ books: localBooks.value, chapters: localChapters.value, synced: syncedCopies.value, bookVersions: bookVersions.value, welcomeInitialized: welcomeInitialized.value, welcomeBookId: welcomeBookId.value })) }
   catch { throw new Error('浏览器无法保存本地内容，请复制正文或释放存储空间后重试。') }
 }
 const chapterKey = (chapter: Pick<Chapter, 'bookId' | 'id'>) => `${chapter.bookId}/${chapter.id}`
@@ -298,7 +289,6 @@ function toggleBatchGroup(group: typeof batchGroups.value[number], event: Event)
   selectedKeys.value = [...selected]
 }
 async function getChapters(book: Notebook): Promise<Chapter[]> {
-  if (isBuiltin(book.id)) return builtinChapters.value
   const useSnapshot = snapshot.value
   const key = `${offlineMode.value ? 'offline' : useSnapshot ? 'snapshot' : 'remote'}:${book.id}`
   let pending = chapterCache.get(key)
@@ -326,16 +316,33 @@ async function getChapters(book: Notebook): Promise<Chapter[]> {
   return merged
 }
 function newId() { return crypto.randomUUID().replaceAll('-', '') }
+function addWelcome() {
+  if (busy.value || writing) { error.value = '正在同步，请稍后添加使用说明。'; return }
+  if (!saveDraft()) return
+  clearMessages()
+  try {
+    const added = addWelcomeNotebook(localStorage, initialRepository, snapshotFiles, newId, true)
+    if (!added) return
+    localBooks.value = [...localBooks.value, added.book]
+    localChapters.value = [...localChapters.value, ...added.chapters]
+    welcomeInitialized.value = true
+    welcomeBookId.value = added.book.id
+    books.value = [...books.value, added.book]
+    localMutationVersion++
+    notice.value = '使用说明已添加到本机，可编辑、删除或选择同步。'
+  } catch (e) { error.value = `无法添加使用说明：${message(e)}` }
+}
 const draftKey = (chapter: Chapter) => `${draftPrefix}${chapter.bookId}:${chapter.id}`
 const dirty = computed(() => !!selectedChapter.value && content.value !== selectedChapter.value.content)
 const chosenCabinet = computed(() => catalog.cabinets.value.find(cabinet => cabinet.id === activeCabinet.value) || null)
-const cabinetItems = computed(() => catalog.cabinets.value.map(cabinet => ({ ...cabinet, books: books.value.filter(book => (isBuiltin(book.id) ? 'general' : catalog.assigned(book.id)) === cabinet.id) })))
+const cabinetItems = computed(() => catalog.cabinets.value.map(cabinet => ({ ...cabinet, books: books.value.filter(book => catalog.assigned(book.id) === cabinet.id) })))
 const visibleCabinets = computed(() => cabinetItems.value.filter(cabinet => {
   const q = query.value.trim().toLowerCase()
   return !q || cabinet.title.toLowerCase().includes(q) || cabinet.books.some(book => book.title.toLowerCase().includes(q))
 }))
-const filteredBooks = computed(() => books.value.filter(book => (isBuiltin(book.id) ? 'general' : catalog.assigned(book.id)) === activeCabinet.value && book.title.toLowerCase().includes(query.value.trim().toLowerCase())))
-const managedBooks = computed(() => filteredBooks.value.filter(book => !isBuiltin(book.id)))
+const filteredBooks = computed(() => books.value.filter(book => catalog.assigned(book.id) === activeCabinet.value && book.title.toLowerCase().includes(query.value.trim().toLowerCase())))
+const managedBooks = computed(() => filteredBooks.value)
+const hasWelcomeBook = computed(() => !!welcomeBookId.value && books.value.some(book => book.id === welcomeBookId.value))
 const filteredChapters = computed(() => {
   const q = query.value.trim().toLowerCase()
   return chapters.value.filter(chapter => !q || chapter.title.toLowerCase().includes(q) || chapter.content.toLowerCase().includes(q))
@@ -360,7 +367,6 @@ function goToConnection() {
 }
 function saveDraft(): boolean {
   const chapter = selectedChapter.value
-  if (isBuiltin(chapter?.bookId)) return true
   if (!chapter || typeof localStorage === 'undefined') return true
   try {
     const key = chapterKey(chapter)
@@ -398,10 +404,6 @@ function mergeBooks(remoteBooks: Notebook[], useSnapshot: boolean): Notebook[] {
   for (const draft of Object.values(drafts.value)) {
     if (!merged.some(book => book.id === draft.base.bookId)) merged.push({ id: draft.base.bookId, title: `本地草稿 · ${draft.base.bookId.slice(0, 8)}`, sha: '' })
   }
-  let virtualId = '__paper_builtin_welcome__'
-  while (merged.some(book => book.id === virtualId)) virtualId += '_'
-  builtinBookId.value = virtualId
-  merged.push({ id: virtualId, title: '内置使用手册（只读）', sha: '0'.repeat(40) })
   return merged
 }
 function openCabinet(id = '') {
@@ -483,7 +485,6 @@ function undoCabinetDeletion(id: string) {
 }
 function moveSelected(event: Event) {
   const book = selectedBook.value
-  if (isBuiltin(book?.id)) return
   const select = event.target as HTMLSelectElement | null
   if (!book || !select) return
   const previous = catalog.assigned(book.id)
@@ -517,12 +518,6 @@ function openChapter(chapter: Chapter) {
   suspendDraft = true
   selectedChapter.value = chapter
   content.value = chapter.content
-  if (isBuiltin(chapter.bookId)) {
-    suspendDraft = false
-    view.value = 'read'
-    void nextTick(() => document.getElementById('writing-title')?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
-    return
-  }
   try {
     const raw = localStorage.getItem(draftKey(chapter))
     if (raw) {
@@ -692,7 +687,6 @@ async function addBook() {
   })
 }
 async function addChapter() {
-  if (isBuiltin(selectedBook.value?.id)) { error.value = '内置使用手册为只读示例。'; return }
   const book = selectedBook.value
   if (!book) return
   if (!saveDraft()) return
@@ -716,8 +710,9 @@ async function syncBook() {
   if (!connected.value) { error.value = '请先在页面下方连接 GitHub，再同步笔记本。'; goToConnection(); return }
   if (!saveDraft()) return
   clearMessages()
-  const success = await run(() => performBatch([], [book.id]))
-  if (success) notice.value = '笔记本及其归属已同步到 GitHub。'
+  const keys = batchItems.value.filter(item => item.bookId === book.id).map(item => item.key)
+  const success = await run(() => performBatch(keys, [book.id]))
+  if (success) notice.value = '笔记本、其中的待同步章节及归属已同步到 GitHub。'
   if (autoSave.value && (autoKeys.size || autoBooks.size || autoCabinets.size || autoMoves.size)) scheduleAuto()
 }
 async function syncCatalog() {
@@ -734,7 +729,6 @@ async function syncCatalog() {
 async function sync() {
   const chapter = selectedChapter.value
   if (!chapter) return
-  if (isBuiltin(chapter.bookId)) { notice.value = '内置使用手册为只读示例，无需同步。'; return }
   if (!connected.value) { error.value = '请先连接 GitHub，再同步本地草稿。'; goToConnection(); return }
   if (!saveDraft()) return
   clearMessages()
@@ -972,7 +966,6 @@ async function deletePendingSelected() {
 }
 
 async function deleteManaged(wholeBooks: Notebook[], selectedChapters: Chapter[]) {
-  if (wholeBooks.some(book => isBuiltin(book.id)) || selectedChapters.some(chapter => isBuiltin(chapter.bookId))) { error.value = '内置使用手册不能删除。'; return }
   if (writing || busy.value) { error.value = '正在同步，请稍后再删除。'; return }
   if (!wholeBooks.length && !selectedChapters.length) { error.value = '请先勾选要删除的内容。'; return }
   const localIds = new Set(localBooks.value.filter(book => !book.sha).map(book => book.id))
@@ -1125,11 +1118,17 @@ onMounted(() => {
   })()
   let restoreError = ''
   try {
+    // A fresh unbound workspace receives an editable local copy once. A
+    // connected repository never gets seeded automatically on a new device.
+    const addedWelcome = !initialRepository ? addWelcomeNotebook(localStorage, '', snapshotFiles, newId) : null
     const saved = JSON.parse(localStorage.getItem(localKey) || '{}')
     if (Array.isArray(saved.books)) localBooks.value = saved.books
     if (Array.isArray(saved.chapters)) localChapters.value = saved.chapters
     if (saved.synced && typeof saved.synced === 'object' && !Array.isArray(saved.synced)) syncedCopies.value = saved.synced
     if (saved.bookVersions && typeof saved.bookVersions === 'object' && !Array.isArray(saved.bookVersions)) bookVersions.value = saved.bookVersions
+    welcomeInitialized.value = saved.welcomeInitialized === true
+    welcomeBookId.value = typeof saved.welcomeBookId === 'string' ? saved.welcomeBookId : ''
+    if (addedWelcome) notice.value = '使用说明已添加到本机，可编辑、删除或选择同步。'
     const found: Record<string, Draft> = {}
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i)
@@ -1337,6 +1336,7 @@ async function openSearchResult(chapter: Chapter) {
       <p v-if="!chosenCabinet && !visibleCabinets.length" class="empty-shelf">没有匹配的书柜。</p>
       <BookShelf v-if="chosenCabinet && !selectedBook && filteredBooks.length" :books="filteredBooks"
         :disabled="busy" @select="openBook" />
+      <button v-if="chosenCabinet?.id === 'general' && !selectedBook && !hasWelcomeBook" class="text-button" type="button" :disabled="busy" @click="addWelcome">＋ 添加使用说明</button>
       <details v-if="chosenCabinet && !selectedBook && managedBooks.length" class="batch-box delete-manager">
         <summary>管理笔记本</summary>
         <p>勾选笔记本后，可以移动到其他书柜或删除。删除已同步的笔记本会同时删除 GitHub 上的内容。</p>
@@ -1374,11 +1374,11 @@ async function openSearchResult(chapter: Chapter) {
           </div>
           <div class="reference-book-details">
             <div class="panel-heading">
-              <span>{{ isBuiltin(selectedBook.id) ? '内置只读示例' : selectedBook.sha ? '已收录笔记本' : '本机笔记本' }}</span>
+              <span>{{ selectedBook.sha ? '已收录笔记本' : '本机笔记本' }}</span>
               <button v-if="!selectedBook.sha" class="text-button" :disabled="busy" @click="syncBook">同步笔记本</button>
             </div>
             <h2>{{ selectedBook.title }}</h2>
-            <label v-if="!isBuiltin(selectedBook.id)" class="move-book">所在书柜
+            <label class="move-book">所在书柜
               <select :value="activeCabinet" :disabled="busy" @change="moveSelected">
                 <option v-for="cabinet in cabinetItems" :key="cabinet.id" :value="cabinet.id">{{ cabinet.title }}</option>
               </select>
@@ -1392,7 +1392,7 @@ async function openSearchResult(chapter: Chapter) {
         <div class="contents-list">
             <div class="chapter-title reference-chapter-heading">
               <div><small>CHAPTER DIRECTORY</small><h2>章节目录</h2></div>
-              <button v-if="!isBuiltin(selectedBook.id)" class="primary-button" :disabled="busy" :aria-expanded="creatingChapter" @click="creatingChapter = !creatingChapter">＋ 新建章节</button>
+              <button class="primary-button" :disabled="busy" :aria-expanded="creatingChapter" @click="creatingChapter = !creatingChapter">＋ 新建章节</button>
             </div>
             <form v-if="creatingChapter" class="inline-form" @submit.prevent="addChapter">
               <label for="chapter-name">章节名称</label>
@@ -1400,7 +1400,7 @@ async function openSearchResult(chapter: Chapter) {
               <button class="primary-button" :disabled="busy">创建</button>
               <button type="button" class="text-button" @click="creatingChapter = false">取消</button>
             </form>
-            <details v-if="!isBuiltin(selectedBook.id) && !selectedChapter && filteredChapters.length" class="batch-box delete-manager chapter-delete-manager">
+            <details v-if="!selectedChapter && filteredChapters.length" class="batch-box delete-manager chapter-delete-manager">
               <summary>管理章节<span>批量删除</span></summary>
               <p>已同步章节会从 GitHub 和本机删除，未同步章节仅从本机删除；相关草稿也会删除。</p>
               <div class="delete-manager-list">
@@ -1455,11 +1455,11 @@ async function openSearchResult(chapter: Chapter) {
         <div>
           <button v-if="view === 'edit'" class="back-to-chapters" type="button" @click="backToChapters">← 返回章节目录</button>
           <p>{{ selectedBook?.title }}</p><h2 id="writing-title">{{ selectedChapter.title }}</h2>
-          <p>{{ isBuiltin(selectedChapter.bookId) ? '内置使用手册 · 只读' : !selectedChapter.sha ? '本地章节，尚未同步' : dirty ? '本机有未同步的修改' : 'GitHub 已收录此版本' }}</p>
+          <p>{{ !selectedChapter.sha ? '本地章节，尚未同步' : dirty ? '本机有未同步的修改' : 'GitHub 已收录此版本' }}</p>
         </div>
         <div class="view-actions">
           <button :class="{ chosen: view === 'read' }" :aria-pressed="view === 'read'" @click="view = 'read'">阅读</button>
-          <button v-if="!isBuiltin(selectedChapter.bookId)" :class="{ chosen: view === 'edit' }" :aria-pressed="view === 'edit'" @click="view = 'edit'">编辑</button>
+          <button :class="{ chosen: view === 'edit' }" :aria-pressed="view === 'edit'" @click="view = 'edit'">编辑</button>
         </div>
       </div>
       <div v-if="view === 'read'" class="paper">

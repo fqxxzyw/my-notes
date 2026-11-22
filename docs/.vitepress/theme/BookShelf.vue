@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Notebook } from './notebookStore'
 
-type ShelfItem = Notebook & { kind?: 'page' }
+type ShelfItem = Notebook & { kind?: 'page'; chapterCount?: number; previewText?: string; description?: string }
 const props = defineProps<{ books: ShelfItem[]; selectedId?: string; disabled?: boolean }>()
 const emit = defineEmits<{ select: [book: ShelfItem] }>()
 
@@ -29,9 +29,9 @@ const activeBook = computed(() => props.books[hovered.value ?? focused.value ?? 
 // Each book has a real front cover, extending to the right of its spine in 3D.
 // Reserve the projected width of that cover as the book rotates and grows.
 const coverDepth = 144
-function spacingFor(width: number, rotation: number) {
+function spacingFor(width: number, rotation: number, depth = coverDepth) {
   const radians = Math.abs(rotation) * Math.PI / 180
-  return Math.ceil(Math.max(0, width * (Math.cos(radians) - 1) + coverDepth * Math.sin(radians)) + 12)
+  return Math.ceil(Math.max(0, width * (Math.cos(radians) - 1) + depth * Math.sin(radians)) + 12)
 }
 const metrics = computed(() => isMobile.value
   ? { baseW: 54, maxW: 72, baseH: 206, maxH: 238, gap: 14, radius: 160, maxLift: 12 }
@@ -139,11 +139,12 @@ function bookStyle(index: number) {
   const f = weights.value[index] || 0
   const m = metrics.value
   const page = props.books[index]?.kind === 'page'
-  const width = m.baseW + (m.maxW - m.baseW) * f
+  const width = page ? 24 + 5 * f : m.baseW + (m.maxW - m.baseW) * f
   const tiltY = -26 - 14 * f
   const touchesPage = page || props.books[index + 1]?.kind === 'page'
-  const baseline = touchesPage ? Math.max(m.gap, spacingFor(width, tiltY)) : m.gap
-  const spacing = baseline + (Math.max(baseline, spacingFor(width, tiltY)) - baseline) * f
+  const projected = spacingFor(width, tiltY, page ? 170 : coverDepth)
+  const baseline = touchesPage ? Math.max(m.gap, projected) : m.gap
+  const spacing = baseline + (Math.max(baseline, projected) - baseline) * f
   return {
     '--book-width': `${width}px`,
     '--book-spacing': `${spacing}px`,
@@ -154,6 +155,12 @@ function bookStyle(index: number) {
     '--depth': `${26 * f}px`,
     '--stack-order': 10 + Math.round(f * 30)
   }
+}
+
+// The page face is a small preview of the real Markdown, never placeholder text.
+function pageExcerpt(markdown?: string) {
+  return (markdown || '').replace(/```[\s\S]*?```/g, ' ').replace(/!?(?:\[([^\]]*)\])\([^)]*\)/g, '$1')
+    .replace(/^[#>\-*+\d.\s]+/gm, '').replace(/[`*_~]/g, '').replace(/\s+/g, ' ').trim().slice(0, 115)
 }
 
 function focusBook(index: number) {
@@ -197,10 +204,6 @@ onBeforeUnmount(() => {
 <template>
   <section class="bookshelf" aria-label="笔记本书架">
     <div class="bookshelf__stage">
-    <div class="bookshelf__stage-heading">
-      <span>3D 书脊 · 笔记本与书页</span>
-      <span>移动鼠标放大 · 点击打开</span>
-    </div>
     <div ref="scroll" class="bookshelf__scroll" :class="{ 'is-dragging': dragging }"
       @pointerdown="startDrag" @pointermove="move" @pointerup="endDrag" @pointercancel="endDrag"
       @lostpointercapture="endDrag" @pointerleave="leave" @scroll="leave" @click.capture="guardDragClick"
@@ -225,19 +228,22 @@ onBeforeUnmount(() => {
         >
           <span class="volume__floor-shadow" aria-hidden="true"></span>
           <span v-if="book.kind === 'page'" class="volume__body page__body" aria-hidden="true">
-            <span class="volume__top"></span>
-            <span class="volume__spine page__sheet">
-              <span class="volume__number">MD</span>
+            <span class="volume__top page__top"></span>
+            <span class="volume__spine page__edge">
+              <span class="page__md">MD</span>
               <span class="volume__title">{{ book.title }}</span>
-              <span class="page__lines"><span></span><span></span><span></span></span>
-              <span class="volume__tag">PAGE</span>
+              <span class="page__diamond"></span>
             </span>
-            <span class="volume__cover page__cover">
-              <span class="page__folder-tab">ARCHIVE</span>
-              <span class="volume__cover-frame"></span>
-              <span class="volume__cover-label"><span>FILE.{{ String(index + 1).padStart(2, '0') }}</span><span>MD</span></span>
-              <span class="volume__cover-title">{{ book.title }}<span class="volume__cover-lines"><span></span><span></span><span></span></span></span>
-              <span class="volume__cover-rule">SINGLE PAGE</span>
+            <span class="page__face">
+              <svg class="page__outline" viewBox="0 0 170 260" preserveAspectRatio="none">
+                <path d="M 0,0.75 L 144,0.75 L 169.25,26 L 169.25,259.25 L 0,259.25 Z" />
+                <path d="M 144,0.75 L 144,26 L 169.25,26 Z" />
+              </svg>
+              <span class="page__content">
+                <span><span class="page__badge">PAGE · MD</span><span class="page__title">{{ book.title }}</span></span>
+                <span class="page__manuscript">{{ pageExcerpt(book.previewText) }}</span>
+                <span class="page__foot">MARKDOWN</span>
+              </span>
             </span>
           </span>
           <span v-else class="volume__body" aria-hidden="true">
@@ -245,13 +251,13 @@ onBeforeUnmount(() => {
             <span class="volume__spine">
               <span class="volume__number">{{ String(index + 1).padStart(2, '0') }}</span>
               <span class="volume__title">{{ book.title }}</span>
-              <span class="volume__footer"><span class="volume__tailband"></span><span class="volume__tag">NOTES</span></span>
+              <span class="volume__footer"><span class="volume__tailband"></span><span v-if="book.chapterCount !== undefined" class="volume__chapter-count">{{ book.chapterCount }} 章</span></span>
             </span>
             <span class="volume__cover">
               <span class="volume__cover-frame"></span>
               <span class="volume__cover-label"><span>VOL.{{ String(index + 1).padStart(2, '0') }}</span><span>MD</span></span>
-              <span class="volume__cover-title">{{ book.title }}<span class="volume__cover-lines"><span></span><span></span><span></span></span></span>
-              <span class="volume__cover-rule">NOTES</span>
+              <span class="volume__cover-title">{{ book.title }}<span v-if="book.description?.trim()" class="volume__cover-description">{{ book.description }}</span><span v-else class="volume__cover-lines"><span></span><span></span><span></span></span></span>
+              <span class="volume__cover-rule">NOTES <span v-if="book.chapterCount !== undefined" class="volume__cover-chapters">{{ book.chapterCount }} CH</span></span>
             </span>
           </span>
         </button>

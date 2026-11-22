@@ -13,6 +13,8 @@
   padding: 28px 20px 24px;
   background: #fff;
 }
+.bookshelf__stage { transition: box-shadow .16s ease; }
+.bookshelf__stage:hover, .bookshelf__stage:has(:focus-visible) { box-shadow: 4px 4px 0 var(--depth-edge, #111); }
 .bookshelf__stage-heading {
   display: flex;
   justify-content: space-between;
@@ -198,6 +200,9 @@
   font: 600 8.5px ui-monospace, monospace;
   letter-spacing: .08em;
 }
+.volume__cover-chapters { float: right; }
+.volume__chapter-count { border: 1px solid var(--book-ink); color: var(--book-ink); border-radius: 2px; padding: 1px 4px; font: 700 8px/1.2 ui-monospace, monospace; white-space: nowrap; }
+.volume__cover-description { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 3; -webkit-box-orient: vertical; margin-top: 7px; font: 400 9px/1.55 var(--paper-serif, serif); color: var(--book-muted); }
 .volume__cover-lines { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
 .volume__cover-lines span { height: 1px; background: #111; width: 82%; }
 .volume__cover-lines span:nth-child(2) { width: 58%; }
@@ -213,17 +218,24 @@
   background: #fff;
   backface-visibility: visible;
 }
-/* A standalone page is housed in a slim archive folder, using the same
-   perspective and dimensions as its neighbouring books. */
-.volume--page .page__sheet { padding: 16px 6px 12px; border-color: var(--book-ink); }
-.page__cover { padding-top: 25px; }
-.page__cover .volume__cover-frame { top: 17px; }
-.page__folder-tab { position: absolute; top: 0; left: 8px; padding: 2px 5px; border: 1px solid var(--book-ink); border-top: 0; color: var(--book-ink); font: 700 7px/1 ui-monospace, monospace; letter-spacing: .04em; }
-.page__lines { display: flex; flex-direction: column; gap: 4px; width: 60%; margin-bottom: 8px; }
-.page__lines span { height: 1px; background: var(--book-ink); }
-.page__lines span:nth-child(2) { width: 75%; }
-.page__lines span:nth-child(3) { width: 48%; }
-.volume--page .volume__tag { color: var(--book-ink); }
+/* The 24px folded edge and the 170px manuscript face follow the supplied
+   sideways-folio reference; the shared body supplies the same dock motion. */
+.volume--page { --page-paper: #fff; }
+.volume--page .page__edge { padding: 8px 1px 9px; border-width: 1.5px; border-color: var(--book-ink); }
+.volume--page .page__edge::before, .volume--page .page__edge::after { display: none; }
+.volume--page .page__edge .volume__title { max-height: 186px; font-size: 11.5px; line-height: 1; letter-spacing: .1em; }
+.page__md { padding: 2px 3px; border-radius: 2px; background: var(--book-ink); color: var(--page-paper); font: 700 7.5px/1 ui-monospace, monospace; }
+.page__diamond { width: 7px; height: 7px; border: 1.5px solid var(--book-ink); transform: rotate(45deg); flex: none; }
+.volume--page .page__top { height: 146px; border-width: 1.5px; border-color: var(--book-ink); }
+.page__face { position: absolute; top: 0; left: 100%; width: 170px; height: 100%; transform-origin: left center; transform: rotateY(90deg); backface-visibility: hidden; }
+.page__outline { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.page__outline path { fill: var(--page-paper); stroke: var(--book-ink); stroke-width: 1.5; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.page__content { position: relative; display: flex; flex-direction: column; justify-content: space-between; width: 100%; height: 100%; padding: 13px 13px 11px; text-align: left; overflow: hidden; }
+.page__badge { display: inline-block; padding: 1px 5px; border: 1px solid var(--book-ink); border-radius: 3px; color: var(--book-ink); font: 700 8.5px ui-monospace, monospace; }
+.page__title { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; padding-right: 16px; margin-top: 8px; color: var(--spine-brown); font: 700 13px/1.34 var(--paper-serif, serif); overflow-wrap: anywhere; }
+.page__manuscript { flex: 1; overflow: hidden; margin: 8px 0; padding-top: 5px; border-top: 1px solid var(--book-ink); color: var(--book-muted); font: 400 9.5px/1.7 var(--paper-serif, serif); background-image: repeating-linear-gradient(to bottom, transparent 0 15px, color-mix(in srgb, var(--book-ink) 12%, transparent) 15px 16px); }
+.page__foot { padding-top: 5px; border-top: 1px solid var(--book-ink); color: var(--book-ink); font: 700 8.5px ui-monospace, monospace; }
+:global(.paper-night .volume--page) { --page-paper: #303136; }
 .bookshelf__board {
   height: 18px;
   border: 2px solid #111;
@@ -252,6 +264,8 @@
   border-radius: 10px;
   background: #fff;
 }
+.bookshelf__info { transition: box-shadow .16s ease; }
+.bookshelf__info:hover, .bookshelf__info:has(:focus-visible) { box-shadow: 4px 4px 0 var(--depth-edge, #111); }
 .bookshelf__info-copy { min-width: 0; display: grid; gap: 4px; }
 .bookshelf__info-copy strong { display: block; overflow-wrap: anywhere; font-size: 15px; line-height: 1.5; }
 .bookshelf__info-copy > span:not(.bookshelf__info-label) { color: #555; font-size: 13px; }
@@ -266,7 +280,8 @@
   font-size: 13px;
   font-weight: 600;
 }
-.bookshelf__open:hover { background: #fff; color: #111; box-shadow: 3px 3px 0 #111; }
+.bookshelf__open:not(:disabled):is(:hover, :focus-visible) { background: #fff; color: #111; box-shadow: 3px 3px 0 var(--depth-edge, #111); }
+.bookshelf__open:active:enabled { transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--depth-edge, #111); }
 .bookshelf__open:focus-visible { outline: 2px dashed #111; outline-offset: 3px; }
 @media (max-width: 600px) {
   .bookshelf__stage { padding: 20px 10px 16px; }
@@ -279,5 +294,5 @@
   .volume__title { max-height: 124px; font-size: 13px; letter-spacing: .1em; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .volume, .volume__body { transition: none; }
+  .volume, .volume__body, .bookshelf__stage, .bookshelf__info { transition: none; }
 }

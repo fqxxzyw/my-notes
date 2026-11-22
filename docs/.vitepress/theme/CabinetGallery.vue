@@ -52,7 +52,7 @@ const emit = defineEmits<{ select: [id: string]; create: [] }>()
   border: 2px solid #111; border-radius: 7px; color: #111; text-align: left;
   transition: transform .16s ease, box-shadow .16s ease;
 }
-.cabinet:hover, .cabinet:focus-visible { transform: translate(-2px,-2px); box-shadow: 4px 4px #111; }
+.cabinet:hover, .cabinet:focus-visible { transform: translate(-1px,-1px); box-shadow: 5px 5px 0 var(--depth-edge, #111); }
 .cabinet:focus-visible { outline: 2px solid #111; outline-offset: 4px; }
 .cabinet__top, .cabinet__footer { display: flex; justify-content: space-between; gap: 16px; }
 .cabinet__top { align-items: stretch; }

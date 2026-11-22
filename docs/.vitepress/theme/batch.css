@@ -43,6 +43,10 @@
 .delete-button { margin: 8px 0 0 10px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); background: var(--panel); }
 .delete-button:hover:enabled { background: var(--ink); color: var(--panel); }
 .delete-button:disabled { opacity: .5; }
+.delete-button, .bulk-move select { transition: box-shadow .14s ease, transform .14s ease; }
+.delete-button:not(:disabled):is(:hover, :focus-visible), .bulk-move select:not(:disabled):is(:hover, :focus-visible) { box-shadow: 2px 2px 0 var(--depth-edge, #111); }
+.delete-button:active:enabled { transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--depth-edge, #111); }
+@media (prefers-reduced-motion: reduce) { .delete-button, .bulk-move select { transition: none; } }
 .delete-hint { color: var(--muted); font-size: 12px; }
 .bulk-move { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
 .bulk-move select { min-width: 150px; max-width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--ink); }

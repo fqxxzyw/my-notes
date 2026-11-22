@@ -1,9 +1,10 @@
 /** GitHub-backed notebook storage. Credentials live only in this store instance. */
 import { defaultCatalog, parseCatalog, serializeCatalog, type CabinetCatalog, type CatalogVersion } from './cabinetStore'
 import { normalizeRepository } from './repository'
+import { readNotebookDescription, writeNotebookDescription } from './notebookDescription'
 export { normalizeRepository } from './repository'
 export type { CabinetCatalog, CatalogVersion } from './cabinetStore'
-export type Notebook = { id: string; title: string; sha: string }
+export type Notebook = { id: string; title: string; sha: string; description?: string; indexContent?: string }
 export type Chapter = { bookId: string; id: string; title: string; content: string; sha: string }
 /** A standalone Markdown file in docs/pages, independent of notebooks. */
 export type Page = { id: string; title: string; content: string; sha: string }
@@ -207,7 +208,9 @@ export function createNotebookStore(repository?: string | null) {
       const path = `docs/${ROOT}/${book.id}/index.md`
       if (paths.has(path)) throw new NotebookStoreError('invalid', '同步列表包含重复的笔记本。')
       paths.add(path)
-      const content = `# ${title}\n`
+      // For existing indexes never reconstruct the file: preserve all other user content.
+      if (book.sha && typeof book.indexContent !== 'string') throw new NotebookStoreError('invalid', '缺少笔记本原始内容，请先恢复后再编辑简介。')
+      const content = writeNotebookDescription(book.indexContent ?? `# ${title}\n`, book.description || '')
       changes.push({ path, content, baseline: book.sha || '', desired: await blobSha(content) })
     }
     for (const chapter of chapters) {
@@ -312,7 +315,7 @@ export function createNotebookStore(repository?: string | null) {
     const desiredByPath = new Map(changes.map(change => [change.path, change.desired]))
     return {
       parent, head,
-      books: newBooks.map(book => ({ ...book, title: checkTitle(book.title), sha: desiredByPath.get(`docs/${ROOT}/${book.id}/index.md`)! })),
+      books: newBooks.map(book => ({ ...book, title: checkTitle(book.title), indexContent: writeNotebookDescription(book.indexContent ?? `# ${checkTitle(book.title)}\n`, book.description || ''), sha: desiredByPath.get(`docs/${ROOT}/${book.id}/index.md`)! })),
       chapters: chapters.map(chapter => ({ ...chapter, title: titleFrom(chapter.content, titleFromEncodedId(chapter.id, 'c')), sha: desiredByPath.get(`docs/${ROOT}/${chapter.bookId}/${chapter.id}.md`)! })),
       pages: pages.map(page => ({ ...page, title: titleFrom(page.content, page.title || page.id), sha: desiredByPath.get(`docs/pages/${page.id}.md`)! })),
       ...(catalog ? { catalog: { catalog, sha: desiredByPath.get('docs/cabinets.json')! } } : {})
@@ -460,6 +463,14 @@ export function createNotebookStore(repository?: string | null) {
     return { bookId, id: chapterId, title: titleFrom(content, titleFromEncodedId(chapterId, 'c')), content, sha: data.sha }
   }
 
+  // A directory listing is enough for shelf counts; don't download every
+  // Markdown body just to render a chapter badge.
+  async function listChapterIds(bookId: string): Promise<string[]> {
+    checkId(bookId)
+    const list = await entries(`${ROOT}/${bookId}`)
+    return list.filter(item => item.type === 'file' && item.name.endsWith('.md') && item.name.toLowerCase() !== 'index.md' && ID.test(item.name.slice(0, -3))).map(item => item.name.slice(0, -3))
+  }
+
   async function readPage(id: string): Promise<Page> {
     checkPageId(id)
     const data = await file(`pages/${id}.md`)
@@ -513,15 +524,15 @@ export function createNotebookStore(repository?: string | null) {
       const books = list.filter(item => item.type === 'dir' && ID.test(item.name))
       return Promise.all(books.map(async item => {
         const data = await file(`${ROOT}/${item.name}/index.md`)
-        return { id: item.name, title: titleFrom(decode(data), item.name), sha: data.sha }
+        const content = decode(data)
+        return { id: item.name, title: titleFrom(content, item.name), sha: data.sha, description: readNotebookDescription(content), indexContent: content }
       }))
     },
     async listChapters(bookId: string): Promise<Chapter[]> {
-      checkId(bookId)
-      const list = await entries(`${ROOT}/${bookId}`)
-      const chapters = list.filter(item => item.type === 'file' && item.name.endsWith('.md') && item.name.toLowerCase() !== 'index.md' && ID.test(item.name.slice(0, -3)))
-      return Promise.all(chapters.map(item => readChapter(bookId, item.name.slice(0, -3))))
+      const ids = await listChapterIds(bookId)
+      return Promise.all(ids.map(id => readChapter(bookId, id)))
     },
+    listChapterIds,
     async listPages(): Promise<Page[]> {
       const list = await entries('pages', true)
       const pages = list.filter(item => item.type === 'file' && item.name.endsWith('.md') && ID.test(item.name.slice(0, -3)))

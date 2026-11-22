@@ -3,6 +3,8 @@
 .editor-caption { font-size: 13px; font-weight: 700; }
 .editor-caption small { color: #555; font-size: 12px; font-weight: 400; }
 .editor-modes { display: flex; overflow: hidden; border: 1.5px solid #111; border-radius: 8px; background: white; }
+.editor-modes { transition: box-shadow .14s ease; }
+.editor-modes:hover, .editor-modes:has(button:focus-visible) { box-shadow: 2px 2px 0 var(--depth-edge, #111); }
 .editor-modes button { padding: 6px 12px; border-right: 1.5px solid #111; color: #111; font-size: 12px; font-weight: 600; }
 .editor-modes button:last-child { border-right: 0; }
 .editor-modes button[aria-pressed="true"] { color: #fff; background: #111; }
@@ -27,6 +29,9 @@
 .markdown-toolbar button:hover:not(:disabled) .kbd-tag { border-color: #fff; }
 .markdown-toolbar button:focus-visible { outline: 2px solid var(--vp-c-brand-1, #344e64); outline-offset: 2px; }
 .markdown-toolbar button:disabled { opacity: .55; cursor: default; }
+.markdown-toolbar > button, .code-tool { transition: box-shadow .14s ease, transform .14s ease; }
+.markdown-toolbar > button:not(:disabled):is(:hover, :focus-visible), .code-tool:hover, .code-tool:has(:focus-visible) { box-shadow: 1px 2px 0 var(--depth-edge, #111); }
+.markdown-toolbar > button:active:not(:disabled) { transform: translate(1px, 1px); box-shadow: 0 1px 0 var(--depth-edge, #111); }
 .kbd-tag { padding: 1px 4px; border: 1px solid currentColor; border-radius: 4px; font: 600 10px/1.1 ui-monospace, monospace; }
 .code-tool { display: flex; border: 1.5px solid #111; border-radius: 6px; overflow: hidden; background: #fff; }
 .code-tool button { border: 0; border-radius: 0; }
@@ -34,6 +39,11 @@
 .markdown-shortcuts { margin: 3px 0 9px; color: var(--muted, #59616a); font-size: 12px; line-height: 1.6; }
 .markdown-error { margin: 8px 0; color: #a12626; font-size: 13px; }
 .editor-panes { display: grid; grid-template-columns: minmax(0, 1fr); border: 2px solid #111; border-radius: 9px; overflow: hidden; background: #fff; }
+.editor-panes { transition: box-shadow .14s ease; }
+.editor-panes:hover, .editor-panes:has(:focus-visible) { box-shadow: 2px 2px 0 var(--depth-edge, #111); }
+@media (prefers-reduced-motion: reduce) {
+  .editor-modes, .editor-panes, .markdown-toolbar > button, .code-tool { transition: none; }
+}
 .editor-pane { min-width: 0; padding: 24px clamp(16px, 3vw, 44px); }
 .pane-heading { display: block; margin: 0; color: var(--muted, #59616a); font-size: 12px; font-weight: 600; }
 :deep(.cm-editor) { background: transparent; color: var(--ink, #202328); font-size: 15px; }

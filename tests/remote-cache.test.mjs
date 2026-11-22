@@ -46,6 +46,17 @@ test('standalone pages survive offline reload while legacy snapshots remain read
   assert.deepEqual(readRemoteCache('new/repo', storage).pages, pages)
 })
 
+test('book descriptions and their source remain available offline, while old snapshots still load', () => {
+  const storage = fakeStorage()
+  const book = { ...snapshot.books[0], description: '笔记简介', indexContent: '# 原标题\n\n原有正文\n' }
+  writeRemoteCache({ ...snapshot, books: [book] }, 'example/repo', storage)
+  assert.deepEqual(readRemoteCache('example/repo', storage).books[0], book)
+  assert.throws(() => writeRemoteCache({ ...snapshot, books: [{ ...book, indexContent: 5 }] }, 'example/repo', storage))
+  assert.deepEqual(readRemoteCache('example/repo', storage).books[0], book)
+  writeRemoteCache(snapshot, 'old/repo', storage)
+  assert.deepEqual(readRemoteCache('old/repo', storage).books[0], snapshot.books[0])
+})
+
 test('invalid or incomplete new snapshots never replace the previous cache', () => {
   const storage = fakeStorage()
   writeRemoteCache(snapshot, 'example/repo', storage)

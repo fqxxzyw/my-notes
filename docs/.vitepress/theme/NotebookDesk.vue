@@ -4,6 +4,7 @@ import { createNotebookStore, chapterIdFromTitle, pageIdFromTitle, type Notebook
 import { normalizeRepository, namespaceKey, getConfiguredRepository, setConfiguredRepository } from './repository'
 import ChapterMarkdown from './ChapterMarkdown.vue'
 import MarkdownEditor from './MarkdownEditor.vue'
+import CollapsedOutlineRail from './CollapsedOutlineRail.vue'
 import BookShelf from './BookShelf.vue'
 import CabinetGallery from './CabinetGallery.vue'
 import { useCabinets } from './useCabinets'
@@ -11,6 +12,7 @@ import { readRemoteCache, writeRemoteCache, clearRemoteCache, type RemoteSnapsho
 import { addWelcomeNotebook } from './welcomeStore'
 import { markdownOutline } from './markdownOutline'
 import { createSyncIndicator, type TransferState } from './syncIndicator'
+import { hasUserData } from './workspaceData'
 import { readDroppedMarkdown, type DroppedMarkdownResult } from './readDroppedMarkdown'
 
 const initialRepository = getConfiguredRepository()
@@ -25,7 +27,7 @@ const catalog = useCabinets(initialRepository)
 const activeCabinet = ref('')
 const creatingCabinet = ref(false)
 const cabinetName = ref('')
-type ShelfBook = Notebook & { kind?: 'page' }
+type ShelfBook = Notebook & { kind?: 'page'; chapterCount?: number; previewText?: string }
 const books = ref<ShelfBook[]>([])
 const chapters = ref<Chapter[]>([])
 const selectedBook = ref<ShelfBook | null>(null)
@@ -42,6 +44,10 @@ const transferIndicator = createSyncIndicator(state => { transferState.value = s
 const view = ref<'read' | 'edit'>('read')
 const query = ref('')
 const bookTitle = ref('')
+const bookDescription = ref('')
+const editingDescription = ref(false)
+const descriptionInput = ref('')
+let descriptionEditBase: Notebook | null = null
 const bookCabinet = ref('')
 const newBookCabinetName = ref('')
 const newNoteKind = ref<'book' | 'page'>('book')
@@ -79,6 +85,9 @@ let bookRun = 0
 let localMutationVersion = 0
 let suspendDraft = false
 const localBooks = ref<ShelfBook[]>([])
+const bookDescriptionDrafts = ref<Record<string, { base: Notebook; description: string }>>({})
+const latestBookMetadata = ref<Notebook[]>([])
+let latestBookMetadataComplete = false
 const welcomeInitialized = ref(false)
 const welcomeBookId = ref('')
 const bookVersions = ref<Record<string, string>>({})
@@ -101,6 +110,8 @@ async function identifySnapshot() {
   snapshotVersion = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
 }
 const chapterCache = new Map<string, Promise<Chapter[]>>()
+const shelfChapterIds = new Map<string, Promise<string[] | null>>()
+const shelfCounts = ref<Record<string, number>>({})
 type Draft = { content: string; base: Chapter }
 const drafts = ref<Record<string, Draft>>({})
 const selectedKeys = ref<string[]>([])
@@ -192,14 +203,6 @@ function workspaceEntries(kind: 'legacy' | 'local'): Array<[string, string]> {
 function workspaceHasContent(kind: 'legacy' | 'local'): boolean {
   return workspaceEntries(kind).some(([key, value]) => hasUserData(key, value))
 }
-function hasUserData(key: string, value: string): boolean {
-  if (key.startsWith('paper-notes-draft:') || key.includes(':paper-notes-draft:')) return true
-  try {
-    const data = JSON.parse(value)
-    if (key === 'paper-notes:cabinets:v1' || key.endsWith(':paper-notes:cabinets:v1')) return ['created', 'moves', 'removed', 'renamed'].some(field => Object.keys(data?.[field] || {}).length > 0)
-    return (Array.isArray(data?.books) && data.books.length > 0) || (Array.isArray(data?.chapters) && data.chapters.length > 0) || Object.keys(data?.synced || {}).length > 0
-  } catch { return true }
-}
 function importWorkspace(kind: 'legacy' | 'local', target: string): void {
   const source = workspaceEntries(kind)
   const oldPrefix = kind === 'legacy' ? 'paper-notes-draft:' : `${namespaceKey('paper-notes-draft', '')}:`
@@ -273,7 +276,7 @@ function maximizeWindow(event: MouseEvent) {
   windowCommand('window.maximize')
 }
 function persistLocal() {
-  try { localStorage.setItem(localKey, JSON.stringify({ books: localBooks.value, chapters: localChapters.value, synced: syncedCopies.value, bookVersions: bookVersions.value, welcomeInitialized: welcomeInitialized.value, welcomeBookId: welcomeBookId.value })) }
+  try { localStorage.setItem(localKey, JSON.stringify({ books: localBooks.value, bookDescriptionDrafts: bookDescriptionDrafts.value, chapters: localChapters.value, synced: syncedCopies.value, bookVersions: bookVersions.value, welcomeInitialized: welcomeInitialized.value, welcomeBookId: welcomeBookId.value })) }
   catch { throw new Error('浏览器无法保存本地内容，请复制正文或释放存储空间后重试。') }
 }
 const chapterKey = (chapter: Pick<Chapter, 'bookId' | 'id'>) => `${chapter.bookId}/${chapter.id}`
@@ -284,23 +287,24 @@ const batchItems = computed(() => {
   return Array.from(byKey, ([key, chapter]) => ({ key, bookId: chapter.bookId, bookTitle: books.value.find(book => book.id === chapter.bookId)?.title || chapter.bookId, title: chapter.title, chapter }))
 })
 const batchGroups = computed(() => {
-  const groups = new Map<string, { id: string; title: string; isNew: boolean; items: typeof batchItems.value }>()
+  const groups = new Map<string, { id: string; title: string; isNew: boolean; hasDescription: boolean; items: typeof batchItems.value }>()
   for (const book of localBooks.value) {
-    if (!book.sha && book.kind !== 'page') groups.set(book.id, { id: book.id, title: book.title, isNew: true, items: [] })
+    if (!book.sha && book.kind !== 'page') groups.set(book.id, { id: book.id, title: book.title, isNew: true, hasDescription: false, items: [] })
   }
+  for (const [id, draft] of Object.entries(bookDescriptionDrafts.value)) groups.set(id, { id, title: draft.base.title, isNew: false, hasDescription: true, items: [] })
   for (const item of batchItems.value) {
     let group = groups.get(item.bookId)
     if (!group) {
-      group = { id: item.bookId, title: item.bookTitle, isNew: false, items: [] }
+      group = { id: item.bookId, title: item.bookTitle, isNew: false, hasDescription: false, items: [] }
       groups.set(item.bookId, group)
     }
     group.items.push(item)
   }
   return Array.from(groups.values())
 })
-const pendingBatchCount = computed(() => batchGroups.value.reduce((count, group) => count + group.items.length + Number(group.isNew), 0))
+const pendingBatchCount = computed(() => batchGroups.value.reduce((count, group) => count + group.items.length + Number(group.isNew || group.hasDescription), 0))
 function batchGroupKeys(group: typeof batchGroups.value[number]): string[] {
-  return [...(group.isNew ? [`book:${group.id}`] : []), ...group.items.map(item => item.key)]
+  return [...(group.isNew || group.hasDescription ? [`book:${group.id}`] : []), ...group.items.map(item => item.key)]
 }
 function isBatchGroupSelected(group: typeof batchGroups.value[number]): boolean {
   const keys = batchGroupKeys(group)
@@ -460,6 +464,67 @@ const visibleCabinets = computed(() => cabinetItems.value.filter(cabinet => {
   return !q || cabinet.title.toLowerCase().includes(q) || cabinet.books.some(book => book.title.toLowerCase().includes(q))
 }))
 const filteredBooks = computed(() => books.value.filter(book => catalog.assigned(book.id) === activeCabinet.value && book.title.toLowerCase().includes(query.value.trim().toLowerCase())))
+function itemTotals(items: ShelfBook[]): string {
+  const pages = items.filter(item => item.kind === 'page').length
+  const notebooks = items.length - pages
+  return [notebooks ? `${notebooks} 本笔记本` : '', pages ? `${pages} 张书页` : ''].filter(Boolean).join(' · ')
+}
+const introSummary = computed(() => {
+  if (selectedBook.value) return `${chapters.value.length} 章`
+  if (chosenCabinet.value) return itemTotals(filteredBooks.value)
+  return [`${cabinetItems.value.length} 个书柜`, itemTotals(books.value)].filter(Boolean).join(' · ')
+})
+const shelfBooks = computed<ShelfBook[]>(() => filteredBooks.value.map(book => {
+  if (book.kind === 'page') {
+    const page = remotePages.value.find(item => pageBookId(item.id) === book.id)
+    const local = localChapters.value.find(item => item.bookId === book.id)
+    const chapter = page ? pageAsChapter(page) : local
+    const text = chapter && (drafts.value[chapterKey(chapter)]?.content ?? local?.content ?? page?.content)
+    return { ...book, ...(text ? { previewText: text } : {}) }
+  }
+  const count = shelfCounts.value[book.id]
+  return { ...book, ...(count === undefined ? {} : { chapterCount: count }) }
+}))
+
+// Clear cached remote listings only when their underlying library can change;
+// typing a draft should not make a network request for each keystroke.
+watch([books, localChapters, loadedBookIds, restoredSnapshot, offlineMode, snapshot], () => {
+  shelfChapterIds.clear()
+}, { deep: true, flush: 'sync' })
+let shelfReadRun = 0
+watch([filteredBooks, activeCabinet, selectedBook, localChapters, drafts, syncedCopies, loadedBookIds, restoredSnapshot, offlineMode, snapshot], async () => {
+  const run = ++shelfReadRun
+  if (!activeCabinet.value || selectedBook.value) return
+  const visible = filteredBooks.value.filter(book => book.kind !== 'page')
+  const nextCounts: Record<string, number> = {}
+  let cursor = 0
+  async function readOne(book: ShelfBook) {
+    let ids: string[] | null
+    if (!loadedBookIds.value.includes(book.id)) ids = book.sha ? null : []
+    else if (offlineMode.value && restoredSnapshot.value) ids = (restoredSnapshot.value.chapters[book.id] || []).map(chapter => chapter.id)
+    else if (snapshot.value) ids = []
+    else {
+      let pending = shelfChapterIds.get(book.id)
+      if (!pending) {
+        pending = store.listChapterIds(book.id).catch(() => {
+          const cached = restoredSnapshot.value
+          return cached && Object.prototype.hasOwnProperty.call(cached.chapters, book.id) ? cached.chapters[book.id].map(chapter => chapter.id) : null
+        })
+        shelfChapterIds.set(book.id, pending)
+      }
+      ids = await pending
+    }
+    if (run !== shelfReadRun) return
+    const extras = [ ...localChapters.value.filter(chapter => !chapter.sha), ...Object.values(drafts.value).map(draft => draft.base), ...(snapshot.value ? Object.values(syncedCopies.value).filter(copy => copy.snapshotVersion === snapshotVersion && copy.baseSha === null).map(copy => copy.chapter) : []) ].filter(chapter => chapter.bookId === book.id)
+    if (ids !== null) nextCounts[book.id] = new Set([...ids, ...extras.map(chapter => chapter.id)]).size
+    shelfCounts.value = { ...nextCounts }
+  }
+  // Concurrency is bounded: at most three shelf books are queried at once.
+  await Promise.all(Array.from({ length: Math.min(3, visible.length) }, async () => {
+    while (cursor < visible.length && run === shelfReadRun) await readOne(visible[cursor++])
+  }))
+  if (run === shelfReadRun && !visible.length) shelfCounts.value = {}
+}, { deep: true })
 const managedBooks = computed(() => filteredBooks.value)
 const hasWelcomeBook = computed(() => !!welcomeBookId.value && books.value.some(book => book.id === welcomeBookId.value))
 const filteredChapters = computed(() => {
@@ -520,13 +585,16 @@ async function loadBooks(useSnapshot = snapshot.value) {
   snapshot.value = useSnapshot
 }
 function mergeBooks(remoteBooks: ShelfBook[], useSnapshot: boolean): ShelfBook[] {
+  latestBookMetadata.value = remoteBooks.filter(book => book.kind !== 'page')
+  latestBookMetadataComplete = !useSnapshot
   const realIds = new Set([...remoteBooks, ...localBooks.value].filter(book => book.kind !== 'page').map(book => book.id))
   if (remoteBooks.some(book => book.kind === 'page' && realIds.has(book.id)) || localBooks.value.some(book => book.kind === 'page' && realIds.has(book.id))) throw new Error('GitHub 中的书页与笔记本编号重复，请先重命名其中一个文件以避免覆盖。')
   const merged = [...remoteBooks, ...localBooks.value.filter(local => !remoteBooks.some(book => book.id === local.id) && (!local.sha || localChapters.value.some(chapter => chapter.bookId === local.id && !chapter.sha) || Object.values(drafts.value).some(draft => draft.base.bookId === local.id) || (useSnapshot && bookVersions.value[local.id] === snapshotVersion)))]
+  for (const draft of Object.values(bookDescriptionDrafts.value)) if (!merged.some(book => book.id === draft.base.id)) merged.push(draft.base)
   for (const draft of Object.values(drafts.value)) {
     if (!merged.some(book => book.id === draft.base.bookId)) merged.push({ id: draft.base.bookId, title: `本地草稿 · ${draft.base.bookId.slice(0, 8)}`, sha: '' })
   }
-  return merged
+  return merged.map(book => bookDescriptionDrafts.value[book.id] ? { ...book, description: bookDescriptionDrafts.value[book.id].description } : book)
 }
 function openCabinet(id = '') {
   if (!saveDraft()) return
@@ -595,6 +663,7 @@ function openNewNote() {
   if (!saveDraft()) return
   clearMessages()
   bookCabinet.value = ''
+  bookDescription.value = ''
   newBookCabinetName.value = ''
   creatingCabinet.value = false
   creatingBook.value = true
@@ -651,6 +720,38 @@ function moveSelected(event: Event) {
     if (autoSave.value) { autoMoves.add(book.id); scheduleAuto() }
   } catch (e) { activeCabinet.value = catalog.assigned(book.id); select.value = activeCabinet.value || previous; error.value = `书柜归属尚未保存：${message(e)}` }
 }
+function startDescriptionEdit() {
+  if (!selectedBook.value || writing || busy.value) return
+  descriptionEditBase = bookDescriptionDrafts.value[selectedBook.value.id]?.base || { ...selectedBook.value }
+  descriptionInput.value = selectedBook.value.description || ''
+  editingDescription.value = true
+}
+function saveDescription() {
+  const book = selectedBook.value
+  if (!book || book.kind === 'page' || busy.value || writing) return
+  const description = descriptionInput.value.trim()
+  if (description.length > 500) { error.value = '简介不能超过 500 个字符。'; return }
+  const oldBooks = localBooks.value, oldDrafts = bookDescriptionDrafts.value
+  const current = bookDescriptionDrafts.value[book.id]
+  if (!book.sha) {
+    localBooks.value = localBooks.value.map(item => item.id === book.id ? { ...item, description } : item)
+  } else {
+    const base = current?.base || (descriptionEditBase?.id === book.id ? descriptionEditBase : book)
+    if (typeof base.indexContent !== 'string') { error.value = '本机缺少原始笔记本内容，请先点击恢复再修改简介。'; return }
+    const next = { ...bookDescriptionDrafts.value }
+    if (description === (base.description || '')) delete next[book.id]
+    else next[book.id] = { base, description }
+    bookDescriptionDrafts.value = next
+  }
+  try { persistLocal() } catch (e) { localBooks.value = oldBooks; bookDescriptionDrafts.value = oldDrafts; error.value = message(e); return }
+  books.value = books.value.map(item => item.id === book.id ? { ...item, description } : item)
+  selectedBook.value = { ...book, description }
+  localMutationVersion++
+  editingDescription.value = false
+  descriptionEditBase = null
+  notice.value = '简介已保存在本机，可同步到 GitHub。'
+  if (autoSave.value && (!book.sha || bookDescriptionDrafts.value[book.id])) { autoBooks.add(book.id); scheduleAuto() }
+}
 async function openBook(book: Notebook) {
   if (!saveDraft()) return
   const request = ++bookRun
@@ -658,6 +759,7 @@ async function openBook(book: Notebook) {
   activeCabinet.value = catalog.assigned(book.id)
   creatingBook.value = false; creatingChapter.value = false
   selectedBook.value = book
+  editingDescription.value = false
   deleteChapterIds.value = []
   selectedChapter.value = null
   chapters.value = []
@@ -830,7 +932,7 @@ async function addBook() {
     }
     if (!catalog.cabinets.value.some(cabinet => cabinet.id === targetCabinet)) throw new Error('目标书柜不存在，请重新选择。')
     const id = newNoteKind.value === 'page' ? pageIdFromTitle(title) : ''
-    const book: ShelfBook = id ? { id: pageBookId(id), title, sha: '', kind: 'page' } : { id: newId(), title, sha: '' }
+    const book: ShelfBook = id ? { id: pageBookId(id), title, sha: '', kind: 'page' } : { id: newId(), title, sha: '', description: bookDescription.value.trim() }
     const pageChapter: Chapter | null = id ? { bookId: book.id, id, title, content: `# ${title}\n\n`, sha: '' } : null
     localBooks.value.push(book)
     if (pageChapter) localChapters.value.push(pageChapter)
@@ -894,7 +996,7 @@ async function syncCatalog() {
   const cabinetIds = [...new Set([...Object.keys(catalog.journal.value.created), ...Object.keys(catalog.journal.value.removed || {}), ...Object.keys(catalog.journal.value.renamed || {})])]
   if (!bookIds.length && !cabinetIds.length) { notice.value = '没有待同步的书柜整理。'; return }
   clearMessages()
-  const success = await run(() => performBatch([], bookIds, cabinetIds))
+  const success = await run(() => performBatch([], bookIds, cabinetIds, []))
   if (success) notice.value = '书柜整理已同步到 GitHub。'
   if (autoSave.value && (autoKeys.size || autoBooks.size || autoCabinets.size || autoMoves.size)) scheduleAuto()
 }
@@ -973,11 +1075,12 @@ function useRemoteBase() {
   error.value = ''
   notice.value = '已采用远程版本作为同步基准，当前草稿未改变。确认合并后再点击同步。'
 }
-async function performBatch(keys: string[], bookIds: string[], cabinetIds: string[] = []) {
+async function performBatch(keys: string[], bookIds: string[], cabinetIds: string[] = [], descriptionBookIds: string[] = bookIds) {
   transferIndicator.dismissCompletion()
   if (writing) throw new Error('正在同步，请稍候。')
   const entries = batchItems.value.filter(item => keys.includes(item.key) || (isPageBookId(item.bookId) && bookIds.includes(item.bookId) && !item.chapter.sha))
   const newBooks = localBooks.value.filter(book => !isPageBookId(book.id) && !book.sha && (bookIds.includes(book.id) || entries.some(item => item.bookId === book.id)))
+  const changedBooks = descriptionBookIds.flatMap(id => { const draft = bookDescriptionDrafts.value[id]; return draft ? [{ ...draft.base, description: draft.description }] : [] })
   writing = true
   for (const entry of entries) inFlightKeys.add(entry.key)
   let catalogPrepared = false
@@ -986,20 +1089,25 @@ async function performBatch(keys: string[], bookIds: string[], cabinetIds: strin
     const scopedBookIds = [...new Set([...bookIds, ...entries.map(item => item.bookId)])]
     const catalogChange = catalog.prepare(scopedBookIds, cabinetIds)
     catalogPrepared = !!catalogChange
-    if (!entries.length && !newBooks.length && !catalogChange) return
+    if (!entries.length && !newBooks.length && !changedBooks.length && !catalogChange) return
     const bases = entries.map(item => {
       const prior = syncedCopies.value[item.key]
       if (prior && prior.snapshotVersion === snapshotVersion && prior.chapter.sha === item.chapter.sha) return prior.baseSha
       return null
     })
     transfer = transferIndicator.start('sync')
-    const result = await store.syncBatch(newBooks, entries.filter(item => !isPageBookId(item.bookId)).map(item => item.chapter), catalogChange, entries.filter(item => isPageBookId(item.bookId)).map(item => chapterAsPage(item.chapter)))
+    const result = await store.syncBatch([...newBooks, ...changedBooks], entries.filter(item => !isPageBookId(item.bookId)).map(item => item.chapter), catalogChange, entries.filter(item => isPageBookId(item.bookId)).map(item => chapterAsPage(item.chapter)))
     const completedChapters = [...result.chapters, ...result.pages.map(pageAsChapter)]
     updateOfflineAfterCommit(result.parent, result.head, { books: result.books, chapters: result.chapters, pages: result.pages, catalog: result.catalog })
     if (catalogChange && !result.catalog) throw new Error('GitHub 未返回书柜目录版本，请保留本地整理后重试。')
     if (result.catalog) { catalog.acknowledge(result.catalog); catalogPrepared = false }
     localMutationVersion++
     for (const item of entries) chapterCache.delete(`remote:${item.bookId}`)
+    for (const book of result.books) {
+      const index = latestBookMetadata.value.findIndex(item => item.id === book.id)
+      if (index < 0) latestBookMetadata.value = [...latestBookMetadata.value, book]
+      else latestBookMetadata.value = latestBookMetadata.value.map(item => item.id === book.id ? book : item)
+    }
     for (const book of [...result.books, ...result.pages.map(pageAsBook)]) {
       if (!loadedBookIds.value.includes(book.id) && !snapshot.value) loadedBookIds.value.push(book.id)
       bookVersions.value = { ...bookVersions.value, [book.id]: snapshotVersion }
@@ -1007,6 +1115,16 @@ async function performBatch(keys: string[], bookIds: string[], cabinetIds: strin
       books.value = books.value.map(item => item.id === book.id ? book : item)
       if (selectedBook.value?.id === book.id) selectedBook.value = book
     }
+    const nextDescriptions = { ...bookDescriptionDrafts.value }
+    for (const book of result.books) {
+      const submitted = changedBooks.find(item => item.id === book.id)
+      const current = nextDescriptions[book.id]
+      if (submitted && current && current.description === submitted.description && current.base.sha === submitted.sha) delete nextDescriptions[book.id]
+      else if (submitted && current) nextDescriptions[book.id] = { base: book, description: current.description }
+    }
+    bookDescriptionDrafts.value = nextDescriptions
+    books.value = books.value.map(book => nextDescriptions[book.id] ? { ...book, description: nextDescriptions[book.id].description } : book)
+    if (selectedBook.value && nextDescriptions[selectedBook.value.id]) selectedBook.value = { ...selectedBook.value, description: nextDescriptions[selectedBook.value.id].description }
     for (const page of result.pages) {
       const index = remotePages.value.findIndex(item => item.id === page.id)
       if (index < 0) remotePages.value = [...remotePages.value, page]
@@ -1053,7 +1171,7 @@ async function syncSelected() {
   if (!connected.value) { error.value = '请先连接 GitHub，再同步勾选的章节。'; goToConnection(); return }
   if (!saveDraft()) return
   const validChapterKeys = new Set(batchItems.value.map(item => item.key))
-  const validBookIds = new Set(localBooks.value.filter(book => !book.sha).map(book => book.id))
+  const validBookIds = new Set([...localBooks.value.filter(book => !book.sha).map(book => book.id), ...Object.keys(bookDescriptionDrafts.value)])
   const keys = selectedKeys.value.filter(key => validChapterKeys.has(key))
   const bookIds = selectedKeys.value.filter(key => key.startsWith('book:') && validBookIds.has(key.slice(5))).map(key => key.slice(5))
   if (!keys.length && !bookIds.length) { error.value = '请先勾选要同步的笔记本或章节。'; return }
@@ -1068,6 +1186,7 @@ async function syncFromHeader() {
   if (!saveDraft()) return
   if (selectedKeys.value.length) { await syncSelected(); return }
   if (selectedChapter.value && (dirty.value || !selectedChapter.value.sha)) { await sync(); return }
+  if (selectedBook.value && bookDescriptionDrafts.value[selectedBook.value.id]) { await syncBook(); return }
   if (catalog.pending.value) { await syncCatalog(); return }
   if (view.value === 'edit') { view.value = 'read'; await nextTick() }
   const panel = document.querySelector<HTMLDetailsElement>('details.batch-box:not(.delete-manager)')
@@ -1080,14 +1199,14 @@ async function syncFromHeader() {
 
 // Remove local records only after a remote deletion has succeeded. The pending
 // list also permits discarding a draft without deleting its published chapter.
-function removeLocalRecords(bookIds: string[], chapterKeys: string[], draftOnlyKeys: string[] = []) {
+function removeLocalRecords(bookIds: string[], chapterKeys: string[], draftOnlyKeys: string[] = [], descriptionIds: string[] = []) {
   const removedBooks = new Set(bookIds), removedChapters = new Set(chapterKeys)
   const discardedDrafts = new Set(draftOnlyKeys)
   for (const [key, draft] of Object.entries(drafts.value)) {
     if (removedBooks.has(draft.base.bookId) || removedChapters.has(key)) discardedDrafts.add(key)
   }
   const before = {
-    books: localBooks.value, chapters: localChapters.value, copies: syncedCopies.value,
+    books: localBooks.value, descriptions: bookDescriptionDrafts.value, chapters: localChapters.value, copies: syncedCopies.value,
     versions: bookVersions.value, drafts: drafts.value, storage: localStorage.getItem(localKey),
     draftStorage: Object.fromEntries([...discardedDrafts].map(key => {
       const draft = drafts.value[key]
@@ -1096,6 +1215,7 @@ function removeLocalRecords(bookIds: string[], chapterKeys: string[], draftOnlyK
   }
   try {
     localBooks.value = localBooks.value.filter(book => !removedBooks.has(book.id))
+    bookDescriptionDrafts.value = Object.fromEntries(Object.entries(bookDescriptionDrafts.value).filter(([id]) => !removedBooks.has(id) && !descriptionIds.includes(id)))
     localChapters.value = localChapters.value.filter(chapter => !removedBooks.has(chapter.bookId) && !removedChapters.has(chapterKey(chapter)))
     syncedCopies.value = Object.fromEntries(Object.entries(syncedCopies.value).filter(([key, copy]) => !removedBooks.has(copy.chapter.bookId) && !removedChapters.has(key)))
     bookVersions.value = Object.fromEntries(Object.entries(bookVersions.value).filter(([id]) => !removedBooks.has(id)))
@@ -1107,7 +1227,7 @@ function removeLocalRecords(bookIds: string[], chapterKeys: string[], draftOnlyK
     }
     catalog.discardMoves(bookIds)
   } catch (e) {
-    localBooks.value = before.books; localChapters.value = before.chapters
+    localBooks.value = before.books; bookDescriptionDrafts.value = before.descriptions; localChapters.value = before.chapters
     syncedCopies.value = before.copies; bookVersions.value = before.versions; drafts.value = before.drafts
     try {
       if (before.storage === null) localStorage.removeItem(localKey); else localStorage.setItem(localKey, before.storage)
@@ -1129,6 +1249,24 @@ function removeLocalRecords(bookIds: string[], chapterKeys: string[], draftOnlyK
   }
   for (const key of [...removedChapters, ...discardedDrafts]) autoKeys.delete(key)
   selectedKeys.value = selectedKeys.value.filter(key => !removedChapters.has(key) && !discardedDrafts.has(key) && !removedBooks.has(key.startsWith('book:') ? key.slice(5) : key.split('/')[0]))
+  for (const id of descriptionIds) {
+    const latest = latestBookMetadata.value.find(book => book.id === id)
+    const otherDrafts = localChapters.value.some(chapter => chapter.bookId === id && !chapter.sha) || Object.values(drafts.value).some(draft => draft.base.bookId === id)
+    if (!latest && latestBookMetadataComplete && !otherDrafts) {
+      books.value = books.value.filter(book => book.id !== id)
+      if (selectedBook.value?.id === id) { selectedBook.value = null; selectedChapter.value = null; chapters.value = []; view.value = 'read' }
+      selectedKeys.value = selectedKeys.value.filter(key => key !== `book:${id}`)
+      autoBooks.delete(id)
+      continue
+    }
+    const base = latest || before.descriptions[id]?.base
+    if (base) {
+      books.value = books.value.map(book => book.id === id ? { ...book, ...base } : book)
+      if (selectedBook.value?.id === id) selectedBook.value = { ...selectedBook.value, ...base }
+      selectedKeys.value = selectedKeys.value.filter(key => key !== `book:${id}`)
+      autoBooks.delete(id)
+    }
+  }
   if (selectedBook.value && removedBooks.has(selectedBook.value.id)) {
     selectedBook.value = null; selectedChapter.value = null; chapters.value = []; view.value = 'read'
   } else if (selectedChapter.value) {
@@ -1146,13 +1284,14 @@ async function deletePendingSelected() {
   const chosen = new Set(selectedKeys.value)
   const selectedBooks = localBooks.value.filter(book => !book.sha && (chosen.has(`book:${book.id}`) || (book.kind === 'page' && batchItems.value.some(item => item.bookId === book.id && chosen.has(item.key)))))
   const bookIds = selectedBooks.map(book => book.id)
+  const descriptionIds = Object.keys(bookDescriptionDrafts.value).filter(id => chosen.has(`book:${id}`))
   const entries = batchItems.value.filter(item => chosen.has(item.key) && !bookIds.includes(item.bookId))
-  if (!bookIds.length && !entries.length) { error.value = '请先勾选要删除的本机项目。'; return }
-  const names = [...selectedBooks.map(book => `整本：${book.title}`), ...entries.map(item => `${item.chapter.sha ? '丢弃本机草稿' : '本机章节'}：${item.title}`)]
+  if (!bookIds.length && !entries.length && !descriptionIds.length) { error.value = '请先勾选要删除的本机项目。'; return }
+  const names = [...selectedBooks.map(book => `整本：${book.title}`), ...descriptionIds.map(id => `丢弃本机简介修改：${bookDescriptionDrafts.value[id].base.title}`), ...entries.map(item => `${item.chapter.sha ? '丢弃本机草稿' : '本机章节'}：${item.title}`)]
   if (!window.confirm(`将删除以下本机内容：\n\n${names.join('\n')}\n\n新建笔记本包括其中所有本机章节和草稿；已同步章节仅丢弃本机草稿，GitHub 上的章节不受影响。此操作无法撤销。`)) return
   clearTimeout(autoTimer)
   const success = await run(async () => {
-    removeLocalRecords(bookIds, entries.filter(item => !item.chapter.sha).map(item => item.key), entries.filter(item => !!item.chapter.sha).map(item => item.key))
+    removeLocalRecords(bookIds, entries.filter(item => !item.chapter.sha).map(item => item.key), entries.filter(item => !!item.chapter.sha).map(item => item.key), descriptionIds)
   })
   if (success) notice.value = '已删除所选本机项目；GitHub 内容未改变。'
   if (autoSave.value && (autoKeys.size || autoBooks.size || autoCabinets.size || autoMoves.size)) scheduleAuto()
@@ -1212,12 +1351,12 @@ async function flushAuto() {
   transferIndicator.dismissCompletion()
   if (disposed || !autoSave.value || !connected.value || !isHosted.value) return
   if (writing) { scheduleAuto(); return }
-  const keys = [...autoKeys]; const bookIds = [...new Set([...autoBooks, ...autoMoves])]; const cabinetIds = [...autoCabinets]
+  const keys = [...autoKeys]; const descriptionBookIds = [...autoBooks]; const bookIds = [...new Set([...autoBooks, ...autoMoves])]; const cabinetIds = [...autoCabinets]
   autoKeys.clear(); autoBooks.clear(); autoMoves.clear(); autoCabinets.clear()
   if (!keys.length && !bookIds.length && !cabinetIds.length) return
   autoStatus.value = '正在自动保存'
   try {
-    await performBatch(keys, bookIds, cabinetIds)
+    await performBatch(keys, bookIds, cabinetIds, descriptionBookIds)
     autoStatus.value = '已自动同步'
     if (autoKeys.size || autoBooks.size || autoCabinets.size || autoMoves.size) scheduleAuto()
   } catch (e) {
@@ -1330,6 +1469,9 @@ onMounted(() => {
     const addedWelcome = !initialRepository ? addWelcomeNotebook(localStorage, '', snapshotFiles, newId) : null
     const saved = JSON.parse(localStorage.getItem(localKey) || '{}')
     if (Array.isArray(saved.books)) localBooks.value = saved.books
+    if (saved.bookDescriptionDrafts && typeof saved.bookDescriptionDrafts === 'object' && !Array.isArray(saved.bookDescriptionDrafts)) {
+      bookDescriptionDrafts.value = Object.fromEntries(Object.entries(saved.bookDescriptionDrafts).filter(([id, value]: [string, any]) => value && typeof value.description === 'string' && value.description.length <= 500 && value.base?.id === id && typeof value.base?.sha === 'string' && typeof value.base?.indexContent === 'string')) as typeof bookDescriptionDrafts.value
+    }
     if (Array.isArray(saved.chapters)) localChapters.value = saved.chapters
     if (saved.synced && typeof saved.synced === 'object' && !Array.isArray(saved.synced)) syncedCopies.value = saved.synced
     if (saved.bookVersions && typeof saved.bookVersions === 'object' && !Array.isArray(saved.bookVersions)) bookVersions.value = saved.bookVersions
@@ -1477,9 +1619,7 @@ async function openSearchResult(chapter: Chapter) {
         <nav v-if="chosenCabinet && !selectedBook" class="crumbs"><button type="button" @click="openCabinet()">← 返回书柜</button></nav>
         <h1 id="desk-title">{{ selectedBook?.title || chosenCabinet?.title || '全部书柜' }}</h1>
         <p v-if="!chosenCabinet" class="archive-intro">点击书柜进入书架，整理和阅读笔记。</p>
-        <p class="intro-text">
-          {{ selectedBook ? chapters.length + ' 章' : chosenCabinet ? filteredBooks.length + ' 项笔记' : cabinetItems.length + ' 个书柜 · ' + books.length + ' 项笔记' }}
-        </p>
+        <p v-if="introSummary" class="intro-text">{{ introSummary }}</p>
         <a href="#connection" class="sync-link" @click="revealConnection">
           <span class="sync-dot" :class="{ online: connected }" aria-hidden="true"></span>
           {{ connected ? (isHosted ? autoStatus : '令牌已设置') : '本机草稿 · 连接 GitHub' }}
@@ -1522,6 +1662,10 @@ async function openSearchResult(chapter: Chapter) {
           </fieldset>
           <label for="book-name">笔记名称</label>
           <input id="book-name" v-model="bookTitle" maxlength="120" placeholder="例如，Java 学习" required>
+          <template v-if="newNoteKind === 'book'">
+            <label for="book-description">简介（选填）</label>
+            <textarea id="book-description" v-model="bookDescription" maxlength="500" rows="3" placeholder="写一句介绍，以后也可以修改"></textarea>
+          </template>
           <label for="book-cabinet">选择书柜</label>
           <select id="book-cabinet" v-model="bookCabinet">
             <option value="">{{ defaultCabinetTitle }}（默认）</option>
@@ -1579,7 +1723,7 @@ async function openSearchResult(chapter: Chapter) {
         </div>
       </details>
       <p v-if="!chosenCabinet && !visibleCabinets.length" class="empty-shelf">没有匹配的书柜。</p>
-      <BookShelf v-if="chosenCabinet && !selectedBook && filteredBooks.length" :books="filteredBooks"
+      <BookShelf v-if="chosenCabinet && !selectedBook && filteredBooks.length" :books="shelfBooks"
         :disabled="busy" @select="openBook" />
       <button v-if="chosenCabinet?.id === 'general' && !selectedBook && !hasWelcomeBook" class="text-button" type="button" :disabled="busy" @click="addWelcome">＋ 添加使用说明</button>
       <details v-if="chosenCabinet && !selectedBook && managedBooks.length" class="batch-box delete-manager">
@@ -1606,12 +1750,12 @@ async function openSearchResult(chapter: Chapter) {
               <div class="reference-book-spine">
                 <span class="reference-book-number">01</span>
                 <span class="reference-book-spine-title">{{ selectedBook.title }}</span>
-                <span class="reference-book-rule"></span>
+                <span class="reference-book-spine-bottom"><span class="reference-book-rule"></span><span class="reference-book-count">{{ chapters.length }} 章</span></span>
               </div>
               <div class="reference-book-cover">
                 <div class="reference-cover-frame"></div>
                 <span class="reference-cover-meta">NOTEBOOK</span>
-                <strong class="reference-cover-title">{{ selectedBook.title }}</strong>
+                <span class="reference-cover-copy"><strong class="reference-cover-title">{{ selectedBook.title }}</strong><span v-if="selectedBook.description" class="reference-cover-description">{{ selectedBook.description }}</span></span>
                 <span class="reference-cover-rule"></span>
               </div>
               <div class="reference-book-top"></div>
@@ -1620,9 +1764,20 @@ async function openSearchResult(chapter: Chapter) {
           <div class="reference-book-details">
             <div class="panel-heading">
               <span>{{ selectedBook.sha ? '已收录笔记本' : '本机笔记本' }}</span>
-              <button v-if="!selectedBook.sha" class="text-button" :disabled="busy" @click="syncBook">同步笔记本</button>
+              <button v-if="!selectedBook.sha || bookDescriptionDrafts[selectedBook.id]" class="text-button" :disabled="busy" @click="syncBook">同步笔记本</button>
             </div>
             <h2>{{ selectedBook.title }}</h2>
+            <div class="book-description">
+              <form v-if="editingDescription" @submit.prevent="saveDescription">
+                <label for="edit-book-description">笔记本简介</label>
+                <textarea id="edit-book-description" v-model="descriptionInput" maxlength="500" rows="3" placeholder="选填"></textarea>
+                <div><button class="reference-outline-button" :disabled="busy" type="submit">保存简介</button> <button class="text-button" type="button" @click="editingDescription = false">取消</button></div>
+              </form>
+              <template v-else>
+                <p v-if="selectedBook.description">{{ selectedBook.description }}</p>
+                <button class="text-button" type="button" :disabled="busy" @click="startDescriptionEdit">{{ selectedBook.description ? '修改简介' : '添加简介' }}</button>
+              </template>
+            </div>
             <label class="move-book">所在书柜
               <select :value="activeCabinet" :disabled="busy" @change="moveSelected">
                 <option v-for="cabinet in cabinetItems" :key="cabinet.id" :value="cabinet.id">{{ cabinet.title }}</option>
@@ -1675,9 +1830,9 @@ async function openSearchResult(chapter: Chapter) {
                 <strong>{{ group.title }}</strong><small>{{ isPageBookId(group.id) ? '书页' : '全选本册' }}</small>
               </label>
               <div class="batch-children">
-                <label v-if="group.isNew">
+                <label v-if="group.isNew || group.hasDescription">
                   <input v-model="selectedKeys" type="checkbox" :disabled="busy" :value="`book:${group.id}`">
-                  <span>笔记本本身（新建）</span>
+                  <span>{{ group.isNew ? '笔记本本身（新建）' : '笔记本简介（修改）' }}</span>
                 </label>
                 <label v-for="item in group.items" :key="item.key">
                   <input v-model="selectedKeys" type="checkbox" :disabled="busy" :value="item.key">
@@ -1711,6 +1866,7 @@ async function openSearchResult(chapter: Chapter) {
         <ChapterMarkdown :source="content.replace(/^# [^\r\n]+(?:\r?\n|$)/, '')" />
       </div>
       <div v-else class="reference-editor-workspace" :class="{ 'is-sidebar-collapsed': !editorSidebarOpen }">
+        <CollapsedOutlineRail v-if="!editorSidebarOpen" :headings="currentOutline" :source-length="content.length" @jump="goToOutlineHeading" />
         <aside v-show="editorSidebarOpen" id="editor-chapters" class="reference-editor-sidebar" aria-label="章节目录">
           <div class="reference-sidebar-heading"><strong :title="selectedBook?.title">{{ selectedBook?.title }}</strong><button id="editor-hide-chapters" type="button" class="reference-sidebar-toggle" aria-controls="editor-chapters" :aria-expanded="editorSidebarOpen" @click="setEditorSidebar(false)">收起目录</button></div>
           <div class="reference-sidebar-tabs" role="group" aria-label="侧栏显示内容">

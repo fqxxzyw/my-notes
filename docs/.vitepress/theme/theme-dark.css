@@ -18,7 +18,7 @@
 html.paper-night, .paper-night body, .paper-night .Layout { background: #17191c; color: #ede9e2; }
 html.paper-night .desk {
   --ink: #ede9e2; --muted: #bcb6ad; --line: #8d8981; --red: #d5ad80;
-  --panel: #222427; --shelf: #1d1f22; --button: #d8d2c8;
+  --panel: #222427; --shelf: #1d1f22; --button: #d8d2c8; --depth-edge: #08090a;
 }
 .paper-night .desk :is(.archive-header, .archive-dialog, .archive-dialog input, .archive-dialog select, .archive-search input, .archive-search-results,
   .cabinet, .cabinet__drawing, .cabinet__book, .paper, .reference-book-card, .reference-editor-sidebar,
@@ -42,8 +42,10 @@ html.paper-night .desk {
   .chapter-row:hover, .chapter-row.selected, .volume__cover-title, .window-controls button,
   .editor-modes button, .sync-link) { color: #ede9e2; }
 .paper-night .desk :is(.cabinet__book-title, .reference-book-spine-title) { color: #d5ad80; }
-.paper-night .desk :is(.cabinet:hover, .cabinet:focus-visible, .chapter-row:hover, .chapter-row.selected,
-  .reference-book-card, .archive-search-results, .archive-dialog) { box-shadow: 4px 4px #0d0e0f; }
+.paper-night .desk :is(.cabinet:hover, .cabinet:focus-visible, .chapter-row:hover, .chapter-row:focus-visible,
+  .archive-search-results:hover, .archive-search-results:has(:focus-visible),
+  .archive-dialog:hover, .archive-dialog:has(:focus-visible)) { box-shadow: 4px 4px #0d0e0f; }
+.paper-night .desk .reference-book-card:is(:hover, :has(:focus-visible)) { box-shadow: 6px 6px #0d0e0f; }
 .paper-night .desk :is(.archive-search-results button:hover, .reference-sidebar-row:hover,
   .reference-sidebar-row.active, .window-controls button:hover) { background: #343639; }
 .paper-night .desk .window-controls .window-close:hover { background: #b33127; color: #fff; }

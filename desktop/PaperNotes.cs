@@ -706,30 +706,33 @@ namespace PaperNotesDesktop
             double phase = clock.Elapsed.TotalSeconds * 2.7;
             if (logo != null)
             {
-                // Separate the book spine from the frame, then reassemble the
-                // original icon. At rest both pieces occupy their exact source bounds.
-                double time = clock.Elapsed.TotalSeconds % 3.0;
-                double separation = 0;
-                if (animate && failure == null)
-                {
-                    if (time < 0.18) separation = 1;
-                    else if (time < 1.18) { double t = (time - 0.18); separation = 1 - t * t * (3 - 2 * t); }
-                    else if (time > 2.45) { double t = (time - 2.45) / 0.55; separation = t * t * (3 - 2 * t); }
-                }
-                float frameX = centerX - 38 - (float)(separation * 11);
-                float frameY = centerY - 68 + (float)(Math.Sin(time * 7) * 2 * separation);
+                // Keep the entire outer mark fixed. Only the little book spine
+                // gently looks around, then settles into its original position.
+                double time = clock.Elapsed.TotalSeconds % 2.4;
+                double motion = animate && failure == null && time < 1.8
+                    ? Math.Sin(Math.PI * time / 1.8) : 0;
+                float frameX = centerX - 38;
+                float frameY = centerY - 68;
                 var spineSource = new Rectangle(45, 28, 27, 61);
                 var spineOriginal = new RectangleF(frameX + 76f * spineSource.X / 128f, frameY + 76f * spineSource.Y / 128f,
                     76f * spineSource.Width / 128f, 76f * spineSource.Height / 128f);
-                var saved = g.Save();
-                g.SetClip(spineOriginal, System.Drawing.Drawing2D.CombineMode.Exclude);
-                g.DrawImage(logo, frameX, frameY, 76, 76);
-                g.Restore(saved);
-                var spineDestination = new RectangleF(spineOriginal.X + (float)(separation * 22),
-                    spineOriginal.Y - (float)(separation * (6 + Math.Sin(time * 9) * 3)), spineOriginal.Width, spineOriginal.Height);
-                g.DrawImage(logo, new PointF[] { new PointF(spineDestination.Left, spineDestination.Top),
-                    new PointF(spineDestination.Right, spineDestination.Top), new PointF(spineDestination.Left, spineDestination.Bottom) },
-                    spineSource, GraphicsUnit.Pixel);
+                if (motion <= 0.001) g.DrawImage(logo, frameX, frameY, 76, 76);
+                else
+                {
+                    var saved = g.Save();
+                    g.SetClip(spineOriginal, System.Drawing.Drawing2D.CombineMode.Exclude);
+                    g.DrawImage(logo, frameX, frameY, 76, 76);
+                    g.Restore(saved);
+
+                    var sprite = g.Save();
+                    float centerSpineX = spineOriginal.X + spineOriginal.Width / 2f + (float)(Math.Sin(time * 5) * motion * 2.8);
+                    float centerSpineY = spineOriginal.Y + spineOriginal.Height / 2f - (float)(motion * 2.5);
+                    g.TranslateTransform(centerSpineX, centerSpineY);
+                    g.RotateTransform((float)(Math.Sin(time * 6) * motion * 12));
+                    g.DrawImage(logo, new RectangleF(-spineOriginal.Width / 2f, -spineOriginal.Height / 2f, spineOriginal.Width, spineOriginal.Height),
+                        spineSource, GraphicsUnit.Pixel);
+                    g.Restore(sprite);
+                }
             }
             using (var titleFont = new Font("Microsoft YaHei UI", 15f, FontStyle.Regular))
             using (var hintFont = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular))

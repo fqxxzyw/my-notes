@@ -6,6 +6,7 @@
   --panel: #ffffff;
   --shelf: #f0f2f4;
   --button: #111;
+  --depth-edge: #111;
   max-width: 1192px;
   margin: 0 auto;
   padding: 0 clamp(20px, 4vw, 56px) 48px;
@@ -223,7 +224,7 @@
 .archive-actions { flex: 0 0 auto; font-size: 12px; }
 .archive-search-wrap { position: relative; }
 .archive-search input { width: 210px; border: 1.5px solid #111; border-radius: 8px; padding: 5px 9px; background: #fff; }
-.archive-search-results { position: absolute; z-index: 40; top: calc(100% + 6px); right: 0; width: 300px; max-width: 80vw; max-height: 320px; overflow: auto; padding: 6px; background: #fff; border: 2px solid #111; border-radius: 8px; box-shadow: 4px 4px #111; }
+.archive-search-results { position: absolute; z-index: 40; top: calc(100% + 6px); right: 0; width: 300px; max-width: 80vw; max-height: 320px; overflow: auto; padding: 6px; background: #fff; border: 2px solid #111; border-radius: 8px; }
 .archive-search-results button { display: block; width: 100%; padding: 8px; text-align: left; overflow-wrap: anywhere; }
 .archive-search-results button:hover { background: #f2f2f2; }
 .archive-search-results p { padding: 8px; color: #555; }
@@ -235,12 +236,12 @@
 .intro { border-bottom: 2px solid #111; margin-bottom: 28px; }
 .sync-link { grid-column: 2; grid-row: 1 / span 5; border: 1.5px solid #111; border-radius: 7px; padding: 6px 9px; color: #111; font-weight: 600; }
 .archive-modal { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 16px; background: #0007; }
-.archive-dialog { width: min(100%, 420px); padding: 24px; display: grid; gap: 12px; border: 2px solid #111; border-radius: 12px; background: #fff; box-shadow: 6px 6px #111; }
+.archive-dialog { width: min(100%, 420px); padding: 24px; display: grid; gap: 12px; border: 2px solid #111; border-radius: 12px; background: #fff; }
 .archive-dialog-heading { display: flex; align-items: center; justify-content: space-between; border-bottom: 1.5px solid #111; padding-bottom: 12px; }
 .archive-dialog-heading h2 { font-size: 16px; font-weight: 700; }
 .archive-dialog-heading button { width: 28px; height: 28px; border: 1.5px solid #111; border-radius: 5px; }
 .archive-dialog label { font-size: 12px; font-weight: 700; }
-.archive-dialog input, .archive-dialog select { width: 100%; padding: 9px; border: 1.5px solid #111; border-radius: 7px; background: #fff; }
+.archive-dialog input, .archive-dialog select, .archive-dialog textarea { width: 100%; padding: 9px; border: 1.5px solid #111; border-radius: 7px; background: var(--panel, #fff); color: var(--ink, #111); }
 .archive-dialog select { appearance: none; padding-right: 38px; color: var(--ink); background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%); background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%; background-size: 5px 5px; background-repeat: no-repeat; }
 .note-kind { display: flex; gap: 8px; margin: 0; padding: 0; border: 0; }
 .note-kind legend { width: 100%; margin-bottom: 7px; font-size: 12px; font-weight: 700; }
@@ -267,3 +268,44 @@
 /* A restrained pixel edge echoes the archive's hand-drawn outlines. */
 .archive-new, .archive-sync, .archive-refresh { border-radius: 4px; }
 .desk .theme-toggle { border-radius: 4px; }
+
+/* Offset edges appear only on interaction, keeping the resting layout clean. */
+.batch-box, .connection-details, .paper, .legacy-workspace-notice, .archive-dialog, .archive-search-results { transition: box-shadow .14s ease; }
+.batch-box:is(:hover, :has(:focus-visible)), .connection-details:is(:hover, :has(:focus-visible)),
+.paper:is(:hover, :has(:focus-visible)), .legacy-workspace-notice:is(:hover, :has(:focus-visible)),
+.archive-dialog:is(:hover, :has(:focus-visible)), .archive-search-results:is(:hover, :has(:focus-visible)) {
+  box-shadow: 4px 4px 0 var(--depth-edge, #111);
+}
+.view-actions, .move-book select, .archive-search input,
+.archive-dialog input:not([type="radio"]):not([type="checkbox"]),
+.archive-dialog select, .archive-dialog textarea, .note-kind label {
+  transition: box-shadow .14s ease;
+}
+.view-actions:is(:hover, :has(:focus-visible)), .move-book select:not(:disabled):is(:hover, :focus-visible),
+.archive-search input:not(:disabled):is(:hover, :focus-visible),
+.archive-dialog input:not([type="radio"]):not([type="checkbox"]):not(:disabled):is(:hover, :focus-visible),
+.archive-dialog select:not(:disabled):is(:hover, :focus-visible), .archive-dialog textarea:not(:disabled):is(:hover, :focus-visible),
+.note-kind label:is(:hover, :has(:focus-visible)) {
+  box-shadow: 2px 2px 0 var(--depth-edge, #111);
+}
+.archive-new:not(:disabled):is(:hover, :focus-visible), .archive-sync:not(:disabled):is(:hover, :focus-visible),
+.archive-refresh:not(:disabled):is(:hover, :focus-visible), .desk .theme-toggle:not(:disabled):is(:hover, :focus-visible),
+.desk .primary-button:not(:disabled):is(:hover, :focus-visible), .sync-link:is(:hover, :focus-visible),
+.archive-dialog-heading button:not(:disabled):is(:hover, :focus-visible) { box-shadow: 2px 2px 0 var(--depth-edge, #111); }
+.archive-new, .archive-sync, .archive-refresh, .desk .theme-toggle,
+.desk .primary-button, .sync-link, .archive-dialog-heading button {
+  transition: box-shadow .14s ease, transform .14s ease, background-color .14s ease, color .14s ease;
+}
+.archive-new:active:enabled, .archive-sync:active:enabled, .archive-refresh:active:enabled,
+.desk .theme-toggle:active:enabled, .desk .primary-button:active:enabled,
+.archive-dialog-heading button:active:enabled {
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 var(--depth-edge, #111);
+}
+@media (prefers-reduced-motion: reduce) {
+  .archive-new, .archive-sync, .archive-refresh, .desk .theme-toggle,
+  .desk .primary-button, .sync-link, .archive-dialog-heading button, .batch-box, .connection-details,
+  .paper, .legacy-workspace-notice, .archive-dialog, .archive-search-results, .view-actions,
+  .move-book select, .archive-search input, .archive-dialog input, .archive-dialog select,
+  .archive-dialog textarea, .note-kind label { transition: none; }
+}

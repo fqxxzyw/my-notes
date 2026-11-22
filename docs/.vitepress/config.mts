@@ -9,8 +9,8 @@ export default defineConfig({
   vite: {
     define: { __PAPER_BUILD_SHA__: JSON.stringify(process.env.GITHUB_SHA || '') }
   },
-  // Notebook Markdown is user content. The desk reads it as text.
-  srcExclude: ['notebooks/**'],
+  // Note Markdown is user content. The desk reads it as text.
+  srcExclude: ['notebooks/**', 'pages/**'],
   themeConfig: {
     nav: [
       { text: '我的书柜', link: '/', activeMatch: '^/$' },

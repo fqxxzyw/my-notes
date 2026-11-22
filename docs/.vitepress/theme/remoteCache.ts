@@ -40,7 +40,8 @@ function cleanSnapshot(value: unknown): RemoteSnapshot {
     if (typeof book.id !== 'string' || !ID.test(book.id) || ids.has(book.id) ||
         typeof book.title !== 'string' || typeof book.sha !== 'string' || !SHA.test(book.sha)) throw new Error('远端笔记本数据无效。')
     ids.add(book.id)
-    return { id: book.id, title: book.title, sha: book.sha }
+    if (book.description !== undefined && typeof book.description !== 'string' || book.indexContent !== undefined && typeof book.indexContent !== 'string') throw new Error('远端笔记本简介无效。')
+    return { id: book.id, title: book.title, sha: book.sha, ...(book.description === undefined ? {} : { description: book.description as string }), ...(book.indexContent === undefined ? {} : { indexContent: book.indexContent as string }) }
   })
   const allChapters = input.chapters as Record<string, unknown>
   if (Object.keys(allChapters).length !== books.length || Object.keys(allChapters).some(id => !ids.has(id))) {

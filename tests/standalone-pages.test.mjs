@@ -49,6 +49,21 @@ test('an imported chapter without a heading restores its original filename', asy
   assert.equal(legacy.title, 'legacy_id')
 })
 
+test('chapter counts need only one directory request and ignore unrelated files', async () => {
+  let calls = 0
+  globalThis.fetch = async url => {
+    calls++
+    assert.match(new URL(url).pathname, /\/docs\/notebooks\/book$/)
+    return new Response(JSON.stringify([
+      { type: 'file', name: 'index.md' }, { type: 'file', name: 'chapter_1.md' },
+      { type: 'file', name: 'chapter_2.md' }, { type: 'file', name: 'image.png' },
+      { type: 'dir', name: 'nested' }, { type: 'file', name: 'invalid name.md' }
+    ]))
+  }
+  assert.deepEqual(await createNotebookStore('example/repo').listChapterIds('book'), ['chapter_1', 'chapter_2'])
+  assert.equal(calls, 1)
+})
+
 test('large files omitted by Contents are recovered through the Git Blob API', async () => {
   const id = pageIdFromTitle('大文件')
   const content = '原始正文\n'

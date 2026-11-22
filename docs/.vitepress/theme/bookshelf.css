@@ -106,8 +106,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-height: 152px;
-  min-height: 98px;
+  height: 152px;
   padding: 8px 3px;
   color: var(--ink);
   background: var(--label);

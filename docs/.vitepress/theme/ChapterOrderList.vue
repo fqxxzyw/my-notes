@@ -17,11 +17,26 @@ function move(from: number, to: number) {
 }
 function startDrag(event: DragEvent, id: string) {
   if (!canReorder.value) { event.preventDefault(); return }
+  // The drag starts on the handle, but the item being moved is the complete
+  // chapter row. Without setDragImage Chromium captures only the tiny handle.
+  const handle = event.currentTarget as HTMLElement | null
+  const row = handle?.closest<HTMLElement>('.chapter-order__row')
+  if (row && event.dataTransfer) {
+    const bounds = row.getBoundingClientRect()
+    const offsetX = Math.max(0, Math.min(bounds.width, event.clientX - bounds.left))
+    const offsetY = Math.max(0, Math.min(bounds.height, event.clientY - bounds.top))
+    event.dataTransfer.setDragImage(row, offsetX, offsetY)
+  }
   drag.value = { id, ids: props.chapters.map(item => item.id) }
   event.dataTransfer?.setData('application/x-paper-notes-chapter', '1')
   if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
 }
 function finishDrag() { drag.value = null; target.value = null }
+function dragLeave(event: DragEvent, id: string) {
+  const row = event.currentTarget as HTMLElement
+  if (event.relatedTarget instanceof Node && row.contains(event.relatedTarget)) return
+  if (target.value?.id === id) target.value = null
+}
 function dragOver(event: DragEvent, id: string) {
   if (!drag.value || !canReorder.value) return
   event.preventDefault(); event.stopPropagation()
@@ -29,25 +44,58 @@ function dragOver(event: DragEvent, id: string) {
   target.value = { id, after: event.clientY >= box.top + box.height / 2 }
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
 }
-function drop(event: DragEvent, id: string) {
+function commitDrop(id: string, after: boolean) {
   if (!drag.value || !canReorder.value) return
-  event.preventDefault(); event.stopPropagation()
   const before = drag.value.ids, sourceId = drag.value.id
   const current = props.chapters.map(item => item.id)
   if (before.length !== current.length || before.some((value, i) => value !== current[i])) { finishDrag(); return }
   const from = current.indexOf(sourceId)
-  let to = current.indexOf(id) + (target.value?.id === id && target.value.after ? 1 : 0)
+  const targetIndex = current.indexOf(id)
+  if (from < 0 || targetIndex < 0) { finishDrag(); return }
+  let to = targetIndex + (after ? 1 : 0)
   if (from < to) to--
   finishDrag(); move(from, to)
+}
+function drop(event: DragEvent, id: string) {
+  if (!drag.value || !canReorder.value) return
+  event.preventDefault(); event.stopPropagation()
+  // A child dragleave can clear the indicator just before drop. Use the
+  // actual pointer position to decide which side of the row was selected.
+  const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  commitDrop(id, event.clientY >= bounds.top + bounds.height / 2)
+}
+function gapTarget(list: HTMLElement, y: number): { id: string; after: boolean } | null {
+  const rows = Array.from(list.querySelectorAll<HTMLElement>('.chapter-order__row[data-chapter-id]'))
+  if (!rows.length) return null
+  for (const row of rows) {
+    const bounds = row.getBoundingClientRect()
+    if (y < bounds.top + bounds.height / 2) return { id: row.dataset.chapterId!, after: false }
+  }
+  return { id: rows[rows.length - 1].dataset.chapterId!, after: true }
+}
+function dragOverGap(event: DragEvent) {
+  if (!drag.value || !canReorder.value) return
+  const next = gapTarget(event.currentTarget as HTMLElement, event.clientY)
+  if (!next) return
+  event.preventDefault(); event.stopPropagation()
+  target.value = next
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+}
+function dropGap(event: DragEvent) {
+  if (!drag.value || !canReorder.value) return
+  const next = gapTarget(event.currentTarget as HTMLElement, event.clientY)
+  if (!next) return
+  event.preventDefault(); event.stopPropagation()
+  commitDrop(next.id, next.after)
 }
 </script>
 
 <template>
-  <div class="chapter-order" aria-label="章节列表">
+  <div class="chapter-order" aria-label="章节列表" @dragover="dragOverGap" @drop="dropGap">
     <p v-if="searching && chapters.length > 1" class="chapter-order__hint">清除搜索后可调整章节顺序。</p>
-    <div v-for="chapter in filtered" :key="chapter.id" class="chapter-order__row"
-      :class="{ 'is-selected': selectedId === chapter.id, 'drop-before': target?.id === chapter.id && !target.after, 'drop-after': target?.id === chapter.id && target.after }"
-      @dragover="dragOver($event, chapter.id)" @dragleave="target = null" @drop="drop($event, chapter.id)">
+    <div v-for="chapter in filtered" :key="chapter.id" class="chapter-order__row" :data-chapter-id="chapter.id"
+      :class="{ 'is-selected': selectedId === chapter.id, 'is-dragging': drag?.id === chapter.id, 'drop-before': target?.id === chapter.id && !target.after, 'drop-after': target?.id === chapter.id && target.after }"
+      @dragover="dragOver($event, chapter.id)" @dragleave="dragLeave($event, chapter.id)" @drop="drop($event, chapter.id)">
       <button v-if="chapters.length > 1" class="chapter-order__handle" type="button" :disabled="!canReorder"
         :draggable="canReorder" :aria-label="`拖动调整${chapter.title}的顺序`" title="拖动调整章节顺序"
         @dragstart="startDrag($event, chapter.id)" @dragend="finishDrag">⠿</button>
@@ -64,9 +112,11 @@ function drop(event: DragEvent, id: string) {
 </template>
 
 <style scoped>
+.chapter-order { display: flow-root; }
 .chapter-order__hint { margin: 0 0 10px; color: var(--muted, #666); font-size: 12px; }
 .chapter-order__row { position: relative; display: flex; align-items: stretch; min-width: 0; margin-bottom: 12px; border: 1.5px solid var(--line, #111); border-radius: 9px; background: var(--panel, #fff); color: var(--ink, #111); transition: box-shadow .15s ease, transform .15s ease; }
 .chapter-order__row:hover, .chapter-order__row:has(:focus-visible) { box-shadow: 3px 3px 0 var(--depth-edge, #111); transform: translate(-1px, -1px); }
+.chapter-order__row.is-dragging { opacity: .45; }
 .chapter-order__row.drop-before::before, .chapter-order__row.drop-after::after { content: ''; position: absolute; left: 8px; right: 8px; height: 3px; background: var(--ink, #111); z-index: 1; }
 .chapter-order__row.drop-before::before { top: -6px; } .chapter-order__row.drop-after::after { bottom: -6px; }
 .chapter-order__handle { flex: 0 0 34px; padding: 0 4px 0 9px; color: var(--muted, #666); cursor: grab; font-size: 18px; touch-action: manipulation; }

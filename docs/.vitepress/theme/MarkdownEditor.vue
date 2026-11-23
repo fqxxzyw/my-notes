@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import LiveMarkdown from './LiveMarkdown.vue'
+import { toggleInlineFormat } from './inlineFormatting.js'
 
 const props = defineProps<{ modelValue: string; readonly?: boolean; attachmentContext?: string; imageUrls?: Readonly<Record<string, string>>; savePastedImages?: (files: File[]) => Promise<string[]>; onPasteStatus?: (message: string) => void }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
@@ -9,18 +10,33 @@ const mode = ref<'source' | 'visual'>('visual')
 const editorFallback = ref(false)
 const codeLanguage = ref('')
 const isMac = ref(false)
+const formatError = ref('')
 const selectionAnchor = ref<{ left: number; top: number; bottom: number } | null>(null)
 const selectionTools: { action: Action; label: string; title: string }[] = [
+  { action: 'h1', label: 'H1', title: '一级标题' },
+  { action: 'h2', label: 'H2', title: '二级标题' },
+  { action: 'h3', label: 'H3', title: '三级标题' },
   { action: 'bold', label: 'B', title: '粗体' },
   { action: 'italic', label: 'I', title: '斜体' },
+  { action: 'strike', label: 'S', title: '删除线' },
   { action: 'inline-code', label: '</>', title: '行内代码' },
   { action: 'code-block', label: '{ }', title: '代码块' },
+  { action: 'unordered', label: '•≡', title: '无序列表' },
+  { action: 'ordered', label: '1.', title: '有序列表' },
+  { action: 'task', label: '☑', title: '任务清单' },
+  { action: 'quote', label: '❝', title: '引用' },
+  { action: 'table', label: '▦', title: '插入表格' },
+  { action: 'link', label: '↗', title: '插入链接' },
 ]
 function floatingStyle() {
   const rect = selectionAnchor.value!
-  const safeTop = (document.querySelector('.editor-toolbar-sticky')?.getBoundingClientRect().bottom || 0) + 8
-  const below = rect.top - 56 < safeTop
-  return { left: `${Math.max(95, Math.min(window.innerWidth - 95, rect.left))}px`, top: `${below ? rect.bottom + 8 : rect.top - 8}px`, transform: `translate(-50%, ${below ? '0' : '-100%'})` }
+  const width = Math.min(window.innerWidth - 24, selectionTools.length * 28 + 8)
+  const rows = Math.ceil(selectionTools.length / Math.max(1, Math.floor((width - 8) / 28)))
+  const height = rows * 28 + 8
+  const safeTop = (document.querySelector('.editor-toolbar-sticky')?.getBoundingClientRect().bottom || 0) + 6
+  const below = rect.top - height - 6 < safeTop
+  const halfWidth = width / 2
+  return { left: `${Math.max(halfWidth + 12, Math.min(window.innerWidth - halfWidth - 12, rect.left))}px`, top: `${below ? Math.min(window.innerHeight - height - 6, rect.bottom + 6) : rect.top - 6}px`, transform: `translate(-50%, ${below ? '0' : '-100%'})` }
 }
 onMounted(() => { isMac.value = /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent) })
 
@@ -46,6 +62,7 @@ const shortcut = (keys: string) => `${isMac.value ? '⌘' : 'Ctrl'}+${isMac.valu
 function apply(action: Action) {
   const field = editor.value
   if (!field || props.readonly) return
+  formatError.value = ''
   const source = field.currentText()
   const { start, end } = field.selectionRange()
   const selected = source.slice(start, end)
@@ -90,11 +107,10 @@ function apply(action: Action) {
     selectionStart = start + label.length + 3
     selectionEnd = selectionStart + 'https://'.length
   } else {
-    const delimiter = action === 'bold' ? '**' : action === 'italic' ? '*' : action === 'strike' ? '~~' : '`'
-    const placeholder = selected || (action === 'inline-code' ? '代码' : '文字')
-    replacement = `${delimiter}${placeholder}${delimiter}`
-    selectionStart = start + delimiter.length
-    selectionEnd = selectionStart + placeholder.length
+    const change = toggleInlineFormat(source, start, end, action)
+    if (!change) { formatError.value = '选区跨越复杂格式或段落，请调整选区或切换源代码编辑。'; return }
+    field.replace(change.from, change.to, change.text, change.selectionStart, change.selectionEnd, true)
+    return
   }
 
   field.replace(replaceStart, replaceEnd, replacement, selectionStart, selectionEnd)
@@ -168,6 +184,7 @@ defineExpose({ focusHeading, applyOutlineChange })
       </template>
     </div>
     <p class="markdown-shortcuts">快捷键：{{ shortcut('B') }} 粗体 · {{ shortcut('I') }} 斜体 · {{ shortcut('E') }} 行内代码 · {{ shortcut('Shift+C') }} 代码块 · {{ shortcut('K') }} 链接 · {{ shortcut('Alt+1') }}–{{ shortcut('Alt+3') }} 标题</p>
+    <p v-if="formatError" class="markdown-error" role="alert">{{ formatError }}</p>
     <p v-if="editorFallback" class="markdown-error" role="alert">排版编辑器无法启动，已切换到源代码编辑；正文和草稿没有改变。</p>
     </div>
     <div class="editor-panes">
@@ -185,9 +202,10 @@ defineExpose({ focusHeading, applyOutlineChange })
 
 <style scoped src="./editor-toolbar.css"></style>
 <style scoped>
-.selection-toolbar { position: fixed; z-index: 1000; display: flex; align-items: center; gap: 2px; padding: 4px; border: 1.5px solid var(--ink, #111); border-radius: 7px; color: var(--ink, #111); background: var(--panel, #fff); box-shadow: 3px 3px 0 var(--depth-edge, #111); white-space: nowrap; }
-.selection-toolbar button { display: grid; place-items: center; width: 36px; height: 32px; border: 0; border-radius: 4px; color: inherit; background: transparent; font: 700 15px/1 ui-monospace, monospace; cursor: pointer; }
+.selection-toolbar { position: fixed; z-index: 1000; display: flex; flex-wrap: wrap; width: max-content; max-width: calc(100vw - 24px); align-items: center; padding: 3px; border: 1.5px solid var(--ink, #111); border-radius: 6px; color: var(--ink, #111); background: var(--panel, #fff); box-shadow: 2px 2px 0 var(--depth-edge, #111); white-space: nowrap; }
+.selection-toolbar button { display: grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; border: 0; border-radius: 3px; color: inherit; background: transparent; font: 700 12px/1 ui-monospace, monospace; cursor: pointer; }
 .selection-toolbar button:hover, .selection-toolbar button:focus-visible { color: var(--panel, #fff); background: var(--ink, #111); outline: none; }
 .selection-italic { font-style: italic !important; }
+.selection-strike { text-decoration: line-through !important; }
 :deep(.live-markdown-paste-error) { color: #a12626; margin: 10px 0; font-size: 13px; }
 </style>

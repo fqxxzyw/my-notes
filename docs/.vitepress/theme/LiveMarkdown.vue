@@ -21,16 +21,46 @@ let view: EditorView | null = null
 let composing = false
 let selectionFrame = 0
 let imageRevision = 0
+let pointerSelecting = false
+let keyboardSelecting = false
 const refreshVisual = StateEffect.define<null>()
 
 function reportSelection() {
   cancelAnimationFrame(selectionFrame)
   selectionFrame = requestAnimationFrame(() => {
+    if (pointerSelecting || keyboardSelecting || composing || props.readonly) { emit('selection', null); return }
     const current = view
-    if (!current || !current.hasFocus || props.readonly || current.state.selection.main.empty) { emit('selection', null); return }
+    if (!current && fallback.value) {
+      const field = fallback.value
+      if (document.activeElement !== field || field.selectionStart === field.selectionEnd) { emit('selection', null); return }
+      const box = field.getBoundingClientRect()
+      emit('selection', { left: box.left + Math.min(box.width / 2, 100), top: box.top, bottom: box.top + 24 })
+      return
+    }
+    if (!current || !current.hasFocus || current.state.selection.main.empty) { emit('selection', null); return }
     const coords = current.coordsAtPos(current.state.selection.main.head)
     emit('selection', coords ? { left: coords.left, top: coords.top, bottom: coords.bottom } : null)
   })
+}
+
+function beginPointerSelection(event: PointerEvent) {
+  if (event.button !== 0 || props.readonly) return
+  pointerSelecting = true
+  emit('selection', null)
+}
+function endPointerSelection() {
+  if (!pointerSelecting) return
+  pointerSelecting = false
+  reportSelection()
+}
+function selectionKeydown(event: KeyboardEvent) {
+  if (event.shiftKey && /^(?:Arrow(?:Left|Right|Up|Down)|Home|End|PageUp|PageDown)$/.test(event.key)) {
+    keyboardSelecting = true
+    emit('selection', null)
+  }
+}
+function selectionKeyup(event: KeyboardEvent) {
+  if (keyboardSelecting && (event.key === 'Shift' || !event.shiftKey)) { keyboardSelecting = false; reportSelection() }
 }
 
 // The parent persists files before their portable relative URLs are inserted.
@@ -348,7 +378,10 @@ function renderedDecorations(state: EditorState): DecorationSet {
         if (!first || !last || first === last || first.to >= last.from) return
         ranges.push(Decoration.mark({ class: inlineClass }).range(first.to, last.from))
         for (const mark of [first, last]) {
-          if (!selection.some(range => range.from <= mark.to && range.to >= mark.from)) ranges.push(Decoration.replace({}).range(mark.from, mark.to))
+          const intersects = selection.some(range => range.from === range.to
+            ? range.from >= mark.from && range.from <= mark.to
+            : range.from < mark.to && range.to > mark.from)
+          if (!intersects) ranges.push(Decoration.replace({}).range(mark.from, mark.to))
         }
       } })
     }
@@ -384,14 +417,16 @@ function stateFor(value: string) {
       keymap.of([{ key: 'Tab', run: target => !target.state.readOnly && insertTab(target), shift: indentLess }, ...defaultKeymap, ...historyKeymap]), EditorView.lineWrapping,
       EditorView.contentAttributes.of({ 'aria-label': '正文', 'aria-multiline': 'true', spellcheck: 'false' }),
       Prec.high(EditorView.domEventHandlers({
-        keydown(event) { emit('keydown', event); return event.defaultPrevented },
+        keydown(event) { selectionKeydown(event); emit('keydown', event); return event.defaultPrevented },
+        keyup(event) { selectionKeyup(event); return false },
+        pointerdown(event) { beginPointerSelection(event); return false },
         paste(event) { return handleImagePaste(event) },
         focus() { reportSelection(); return false },
-        blur() { emit('selection', null); return false },
-        compositionstart() { composing = true; return false },
+        blur() { keyboardSelecting = false; emit('selection', null); return false },
+        compositionstart() { composing = true; emit('selection', null); return false },
         compositionend(_event, instance) {
           composing = false
-          requestAnimationFrame(() => { if (view === instance) instance.dispatch({ effects: refreshVisual.of(null) }) })
+          requestAnimationFrame(() => { if (view === instance) { instance.dispatch({ effects: refreshVisual.of(null) }); reportSelection() } })
           return false
         }
       })),
@@ -414,8 +449,10 @@ onMounted(() => {
   catch { useFallback() }
   window.addEventListener('scroll', reportSelection, true)
   window.addEventListener('resize', reportSelection)
+  window.addEventListener('pointerup', endPointerSelection)
+  window.addEventListener('pointercancel', endPointerSelection)
 })
-onBeforeUnmount(() => { composing = false; cancelAnimationFrame(selectionFrame); window.removeEventListener('scroll', reportSelection, true); window.removeEventListener('resize', reportSelection); view?.destroy(); view = null })
+onBeforeUnmount(() => { composing = false; cancelAnimationFrame(selectionFrame); window.removeEventListener('scroll', reportSelection, true); window.removeEventListener('resize', reportSelection); window.removeEventListener('pointerup', endPointerSelection); window.removeEventListener('pointercancel', endPointerSelection); view?.destroy(); view = null })
 watch(() => props.modelValue, value => {
   // A changed parent value is a different loaded chapter. Reset history so an
   // undo in one chapter can never reinsert content from the previous chapter.
@@ -452,6 +489,7 @@ function replace(from: number, to: number, insert: string, selectionStart: numbe
   view.focus()
 }
 function fallbackKeydown(event: KeyboardEvent) {
+  selectionKeydown(event)
   emit('keydown', event)
   if (event.defaultPrevented || event.key !== 'Tab' || event.ctrlKey || event.altKey || event.metaKey || props.readonly || !fallback.value) return
   const field = fallback.value
@@ -515,5 +553,5 @@ defineExpose({ currentText, selectionRange, replace, focusHeading, canReorganize
   <p v-if="pasteError" class="live-markdown-paste-error" role="alert">{{ pasteError }}</p>
   <div v-show="!failed" ref="host" class="live-markdown" />
   <textarea v-if="failed" ref="fallback" class="live-markdown-fallback" aria-label="正文" :value="modelValue" :readonly="readonly" spellcheck="false"
-    @input="emit('update:modelValue', applyTextareaChange(modelValue, ($event.target as HTMLTextAreaElement).value))" @keydown="fallbackKeydown" @paste="handleImagePaste" />
+    @input="emit('update:modelValue', applyTextareaChange(modelValue, ($event.target as HTMLTextAreaElement).value))" @keydown="fallbackKeydown" @keyup="selectionKeyup" @pointerdown="beginPointerSelection" @select="reportSelection" @paste="handleImagePaste" />
 </template>

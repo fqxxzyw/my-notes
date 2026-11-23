@@ -9,6 +9,19 @@ const mode = ref<'source' | 'visual'>('visual')
 const editorFallback = ref(false)
 const codeLanguage = ref('')
 const isMac = ref(false)
+const selectionAnchor = ref<{ left: number; top: number; bottom: number } | null>(null)
+const selectionTools: { action: Action; label: string; title: string }[] = [
+  { action: 'bold', label: 'B', title: '粗体' },
+  { action: 'italic', label: 'I', title: '斜体' },
+  { action: 'inline-code', label: '</>', title: '行内代码' },
+  { action: 'code-block', label: '{ }', title: '代码块' },
+]
+function floatingStyle() {
+  const rect = selectionAnchor.value!
+  const safeTop = (document.querySelector('.editor-toolbar-sticky')?.getBoundingClientRect().bottom || 0) + 8
+  const below = rect.top - 56 < safeTop
+  return { left: `${Math.max(95, Math.min(window.innerWidth - 95, rect.left))}px`, top: `${below ? rect.bottom + 8 : rect.top - 8}px`, transform: `translate(-50%, ${below ? '0' : '-100%'})` }
+}
 onMounted(() => { isMac.value = /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent) })
 
 type Action = 'h1' | 'h2' | 'h3' | 'bold' | 'italic' | 'strike' | 'inline-code' | 'code-block' | 'link' | 'unordered' | 'ordered' | 'task' | 'quote' | 'table'
@@ -161,10 +174,20 @@ defineExpose({ focusHeading, applyOutlineChange })
       <div class="editor-pane">
         <span class="pane-heading">正文 <span v-if="mode === 'visual'">· 点击文字直接编辑</span></span>
         <LiveMarkdown ref="editor" :model-value="modelValue" :mode="mode" :readonly="readonly"
-          @update:model-value="emit('update:modelValue', $event)" @keydown="handleKeydown" @failure="editorFallback = true; mode = 'source'" />
+          @update:model-value="emit('update:modelValue', $event)" @keydown="handleKeydown" @selection="selectionAnchor = $event" @failure="editorFallback = true; mode = 'source'" />
       </div>
+    </div>
+    <div v-if="selectionAnchor && !readonly" class="selection-toolbar" role="toolbar" aria-label="选中文本格式" :style="floatingStyle()" @mousedown.prevent>
+      <button v-for="tool in selectionTools" :key="tool.action" type="button" :class="`selection-${tool.action}`" :title="tool.title" :aria-label="tool.title" @click="apply(tool.action)">{{ tool.label }}</button>
     </div>
   </div>
 </template>
 
 <style scoped src="./editor-toolbar.css"></style>
+<style scoped>
+.selection-toolbar { position: fixed; z-index: 1000; display: flex; align-items: center; gap: 2px; padding: 4px; border: 1.5px solid var(--ink, #111); border-radius: 7px; color: var(--ink, #111); background: var(--panel, #fff); box-shadow: 3px 3px 0 var(--depth-edge, #111); white-space: nowrap; }
+.selection-toolbar button { display: grid; place-items: center; width: 36px; height: 32px; border: 0; border-radius: 4px; color: inherit; background: transparent; font: 700 15px/1 ui-monospace, monospace; cursor: pointer; }
+.selection-toolbar button:hover, .selection-toolbar button:focus-visible { color: var(--panel, #fff); background: var(--ink, #111); outline: none; }
+.selection-italic { font-style: italic !important; }
+:deep(.live-markdown-paste-error) { color: #a12626; margin: 10px 0; font-size: 13px; }
+</style>

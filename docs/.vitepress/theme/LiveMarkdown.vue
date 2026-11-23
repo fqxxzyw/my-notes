@@ -1,32 +1,73 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Compartment, EditorSelection, EditorState, Prec, StateEffect, StateField, type Range } from '@codemirror/state'
-import { defaultKeymap, history, historyKeymap, isolateHistory } from '@codemirror/commands'
-import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
-import { javascript } from '@codemirror/lang-javascript'
-import { python } from '@codemirror/lang-python'
-import { java } from '@codemirror/lang-java'
-import { json } from '@codemirror/lang-json'
-import { cpp } from '@codemirror/lang-cpp'
-import { sql } from '@codemirror/lang-sql'
-import { css } from '@codemirror/lang-css'
-import { html } from '@codemirror/lang-html'
-import { defaultHighlightStyle, HighlightStyle, syntaxHighlighting, syntaxTree } from '@codemirror/language'
-import { tags } from '@lezer/highlight'
+import { defaultKeymap, history, historyKeymap, indentLess, insertTab, isolateHistory } from '@codemirror/commands'
+import { syntaxHighlighting, syntaxTree } from '@codemirror/language'
 import { Decoration, EditorView, keymap, WidgetType, type DecorationSet } from '@codemirror/view'
 import { applyTextareaChange, markdownBlocks, markdownEnvironment, rawOffsetForTextarea, renderInlineMarkdown, replaceInlineImage, sourceOffsetForText, tableCellRange, textareaOffsetForRaw, type MarkdownBlock } from './liveMarkdown'
+import { markdownEditorLanguage, sourceMarkdownHighlight, visualCodeHighlight } from './editorHighlight.js'
 
 const props = defineProps<{ modelValue: string; mode: 'source' | 'visual'; readonly?: boolean }>()
-const emit = defineEmits<{ 'update:modelValue': [value: string]; keydown: [event: KeyboardEvent]; failure: [] }>()
+const emit = defineEmits<{ 'update:modelValue': [value: string]; keydown: [event: KeyboardEvent]; failure: []; selection: [rect: { left: number; top: number; bottom: number } | null] }>()
 const host = ref<HTMLElement | null>(null)
 const fallback = ref<HTMLTextAreaElement | null>(null)
 const failed = ref(false)
+const pasteError = ref('')
 const legacyNewlines = computed(() => /\r(?!\n)/.test(props.modelValue))
 const modeCompartment = new Compartment()
 const readonlyCompartment = new Compartment()
 let view: EditorView | null = null
 let composing = false
+let selectionFrame = 0
 const refreshVisual = StateEffect.define<null>()
+
+function reportSelection() {
+  cancelAnimationFrame(selectionFrame)
+  selectionFrame = requestAnimationFrame(() => {
+    const current = view
+    if (!current || !current.hasFocus || props.readonly || current.state.selection.main.empty) { emit('selection', null); return }
+    const coords = current.coordsAtPos(current.state.selection.main.head)
+    emit('selection', coords ? { left: coords.left, top: coords.top, bottom: coords.bottom } : null)
+  })
+}
+
+// Keep pasted images inside the Markdown itself so offline drafts, undo,
+// GitHub sync and restore all move them together. Reject unsupported or
+// excessive clipboard data rather than silently inserting a broken blob URL.
+function handleImagePaste(event: ClipboardEvent): boolean {
+  if (props.readonly) return false
+  const items = Array.from(event.clipboardData?.items || []).filter(item => item.kind === 'file' && item.type.startsWith('image/'))
+  if (!items.length) return false
+  event.preventDefault()
+  const files = items.map(item => item.getAsFile())
+  const supported = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
+  if (files.some(file => !file || !supported.has(file.type))) {
+    pasteError.value = '仅支持粘贴 PNG、JPEG、GIF 或 WebP 图片。'
+    return true
+  }
+  if (files.reduce((sum, file) => sum + (file?.size || 0), 0) > 1024 * 1024) {
+    pasteError.value = '粘贴的图片合计超过 1 MB，请压缩后重试；图片会保存到笔记正文中。'
+    return true
+  }
+  const before = currentText(), selection = selectionRange(), originalView = view, originalFallback = fallback.value
+  pasteError.value = ''
+  Promise.all(files.map(file => new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error('读取图片失败'))
+    reader.onabort = () => reject(new Error('读取图片已取消'))
+    reader.onload = () => typeof reader.result === 'string' && /^data:image\/(?:png|jpeg|gif|webp);base64,/i.test(reader.result) ? resolve(reader.result) : reject(new Error('图片格式无效'))
+    reader.readAsDataURL(file!)
+  }))).then(images => {
+    const now = selectionRange()
+    if (view !== originalView || fallback.value !== originalFallback || currentText() !== before || now.start !== selection.start || now.end !== selection.end) {
+      pasteError.value = '读取图片时正文或选区已改变，请在目标位置重新粘贴。'
+      return
+    }
+    const insert = images.map((image, index) => `![图片${images.length > 1 ? index + 1 : ''}](${image})`).join('\n')
+    replace(selection.start, selection.end, insert, selection.start + insert.length, selection.start + insert.length, true)
+  }).catch(() => { pasteError.value = '无法读取剪贴板图片，请重新复制后再试。' })
+  return true
+}
 
 class RenderedBlock extends WidgetType {
   constructor(private readonly block: MarkdownBlock) { super() }
@@ -291,23 +332,6 @@ function renderedDecorations(state: EditorState): DecorationSet {
   } catch { return Decoration.none }
 }
 
-const embeddedLanguages: Record<string, ReturnType<typeof javascript>['language']> = {
-  js: javascript().language, javascript: javascript().language, jsx: javascript({ jsx: true }).language,
-  ts: javascript({ typescript: true }).language, typescript: javascript({ typescript: true }).language,
-  tsx: javascript({ typescript: true, jsx: true }).language,
-  py: python().language, python: python().language, java: java().language,
-  json: json().language, c: cpp().language, cpp: cpp().language, 'c++': cpp().language,
-  sql: sql().language, css: css().language, html: html().language, xml: html().language
-}
-const codeHighlight = HighlightStyle.define([
-  { tag: tags.keyword, color: 'var(--paper-code-keyword, #734297)' },
-  { tag: [tags.string, tags.special(tags.string)], color: 'var(--paper-code-string, #356d42)' },
-  { tag: [tags.number, tags.bool, tags.null], color: 'var(--paper-code-number, #a45d1f)' },
-  { tag: [tags.comment], color: 'var(--paper-code-comment, #777)', fontStyle: 'italic' },
-  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName)], color: 'var(--paper-code-function, #255c96)' },
-  { tag: [tags.typeName, tags.className], color: 'var(--paper-code-type, #966020)' }
-])
-
 // Block replacements change vertical layout, so CodeMirror requires them to
 // come from a state field, not from a viewport-dependent view plugin.
 const renderedField = StateField.define<DecorationSet>({
@@ -322,18 +346,24 @@ const renderedField = StateField.define<DecorationSet>({
   provide: field => EditorView.decorations.from(field)
 })
 
-function displayExtension(mode: 'source' | 'visual') { return mode === 'visual' ? [renderedField] : [] }
+function displayExtension(mode: 'source' | 'visual') {
+  return mode === 'visual' ? [renderedField, syntaxHighlighting(visualCodeHighlight)] : [syntaxHighlighting(sourceMarkdownHighlight)]
+}
 function editableExtension(readonly: boolean) { return [EditorState.readOnly.of(readonly), EditorView.editable.of(!readonly)] }
 function stateFor(value: string) {
   return EditorState.create({
     doc: value,
     extensions: [
       // Splitting on LF only keeps CR characters intact, including mixed line endings.
-      EditorState.lineSeparator.of('\n'), history(), markdown({ base: markdownLanguage, codeLanguages: info => embeddedLanguages[info.toLowerCase().trim().split(/\s+/)[0]] || null }), syntaxHighlighting(codeHighlight), syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-      keymap.of([...defaultKeymap, ...historyKeymap]), EditorView.lineWrapping,
+      EditorState.lineSeparator.of('\n'), history(), markdownEditorLanguage,
+      // Escape then Tab remains available for leaving the editor by keyboard.
+      keymap.of([{ key: 'Tab', run: target => !target.state.readOnly && insertTab(target), shift: indentLess }, ...defaultKeymap, ...historyKeymap]), EditorView.lineWrapping,
       EditorView.contentAttributes.of({ 'aria-label': '正文', 'aria-multiline': 'true', spellcheck: 'false' }),
       Prec.high(EditorView.domEventHandlers({
         keydown(event) { emit('keydown', event); return event.defaultPrevented },
+        paste(event) { return handleImagePaste(event) },
+        focus() { reportSelection(); return false },
+        blur() { emit('selection', null); return false },
         compositionstart() { composing = true; return false },
         compositionend(_event, instance) {
           composing = false
@@ -341,7 +371,7 @@ function stateFor(value: string) {
           return false
         }
       })),
-      EditorView.updateListener.of(update => { if (update.docChanged) emit('update:modelValue', update.state.doc.toString()) }),
+      EditorView.updateListener.of(update => { if (update.docChanged) emit('update:modelValue', update.state.doc.toString()); if (update.selectionSet || update.docChanged || update.viewportChanged) reportSelection() }),
       modeCompartment.of(displayExtension(props.mode)), readonlyCompartment.of(editableExtension(!!props.readonly))
     ]
   })
@@ -358,8 +388,10 @@ onMounted(() => {
   if (!host.value) return
   try { view = new EditorView({ state: stateFor(props.modelValue), parent: host.value }) }
   catch { useFallback() }
+  window.addEventListener('scroll', reportSelection, true)
+  window.addEventListener('resize', reportSelection)
 })
-onBeforeUnmount(() => { composing = false; view?.destroy(); view = null })
+onBeforeUnmount(() => { composing = false; cancelAnimationFrame(selectionFrame); window.removeEventListener('scroll', reportSelection, true); window.removeEventListener('resize', reportSelection); view?.destroy(); view = null })
 watch(() => props.modelValue, value => {
   // A changed parent value is a different loaded chapter. Reset history so an
   // undo in one chapter can never reinsert content from the previous chapter.
@@ -390,6 +422,21 @@ function replace(from: number, to: number, insert: string, selectionStart: numbe
   if (!view) return
   view.dispatch({ changes: { from, to, insert }, selection: { anchor: selectionStart, head: selectionEnd }, scrollIntoView: true, ...(isolated ? { annotations: isolateHistory.of('full') } : {}) })
   view.focus()
+}
+function fallbackKeydown(event: KeyboardEvent) {
+  emit('keydown', event)
+  if (event.defaultPrevented || event.key !== 'Tab' || event.ctrlKey || event.altKey || event.metaKey || props.readonly || !fallback.value) return
+  const field = fallback.value
+  const before = props.modelValue
+  let state = EditorState.create({ doc: before, extensions: [EditorState.lineSeparator.of('\n')], selection: {
+    anchor: rawOffsetForTextarea(before, field.selectionStart), head: rawOffsetForTextarea(before, field.selectionEnd)
+  } })
+  const handled = (event.shiftKey ? indentLess : insertTab)({ state, dispatch: transaction => { state = transaction.state } })
+  if (!handled) return
+  event.preventDefault()
+  const result = state.doc.toString(), selection = state.selection.main
+  emit('update:modelValue', result)
+  void nextTick(() => { if (fallback.value === field) field.setSelectionRange(textareaOffsetForRaw(result, selection.from), textareaOffsetForRaw(result, selection.to)) })
 }
 function visibleEditorTop() {
   const header = document.querySelector('.archive-header')?.getBoundingClientRect().bottom || 0
@@ -437,7 +484,8 @@ defineExpose({ currentText, selectionRange, replace, focusHeading, canReorganize
 
 <template>
   <p v-if="mode === 'visual' && legacyNewlines" class="live-markdown-legacy" role="status">本文含旧式 CR 换行，暂以源码显示以保留原文。</p>
+  <p v-if="pasteError" class="live-markdown-paste-error" role="alert">{{ pasteError }}</p>
   <div v-show="!failed" ref="host" class="live-markdown" />
   <textarea v-if="failed" ref="fallback" class="live-markdown-fallback" aria-label="正文" :value="modelValue" :readonly="readonly" spellcheck="false"
-    @input="emit('update:modelValue', applyTextareaChange(modelValue, ($event.target as HTMLTextAreaElement).value))" @keydown="emit('keydown', $event)" />
+    @input="emit('update:modelValue', applyTextareaChange(modelValue, ($event.target as HTMLTextAreaElement).value))" @keydown="fallbackKeydown" @paste="handleImagePaste" />
 </template>

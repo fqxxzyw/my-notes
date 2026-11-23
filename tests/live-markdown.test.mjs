@@ -49,6 +49,13 @@ test('image editing preserves titles and rejects unsafe unsupported structures',
   assert.ok(!renderInlineMarkdown('![bad](javascript:alert(1))').includes('src="javascript:'))
 })
 
+test('embedded clipboard images render as Markdown and unsafe data URLs stay blocked', () => {
+  const safe = '![图片](data:image/png;base64,iVBORw0KGgo=)'
+  assert.match(renderInlineMarkdown(safe), /<img[^>]*src="data:image\/png;base64,iVBORw0KGgo="/)
+  assert.match(markdownBlocks(safe)[0].html, /<img[^>]*src="data:image\/png;base64,iVBORw0KGgo="/)
+  assert.doesNotMatch(renderInlineMarkdown('![bad](data:image/svg+xml;base64,PHN2Zz4=)'), /src="data:image\/svg/)
+})
+
 test('reference images use the current document definitions without changing source', () => {
   const one = '![ref][id]\n\n[id]: https://example.com/a.png'
   const two = one.replace('a.png', 'b.png')

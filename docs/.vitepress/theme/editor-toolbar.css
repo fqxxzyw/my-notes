@@ -46,7 +46,51 @@
 }
 .editor-pane { min-width: 0; padding: 24px clamp(16px, 3vw, 44px); }
 .pane-heading { display: block; margin: 0; color: var(--muted, #59616a); font-size: 12px; font-weight: 600; }
-:deep(.cm-editor) { background: transparent; color: var(--ink, #202328); font-size: 15px; }
+:deep(.cm-editor) {
+  --paper-code-bg: #f4f3f0; --paper-code-border: #d8d4cb;
+  --paper-code-keyword: #714292; --paper-code-string: #356b40;
+  --paper-code-number: #9b541d; --paper-code-comment: #686e6c;
+  --paper-code-function: #205d91; --paper-code-type: #895b1b;
+  --paper-code-operator: #785165; --paper-code-property: #315e74;
+  --paper-syntax-heading: #245982; --paper-syntax-marker: #855b3d;
+  --paper-syntax-label: #6c518d; --paper-syntax-link: #215d8a;
+  --paper-syntax-url: #49715b; --paper-syntax-emphasis: #805025;
+  --paper-syntax-inline-code: #85502f; --paper-syntax-quote: #526d60;
+  background: transparent; color: var(--ink, #202328); font-size: 15px;
+}
+:global(.paper-night) :deep(.cm-editor) {
+  --paper-code-bg: #1b1c1f; --paper-code-border: #55534e;
+  --paper-code-keyword: #d0a7eb; --paper-code-string: #acd5a5;
+  --paper-code-number: #f0bc88; --paper-code-comment: #b1aca4;
+  --paper-code-function: #9bc8ef; --paper-code-type: #e8cb94;
+  --paper-code-operator: #d9b0c5; --paper-code-property: #a0c7d4;
+  --paper-syntax-heading: #9bc8ef; --paper-syntax-marker: #e1b48e;
+  --paper-syntax-label: #c8b0e4; --paper-syntax-link: #9bc8ef;
+  --paper-syntax-url: #acd5a5; --paper-syntax-emphasis: #f0c69d;
+  --paper-syntax-inline-code: #e6b78e; --paper-syntax-quote: #acd2b8;
+}
+:global(.paper-theme-green) :deep(.cm-editor) {
+  --paper-code-bg: #e5efe3; --paper-code-border: #a4bca8;
+  --paper-code-keyword: #674384; --paper-code-string: #32693c;
+  --paper-code-number: #8c511f; --paper-code-comment: #546d59;
+  --paper-code-function: #245c7e; --paper-code-type: #7a581e;
+  --paper-code-operator: #714959; --paper-code-property: #315d63;
+  --paper-syntax-heading: #245c78; --paper-syntax-marker: #7b5435;
+  --paper-syntax-label: #644b7e; --paper-syntax-link: #245c78;
+  --paper-syntax-url: #416949; --paper-syntax-emphasis: #794b2a;
+  --paper-syntax-inline-code: #79502e; --paper-syntax-quote: #4d6a50;
+}
+:global(.paper-theme-yellow) :deep(.cm-editor) {
+  --paper-code-bg: #f1e9d1; --paper-code-border: #c9b991;
+  --paper-code-keyword: #714387; --paper-code-string: #416a38;
+  --paper-code-number: #96511e; --paper-code-comment: #776d58;
+  --paper-code-function: #295e83; --paper-code-type: #855b1e;
+  --paper-code-operator: #795061; --paper-code-property: #395e67;
+  --paper-syntax-heading: #295b7b; --paper-syntax-marker: #86583a;
+  --paper-syntax-label: #6a4e81; --paper-syntax-link: #295c7f;
+  --paper-syntax-url: #536e42; --paper-syntax-emphasis: #80502c;
+  --paper-syntax-inline-code: #80502d; --paper-syntax-quote: #616d4b;
+}
 :deep(.cm-editor.cm-focused) { outline: none; }
 :deep(.cm-scroller) { font-family: ui-monospace, "Microsoft YaHei", monospace; line-height: 1.8; }
 :deep(.cm-content) { min-height: max(65vh, 600px); padding: 14px 0 48px; caret-color: var(--ink, #202328); }
@@ -100,12 +144,6 @@
 :deep(.cm-paper-code-indented-end) { padding-bottom: 8px; border-bottom: 1px solid var(--paper-code-border, #ddd9d1); border-radius: 0 0 6px 6px; }
 :deep(.cm-paper-code-revealed) { height: auto; min-height: 1.7em; line-height: 1.7; font-size: 13px; }
 :deep(.cm-paper-code-open.cm-paper-code-revealed)::before { content: none; }
-:global(.paper-night) :deep(.cm-paper-code-line) {
-  --paper-code-bg: #1b1c1f; --paper-code-border: #55534e;
-  --paper-code-keyword: #c5a0e2; --paper-code-string: #a4cc9e;
-  --paper-code-number: #e4ae7a; --paper-code-comment: #a5a19a;
-  --paper-code-function: #93bfe8; --paper-code-type: #e0c18e;
-}
 :deep(.live-markdown-fallback) {
   display: block;
   width: 100%;

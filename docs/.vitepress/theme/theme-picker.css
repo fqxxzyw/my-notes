@@ -1,0 +1,49 @@
+:root { --theme-ink: #111; --theme-paper: #fff; --theme-soft: #f3f3f1; --theme-muted: #666; --theme-edge: #111; }
+:root.paper-night { --theme-ink: #ede9e2; --theme-paper: #222427; --theme-soft: #343639; --theme-muted: #bcb6ad; --theme-edge: #aaa59b; }
+:root.paper-theme-green { color-scheme: light; --theme-ink: #25392c; --theme-paper: #f2f8ef; --theme-soft: #dfeddd; --theme-muted: #5d7261; --theme-edge: #415d49; --vp-c-bg: #e9f3e7; --vp-c-bg-alt: #f2f8ef; --vp-c-bg-soft: #dfeddd; --vp-c-text-1: #25392c; --vp-c-text-2: #5d7261; --vp-c-divider: #718976; }
+:root.paper-theme-yellow { color-scheme: light; --theme-ink: #473c2a; --theme-paper: #fff9e9; --theme-soft: #f1e8cc; --theme-muted: #786b55; --theme-edge: #756548; --vp-c-bg: #fbf5e0; --vp-c-bg-alt: #fff9e9; --vp-c-bg-soft: #f1e8cc; --vp-c-text-1: #473c2a; --vp-c-text-2: #786b55; --vp-c-divider: #aa9a79; }
+.paper-theme-modal { position: fixed; z-index: 1000; inset: 0; display: grid; place-items: center; padding: 20px; background: #0008; }
+.paper-theme-dialog { width: min(100%, 448px); padding: 24px; color: var(--theme-ink); background: var(--theme-paper); border: 2px solid var(--theme-edge); border-radius: 12px; box-shadow: 6px 6px 0 var(--theme-edge); }
+.paper-theme-heading { display: flex; align-items: center; justify-content: space-between; padding-bottom: 13px; border-bottom: 2px solid var(--theme-edge); }
+.paper-theme-heading h2 { margin: 4px 0 0; font-size: 21px; font-weight: 700; line-height: 1.2; }
+.paper-theme-kicker { font: bold 10px ui-monospace, monospace; letter-spacing: .1em; }
+.paper-theme-heading button { width: 31px; height: 31px; border: 1.5px solid var(--theme-edge); border-radius: 5px; color: var(--theme-ink); background: var(--theme-paper); font-size: 21px; line-height: 1; cursor: pointer; }
+.paper-theme-description { margin: 15px 0; color: var(--theme-muted); font-size: 13px; }
+.paper-theme-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.paper-theme-option { min-width: 0; display: flex; align-items: center; gap: 10px; text-align: left; padding: 10px; color: var(--theme-ink); background: var(--theme-paper); border: 1.5px solid var(--theme-edge); border-radius: 7px; cursor: pointer; }
+.paper-theme-option:last-child { grid-column: 1 / -1; }
+.paper-theme-option:hover, .paper-theme-option:focus-visible, .paper-theme-heading button:hover, .paper-theme-heading button:focus-visible { outline: none; box-shadow: 3px 3px 0 var(--theme-edge); transform: translate(-1px,-1px); }
+.paper-theme-option.is-selected { background: var(--theme-soft); }
+.paper-theme-option-copy { display: grid; min-width: 0; line-height: 1.4; }
+.paper-theme-option-copy strong { font-size: 13px; }
+.paper-theme-option-copy small { color: var(--theme-muted); font-size: 11px; }
+.paper-theme-check { margin-left: auto; font-size: 11px; }
+.paper-theme-swatch { display: flex; flex-direction: column; justify-content: center; gap: 3px; flex: 0 0 34px; width: 34px; height: 40px; padding: 6px; border: 1.5px solid #333; background: #fff; }
+.paper-theme-swatch i { display: block; height: 1px; background: #333; }
+.paper-theme-swatch i:last-child { width: 60%; }
+.paper-theme-swatch--night { background: #25272a; border-color: #b8b4ab; }.paper-theme-swatch--night i { background: #ddd; }
+.paper-theme-swatch--green { background: #e5f1e2; }.paper-theme-swatch--yellow { background: #fbf2d7; }
+.paper-theme-swatch--system { background: linear-gradient(135deg, #fff 50%, #25272a 50%); }
+@media (max-width: 400px) { .paper-theme-dialog { padding: 18px; }.paper-theme-options { grid-template-columns: 1fr; }.paper-theme-option:last-child { grid-column: auto; } }
+
+/* Recolor surfaces and drawn outlines together, including nested book artwork. */
+:is(.paper-theme-green, .paper-theme-yellow) body, :is(.paper-theme-green, .paper-theme-yellow) .Layout { background: var(--vp-c-bg); color: var(--theme-ink); }
+:is(.paper-theme-green, .paper-theme-yellow) .desk { --ink: var(--theme-ink); --muted: var(--theme-muted); --line: var(--theme-edge); --red: #795033; --panel: var(--theme-paper); --shelf: var(--vp-c-bg-soft); --button: var(--theme-ink); --depth-edge: var(--theme-edge); color: var(--theme-ink); }
+:is(.paper-theme-green, .paper-theme-yellow) .desk :is(.archive-header, .archive-dialog, .archive-dialog input, .archive-dialog textarea, .archive-dialog select, .archive-search input, .archive-search-results, .cabinet, .cabinet__drawing, .cabinet__book, .paper, .reference-book-card, .reference-editor-sidebar, .reference-sidebar-row, .chapter-row, .bookshelf__stage, .bookshelf__info, .bookshelf__board, .editor-modes, .markdown-toolbar button, .code-tool, .code-tool select, .editor-panes, .move-book select, .reference-outline-button, .theme-toggle, .archive-new, .archive-sync, .archive-refresh, .connection-details, .volume__spine, .volume__cover, .volume__top, .reference-book-spine, .reference-book-cover, .reference-book-top, .collapsed-outline__tooltip) { background-color: var(--theme-paper); color: var(--theme-ink); border-color: var(--theme-edge); }
+:is(.paper-night, .paper-theme-green, .paper-theme-yellow) .desk :is(.archive-header, .archive-dialog-heading, .archive-divider, .intro, .sync-link, .cabinet, .cabinet__drawing, .cabinet__book, .cabinet__book-number, .cabinet__plank, .cabinet__footer, .cabinet__tags span, .case-number, .create-plus, .batch-box, .paper, .reference-book-card, .reference-hero-stage, .reference-book-bottom, .reference-chapter-heading, .chapter-row, .chapter-index, .reference-editor-sidebar, .reference-sidebar-heading, .reference-editor-workspace .paper.editor, .bookshelf__stage-heading, .bookshelf__board, .bookshelf__info, .editor-modes, .editor-modes button, .markdown-toolbar, .markdown-toolbar button, .code-tool, .code-tool select, .editor-panes, .archive-dialog input, .archive-dialog-heading button, .volume__spine, .volume__cover, .volume__cover-frame, .volume__number, .volume__chapter-count, .reference-book-spine, .reference-book-cover, .reference-cover-frame, .page__face, .page__outline, .page__badge, .connection-details, .collapsed-outline__tooltip, pre, code, input, textarea, select) { border-color: var(--theme-edge); }
+:is(.paper-theme-green, .paper-theme-yellow) .desk :is(.archive-kicker, .case-number, .chapter-index, .volume__cover-title, .editor-modes button, .sync-link, .connection-details summary) { color: var(--theme-ink); }
+:is(.paper-theme-green, .paper-theme-yellow) .desk :is(.archive-intro, .cabinet__meta, .editor-caption small, .bookshelf__info-label, .connection-meta) { color: var(--theme-muted); }
+:is(.paper-theme-green, .paper-theme-yellow) .desk :is(.archive-new, .archive-sync, .archive-refresh, .theme-toggle, .reference-outline-button, .markdown-toolbar button):hover { background: var(--theme-ink); color: var(--theme-paper); }
+:is(.paper-theme-green, .paper-theme-yellow) .desk :is(.primary-button, .bookshelf__open, .editor-modes button[aria-pressed="true"], .view-actions button.chosen) { background: var(--theme-ink); color: var(--theme-paper); border-color: var(--theme-ink); }
+:is(.paper-theme-green, .paper-theme-yellow) .desk :is(.reference-sidebar-row:hover, .reference-sidebar-row.active, .archive-search-results button:hover) { background: var(--theme-soft); }
+:is(.paper-night, .paper-theme-green, .paper-theme-yellow) .desk :is(.collapsed-outline__line, .collapsed-outline__bulge, .archive-divider, .volume__cover-lines span, .volume__tailband, .reference-book-rule, .cabinet__book-rule, .bookshelf__board span:first-child, .bookshelf__board span:last-child) { background-color: var(--theme-edge); }
+:is(.paper-night, .paper-theme-green, .paper-theme-yellow) .desk :is(.collapsed-outline__tooltip, .volume__chapter-count, .page__badge, .chapter-prose pre, .chapter-prose code) { color: var(--theme-ink); background-color: var(--theme-paper); }
+/* Teleported outline tooltips sit outside .desk, so theme them at the root. */
+:is(.paper-night, .paper-theme-green, .paper-theme-yellow) .collapsed-outline__tooltip { --ink: var(--theme-ink); --panel: var(--theme-paper); color: var(--theme-ink); background: var(--theme-paper); border-color: var(--theme-edge); box-shadow: 2px 2px 0 var(--theme-edge); }
+:is(.paper-night, .paper-theme-green, .paper-theme-yellow) .desk .bookshelf { --book-ink: var(--theme-ink); --book-muted: var(--theme-muted); }
+:is(.paper-night, .paper-theme-green, .paper-theme-yellow) .desk .volume--page { --page-paper: var(--theme-paper); }
+:is(.paper-night, .paper-theme-green, .paper-theme-yellow) .desk :is(.volume__cover::before, .volume__cover::after) { background-color: var(--theme-edge); }
+:is(.paper-theme-green, .paper-theme-yellow) .desk :is(.bookshelf__open, .primary-button):hover:enabled { background: var(--theme-paper); color: var(--theme-ink); }
+:is(.paper-night, .paper-theme-green, .paper-theme-yellow) .desk :focus-visible { outline-color: var(--theme-edge); }
+/* Paste failures must remain readable on the charcoal editor surface. */
+.paper-night .desk .live-markdown-paste-error { color: #ffaaa5; }

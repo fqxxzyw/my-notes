@@ -1,6 +1,7 @@
 import { validateCatalog, type CatalogVersion } from './cabinetStore'
 import type { Chapter, Notebook, Page } from './notebookStore'
 import { namespaceKey } from './repository'
+import { readNotebookChapterOrder, validateChapterOrder } from './notebookChapterOrder'
 
 /** A complete GitHub revision, separate from unsynchronized local drafts. */
 export type RemoteSnapshot = {
@@ -34,6 +35,7 @@ function cleanSnapshot(value: unknown): RemoteSnapshot {
       !input.catalog || typeof input.catalog !== 'object' || Array.isArray(input.catalog)) throw new Error('远端快照格式无效。')
 
   const ids = new Set<string>()
+  let badOrderMetadata = false
   const books = input.books.map((raw: unknown): Notebook => {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('远端笔记本数据无效。')
     const book = raw as Record<string, unknown>
@@ -41,7 +43,15 @@ function cleanSnapshot(value: unknown): RemoteSnapshot {
         typeof book.title !== 'string' || typeof book.sha !== 'string' || !SHA.test(book.sha)) throw new Error('远端笔记本数据无效。')
     ids.add(book.id)
     if (book.description !== undefined && typeof book.description !== 'string' || book.indexContent !== undefined && typeof book.indexContent !== 'string') throw new Error('远端笔记本简介无效。')
-    return { id: book.id, title: book.title, sha: book.sha, ...(book.description === undefined ? {} : { description: book.description as string }), ...(book.indexContent === undefined ? {} : { indexContent: book.indexContent as string }) }
+    let chapterOrder: string[] | undefined
+    if (book.chapterOrder !== undefined) chapterOrder = validateChapterOrder(book.chapterOrder)
+    else if (typeof book.indexContent === 'string') {
+      // Older clients preserved the index text but did not know the ordering
+      // field. Recover it for offline use without rewriting the old cache.
+      try { chapterOrder = readNotebookChapterOrder(book.indexContent) }
+      catch { badOrderMetadata = true }
+    }
+    return { id: book.id, title: book.title, sha: book.sha, ...(book.description === undefined ? {} : { description: book.description as string }), ...(book.indexContent === undefined ? {} : { indexContent: book.indexContent as string }), ...(chapterOrder === undefined ? {} : { chapterOrder }) }
   })
   const allChapters = input.chapters as Record<string, unknown>
   if (Object.keys(allChapters).length !== books.length || Object.keys(allChapters).some(id => !ids.has(id))) {
@@ -78,7 +88,7 @@ function cleanSnapshot(value: unknown): RemoteSnapshot {
   }
   if (typeof rawCatalog.sha !== 'string' || (rawCatalog.sha !== '' && !SHA.test(rawCatalog.sha))) throw new Error('远端书柜版本无效。')
   if (input.stale !== undefined && typeof input.stale !== 'boolean') throw new Error('远端快照状态无效。')
-  return { head: input.head, books, chapters, ...(pages === undefined ? {} : { pages }), catalog: { catalog: validateCatalog(rawCatalog.catalog), sha: rawCatalog.sha }, ...(input.stale === undefined ? {} : { stale: input.stale }) }
+  return { head: input.head, books, chapters, ...(pages === undefined ? {} : { pages }), catalog: { catalog: validateCatalog(rawCatalog.catalog), sha: rawCatalog.sha }, ...(badOrderMetadata ? { stale: true } : input.stale === undefined ? {} : { stale: input.stale }) }
 }
 
 /** Returns null for an absent, incomplete or unreadable cache; never alters drafts or a damaged cache. */

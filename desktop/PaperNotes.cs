@@ -231,7 +231,9 @@ namespace PaperNotesDesktop
                 await webView.EnsureCoreWebView2Async(environment);
                 var core = webView.CoreWebView2;
                 core.Settings.AreDevToolsEnabled = false;
-                core.Settings.AreDefaultContextMenusEnabled = false;
+                // Keep the native Windows editor context menu so users can
+                // cut, copy and paste, including clipboard images.
+                core.Settings.AreDefaultContextMenusEnabled = true;
                 core.Settings.IsWebMessageEnabled = true;
                 core.Settings.AreBrowserAcceleratorKeysEnabled = false;
                 core.SetVirtualHostNameToFolderMapping(
@@ -391,7 +393,14 @@ namespace PaperNotesDesktop
             if (request == null || GetString(request, "channel") != "paper-notes") return;
             string action = GetString(request, "action");
             if (action == "ui.ready") { RevealStartup(); return; }
-            if (action == "ui.theme") { BackColor = GetString(request, "theme") == "dark" ? Color.FromArgb(23, 25, 28) : Color.White; return; }
+            if (action == "ui.theme")
+            {
+                string theme = GetString(request, "theme");
+                BackColor = theme == "night" ? Color.FromArgb(23, 25, 28)
+                    : theme == "green" ? Color.FromArgb(233, 243, 231)
+                    : theme == "yellow" ? Color.FromArgb(251, 245, 224) : Color.White;
+                return;
+            }
             if (action == "window.minimize") { WindowState = FormWindowState.Minimized; return; }
             if (action == "window.maximize")
             {

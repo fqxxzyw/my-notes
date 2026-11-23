@@ -95,3 +95,19 @@ test('v1.0.4 is recognized only when both complete manuals match that released t
   const incomplete = structuredClone(previous.remote); incomplete[0].chapters.pop()
   assert.equal(findPristineWelcomeDuplicate(previous.entries, current, incomplete), null)
 })
+
+test('previous image-attachment tutorial is recognized only with identical pristine text on both sides', () => {
+  const previous = JSON.parse(readFileSync('docs/.vitepress/theme/welcome-attachments-v104.json', 'utf8'))
+  const current = Object.fromEntries(['00-welcome.md', '01-writing.md', '02-github.md'].map(name =>
+    [`./builtin/${name}`, readFileSync(`docs/.vitepress/theme/builtin/${name}`, 'utf8')]))
+  const fixturePrevious = fixture(previous)
+  const original = JSON.stringify(fixturePrevious.entries)
+  assert.ok(findPristineWelcomeDuplicate(fixturePrevious.entries, current, fixturePrevious.remote))
+  assert.equal(JSON.stringify(fixturePrevious.entries), original)
+  const latest = fixture(current)
+  assert.equal(findPristineWelcomeDuplicate(latest.entries, current, fixturePrevious.remote), null)
+  const modifiedLocal = modify(fixturePrevious.entries, data => { data.chapters[1].content += '\n用户编辑' })
+  const modifiedRemote = structuredClone(fixturePrevious.remote)
+  modifiedRemote[0].chapters[1].content += '\n用户编辑'
+  assert.equal(findPristineWelcomeDuplicate(modifiedLocal, current, modifiedRemote), null)
+})

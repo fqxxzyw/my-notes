@@ -23,6 +23,7 @@ import { prepareLocalCollection, assertLocalMetadataWritable, restoreNotebookBas
 import { newAttachmentPath, putAttachment, getAttachment, attachmentMime, MAX_ATTACHMENT_BYTES, type NoteAttachment } from './attachmentStore'
 import { attachmentReferences, workspaceAttachmentPaths, workspaceEntriesMatch } from './attachmentReferences'
 import { applyImageUrls } from './imageUrls'
+import { rewriteImportedImages } from './rewriteImportedImages'
 import { finishAttachmentRestore } from './attachmentRestore'
 
 const initialRepository = getConfiguredRepository()
@@ -70,6 +71,7 @@ const importing = ref(false)
 const draggingFiles = ref(false)
 const importFileInput = ref<HTMLInputElement | null>(null)
 const importFolderInput = ref<HTMLInputElement | null>(null)
+const repairFolderInput = ref<HTMLInputElement | null>(null)
 const moveBooksTarget = ref('')
 const deleteCabinetIds = ref<string[]>([])
 const renamingCabinetId = ref('')
@@ -434,6 +436,91 @@ function fileInputImport(event: Event) {
   else if (files?.length) error.value = '请等待当前操作完成后再导入。'
   input.value = ''
 }
+function importedImageMime(path: string): string {
+  const extension = path.toLowerCase().split('.').pop()
+  return extension === 'jpg' || extension === 'jpeg' ? 'image/jpeg' : extension === 'png' ? 'image/png' : extension === 'gif' ? 'image/gif' : extension === 'webp' ? 'image/webp' : ''
+}
+
+/** Prepare one Markdown file without touching the original or local drafts. */
+function prepareImportedImages(file: DroppedMarkdownResult['files'][number], bookId: string | null, images: DroppedMarkdownResult['images'], staged: Map<string, NoteAttachment>, known: Map<string, string>) {
+  const targets = new Map<string, string>()
+  const paths = new Map<string, string>()
+  for (const image of images) {
+    for (const reference of image.references) {
+      if (reference.markdownPath !== file.path) continue
+      const previous = paths.get(reference.target)
+      if (previous && previous !== image.path) throw new Error('图片路径存在歧义，未导入笔记；请检查原始文件夹。')
+      paths.set(reference.target, image.path)
+      const key = `${bookId || ''}\0${image.path}`
+      let path = known.get(key)
+      if (!path) { path = newAttachmentPath(bookId, importedImageMime(image.path)); known.set(key, path) }
+      targets.set(reference.target, `assets/${path.split('/').pop()}`)
+    }
+  }
+  const rewritten = rewriteImportedImages(file.content, targets)
+  for (const target of rewritten.replaced) {
+    const originalPath = paths.get(target)!
+    const image = images.find(item => item.path === originalPath)!
+    const path = known.get(`${bookId || ''}\0${originalPath}`)!
+    staged.set(path, { path, bytes: image.bytes })
+  }
+  return { content: rewritten.content, unmatched: targets.size - rewritten.replaced.length }
+}
+
+function repairFolderImport(event: Event) {
+  const input = event.target as HTMLInputElement
+  const files = input.files
+  if (files?.length && !busy.value && !writing) void repairCurrentImages(readDroppedMarkdown({ files, items: [] } as unknown as DataTransfer))
+  else if (files?.length) error.value = '请等待当前操作完成后再补齐图片。'
+  input.value = ''
+}
+
+async function repairCurrentImages(reading: Promise<DroppedMarkdownResult>) {
+  if (busy.value || writing || !selectedChapter.value || !saveDraft()) return
+  const chapter = selectedChapter.value
+  const original = content.value
+  clearMessages()
+  const success = await run(async () => {
+    const result = await reading
+    let matches = result.files.filter(file => {
+      const root = result.folders.find(folder => file.path.startsWith(`${folder}/`))
+      return safeImportedTitle(root ? file.path.slice(root.length + 1) : file.name) === chapter.title
+    })
+    if (!matches.length) {
+      // A synced chapter may display its Markdown heading instead of its old
+      // filename. Fall back only when one source file has matching image
+      // references in the current text; never guess between multiple files.
+      matches = result.files.filter(file => {
+        const targets = new Map<string, string>()
+        for (const image of result.images) for (const reference of image.references) {
+          if (reference.markdownPath === file.path) targets.set(reference.target, `assets/${'0'.repeat(32)}.png`)
+        }
+        return rewriteImportedImages(original, targets).replaced.length > 0
+      })
+    }
+    if (matches.length !== 1) throw new Error(matches.length ? '原文件夹中有多个同名章节，无法安全确定图片来源。' : '原文件夹中未找到与当前章节同名的 Markdown 文件，请选择导入时使用的文件夹。')
+    const source = { ...matches[0], content: original }
+    const staged = new Map<string, NoteAttachment>()
+    const prepared = prepareImportedImages(source, isPageBookId(chapter.bookId) ? null : chapter.bookId, result.images, staged, new Map())
+    const repaired = prepared.content
+    if (!staged.size || repaired === original) throw new Error('没有找到可补齐的图片；请检查当前笔记的图片路径和原文件夹。')
+    if (!window.confirm(`将从“${source.path}”对应的文件夹补齐 ${staged.size} 张图片到当前笔记“${chapter.title}”。\n\n正文中匹配的图片路径会更新，其他编辑内容会保留。请确认这是原始笔记文件夹。`)) return
+    for (const image of staged.values()) await putAttachment(initialRepository, image)
+    if (selectedChapter.value !== chapter || content.value !== original) throw new Error('图片读取期间笔记已变化，未修改正文；请重新操作。')
+    // Persist the new draft before replacing visible content. Existing remote
+    // base and any unsynchronized edits stay intact if local storage fails.
+    try { localStorage.setItem(draftKey(chapter), JSON.stringify({ content: repaired, base: chapter })) }
+    catch { throw new Error('无法保存补齐后的本机草稿；原正文未改变，请检查存储空间。') }
+    drafts.value = { ...drafts.value, [chapterKey(chapter)]: { content: repaired, base: chapter } }
+    suspendDraft = true
+    try { content.value = repaired } finally { suspendDraft = false }
+    if (autoSave.value) { autoKeys.add(chapterKey(chapter)); scheduleAuto() }
+    const remaining = result.localResources.filter(item => item.markdownPath === source.path).length + prepared.unmatched
+    notice.value = `已补齐 ${staged.size} 张图片到当前笔记，请同步以保存到 GitHub。${remaining ? `还有 ${remaining} 处相对图片或链接未能导入，请检查。` : ''}`
+  })
+  if (success) importing.value = false
+}
+
 async function importMarkdown(reading: Promise<DroppedMarkdownResult>) {
   if (busy.value || writing || !saveDraft()) { error.value = '请等待当前操作完成后再导入。'; return }
   const destination = selectedBook.value && selectedBook.value.kind !== 'page' ? selectedBook.value : null
@@ -445,26 +532,49 @@ async function importMarkdown(reading: Promise<DroppedMarkdownResult>) {
     const beforeChapters = localChapters.value
     const addedBooks: ShelfBook[] = []
     const addedChapters: Chapter[] = []
-    for (const folder of result.folders) {
+    const sourceFiles: Array<{ file: DroppedMarkdownResult['files'][number]; chapter: Chapter; assetBookId: string | null }> = []
+    const staged = new Map<string, NoteAttachment>()
+    const known = new Map<string, string>()
+    // A separately dropped Typora .assets folder is not an empty notebook.
+    const importFolders = result.folders.filter(folder => {
+      if (result.files.some(file => file.path.startsWith(`${folder}/`))) return true
+      const isResourceFolder = /\.assets$/i.test(folder) || result.images.some(image => image.path.startsWith(`${folder}/`)) || result.skipped.some(item => item.path.startsWith(`${folder}/`) && /\.(?:png|jpe?g|gif|webp)$/i.test(item.path))
+      return !isResourceFolder
+    })
+    for (const folder of importFolders) {
       const book: ShelfBook = { id: newId(), title: safeImportedTitle(folder), sha: '' }
       addedBooks.push(book)
       for (const file of result.files.filter(item => item.path.startsWith(`${folder}/`))) {
         const relative = file.path.slice(folder.length + 1)
         const title = safeImportedTitle(relative)
-        addedChapters.push({ bookId: book.id, id: chapterIdFromTitle(title), title, content: file.content, sha: '' })
+        const chapter: Chapter = { bookId: book.id, id: chapterIdFromTitle(title), title, content: file.content, sha: '' }
+        addedChapters.push(chapter); sourceFiles.push({ file, chapter, assetBookId: book.id })
       }
     }
-    for (const file of result.files.filter(item => !result.folders.some(folder => item.path.startsWith(`${folder}/`)))) {
+    for (const file of result.files.filter(item => !importFolders.some(folder => item.path.startsWith(`${folder}/`)))) {
       const title = safeImportedTitle(file.name)
-      if (destination) addedChapters.push({ bookId: destination.id, id: chapterIdFromTitle(title), title, content: file.content, sha: '' })
+      if (destination) {
+        const chapter: Chapter = { bookId: destination.id, id: chapterIdFromTitle(title), title, content: file.content, sha: '' }
+        addedChapters.push(chapter); sourceFiles.push({ file, chapter, assetBookId: destination.id })
+      }
       else {
         const id = pageIdFromTitle(title)
         const book: ShelfBook = { id: pageBookId(id), title, sha: '', kind: 'page' }
         addedBooks.push(book)
-        addedChapters.push({ bookId: book.id, id, title, content: file.content, sha: '' })
+        const chapter: Chapter = { bookId: book.id, id, title, content: file.content, sha: '' }
+        addedChapters.push(chapter); sourceFiles.push({ file, chapter, assetBookId: null })
       }
     }
     if (!addedBooks.length && !addedChapters.length) throw new Error('没有可导入的 Markdown 文件或文件夹。')
+    let unmatched = 0
+    for (const { file, chapter, assetBookId } of sourceFiles) {
+      const prepared = prepareImportedImages(file, assetBookId, result.images, staged, known)
+      chapter.content = prepared.content
+      unmatched += prepared.unmatched
+    }
+    // Attachment writes may leave unused files if a later operation fails;
+    // they are immutable and never overwrite any existing user data.
+    for (const image of staged.values()) await putAttachment(initialRepository, image)
     localBooks.value = [...beforeBooks, ...addedBooks]
     localChapters.value = [...beforeChapters, ...addedChapters]
     try {
@@ -478,8 +588,9 @@ async function importMarkdown(reading: Promise<DroppedMarkdownResult>) {
     books.value = [...books.value, ...addedBooks]
     if (destination && selectedBook.value?.id === destination.id) chapters.value = [...chapters.value, ...addedChapters.filter(chapter => chapter.bookId === destination.id)]
     localMutationVersion++
-    const extra = [result.skipped.length ? `${result.skipped.length} 项非 Markdown 或无法读取，已跳过` : '', result.localResources.length ? `${result.localResources.length} 处相对图片或链接未随文件导入，请检查` : ''].filter(Boolean).join('；')
-    notice.value = `已导入 ${addedBooks.length} 项书本/书页、${addedChapters.filter(item => !isPageBookId(item.bookId)).length} 篇章节到本机。${extra ? ` ${extra}。` : ''}`
+    const unresolved = result.localResources.length + unmatched
+    const extra = [result.skipped.length ? `${result.skipped.length} 项非 Markdown 或无法读取，已跳过` : '', unresolved ? `${unresolved} 处相对图片或链接未随文件导入，请检查` : ''].filter(Boolean).join('；')
+    notice.value = `已导入 ${addedBooks.length} 项书本/书页、${addedChapters.filter(item => !isPageBookId(item.bookId)).length} 篇章节、${staged.size} 张图片到本机。${extra ? ` ${extra}。` : ''}`
     if (autoSave.value) {
       for (const book of addedBooks) if (book.kind !== 'page') autoBooks.add(book.id)
       for (const chapter of addedChapters) autoKeys.add(chapterKey(chapter))
@@ -1821,14 +1932,17 @@ async function openSearchResult(chapter: Chapter) {
     <div v-if="importing" class="archive-modal" @click.self="importing = false" @keydown.esc="importing = false">
       <div class="archive-dialog import-dialog" role="dialog" aria-modal="true" aria-labelledby="import-title">
         <div class="archive-dialog-heading"><h2 id="import-title">导入笔记</h2><button type="button" aria-label="关闭" @click="importing = false">×</button></div>
-        <p>选择 Markdown 文件，或选择文件夹导入为一本书。也可以直接拖入窗口。</p>
+        <p>选择 Markdown 文件，或选择文件夹导入为一本书；文件夹内引用的图片会一起导入。也可以直接拖入窗口。</p>
         <p>{{ selectedBook && selectedBook.kind !== 'page' ? '文件将导入当前笔记本的章节。' : '单个文件将作为独立书页，放入当前书柜。' }}</p>
+        <p v-if="error" class="feedback error" role="alert">{{ error }}</p>
         <div class="archive-dialog-actions">
-          <button type="button" class="archive-new" @click="importFileInput?.click()">选择文件</button>
-          <button type="button" class="archive-new" @click="importFolderInput?.click()">选择文件夹</button>
+          <button type="button" class="archive-new" :disabled="busy" @click="importFileInput?.click()">选择文件</button>
+          <button type="button" class="archive-new" :disabled="busy" @click="importFolderInput?.click()">选择文件夹</button>
+          <button v-if="selectedChapter" type="button" class="archive-new" :disabled="busy" @click="repairFolderInput?.click()">补齐当前笔记图片</button>
         </div>
         <input ref="importFileInput" class="sr-only" type="file" accept=".md,text/markdown" multiple @change="fileInputImport">
         <input ref="importFolderInput" class="sr-only" type="file" webkitdirectory multiple @change="fileInputImport">
+        <input ref="repairFolderInput" class="sr-only" type="file" webkitdirectory multiple @change="repairFolderImport">
       </div>
     </div>
     <section v-show="!selectedBook && (!selectedChapter || view !== 'edit')" class="intro" aria-labelledby="desk-title">

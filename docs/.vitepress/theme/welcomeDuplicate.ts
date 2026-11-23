@@ -1,6 +1,7 @@
 import { namespaceKey } from './repository'
 import type { Chapter, Notebook } from './notebookStore'
 import welcomeV104 from './welcome-v104.json'
+import welcomeAttachmentsV104 from './welcome-attachments-v104.json'
 
 export type WorkspaceEntry = [string, string]
 export type WelcomeCandidate = { book: Notebook; chapters: Chapter[] }
@@ -35,7 +36,7 @@ export function findPristineWelcomeDuplicate(
 
     // Keep released templates byte-for-byte: an old manual may only match the
     // same complete old version on both sides, never a different revision.
-    for (const version of [templates, welcomeV104]) {
+    for (const version of [templates, welcomeV104, welcomeAttachmentsV104]) {
       const expected = Object.entries(version).filter(([path]) => path.endsWith('.md') && !path.endsWith('/index.md'))
         .sort(([a], [b]) => a.localeCompare(b)).map(([path, content]) => {
           const chapterId = path.split('/').pop()!.replace(/\.md$/, '')

@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EditorState } from '@codemirror/state'
 import { syntaxTree } from '@codemirror/language'
+import { history, isolateHistory, undo } from '@codemirror/commands'
 import { markdownEditorLanguage } from '../docs/.vitepress/theme/editorHighlight.js'
 import { toggleInlineFormat } from '../docs/.vitepress/theme/inlineFormatting.js'
 
@@ -78,4 +79,34 @@ test('never strips partially selected markup or treats stars in code as strong d
   const start = fenced.indexOf('**foo**')
   assert.equal(toggleInlineFormat(fenced, start, start + 7, 'bold'), null)
   assert.equal(toggleInlineFormat('第一段\n\n第二段', 0, 8, 'bold'), null)
+})
+
+test('format and unformat text near the end of a long note without changing earlier content', () => {
+  // Exceeds the editor state initial parse viewport; every line before the
+  // selection must remain byte-for-byte unchanged, including CRLF and emoji.
+  const prefix = '正文 📝 和示例 **保留**。\r\n\r\n'.repeat(2500)
+  for (const kind of ['bold', 'italic', 'strike', 'inline-code']) {
+    const original = `${prefix}末尾需要格式化的文字`
+    const first = apply(original, prefix.length, original.length, kind)
+    assert.equal(first.source.slice(0, prefix.length), prefix, `${kind}: prefix was changed`)
+    assert.equal(first.source.slice(first.start, first.end), '末尾需要格式化的文字')
+    const second = apply(first.source, first.start, first.end, kind)
+    assert.equal(second.source, original, `${kind}: toggle did not restore original`)
+  }
+})
+
+test('formatting a long note is a single undoable edit and fenced text is protected', () => {
+  const prefix = '一段比较长的正文。\n\n'.repeat(1000)
+  const source = `${prefix}最后一段`
+  const change = toggleInlineFormat(source, prefix.length, source.length, 'bold')
+  assert.ok(change)
+  let state = EditorState.create({ doc: source, extensions: [history(), EditorState.lineSeparator.of('\n'), markdownEditorLanguage] })
+  state = state.update({ changes: { from: change.from, to: change.to, insert: change.text }, selection: { anchor: change.selectionStart, head: change.selectionEnd }, annotations: isolateHistory.of('full') }).state
+  assert.equal(state.doc.toString(), `${prefix}**最后一段**`)
+  const target = { state, dispatch: transaction => { target.state = transaction.state } }
+  assert.equal(undo(target), true)
+  assert.equal(target.state.doc.toString(), source)
+  const fenced = `${prefix}\`\`\`md\n不要加粗\n\`\`\``
+  const start = fenced.indexOf('不要加粗')
+  assert.equal(toggleInlineFormat(fenced, start, start + '不要加粗'.length, 'bold'), null)
 })

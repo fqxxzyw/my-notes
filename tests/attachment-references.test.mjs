@@ -32,3 +32,24 @@ test('workspace copy detects concurrent edits and new drafts after reading attac
   assert.equal(workspaceEntriesMatch(source, [...source, ['newDraft', '{}']]), false)
   assert.equal(workspaceEntriesMatch(source, [source[0]]), false)
 })
+
+test('managed Typora HTML images participate in sync and restore while examples and untrusted paths do not', () => {
+  const otherImage = `assets/${'a'.repeat(32)}.jpg`
+  const source = [
+    `<img src="${image}" alt="图" style="zoom:50%;" />`,
+    `文字 <IMG alt='图二' src='./${otherImage}'> 结束`,
+    `<img src="https://example.com/picture.png">`,
+    `<img src="../../${image}">`,
+    `\`<img src="assets/${'c'.repeat(32)}.png">\``,
+    '<!-- <img src="assets/' + 'd'.repeat(32) + '.png"> -->',
+    '<script><img src="assets/' + 'e'.repeat(32) + '.png"></script>',
+    '```html', `<img src="assets/${'f'.repeat(32)}.png">`, '```',
+  ].join('\n')
+  assert.deepEqual(attachmentReferences(source, 'book1'), [
+    { src: image, path: `docs/notebooks/book1/${image}` },
+    { src: `./${otherImage}`, path: `docs/notebooks/book1/${otherImage}` }
+  ])
+  assert.deepEqual(attachmentReferences(`<img src="${image}">`, null), [{ src: image, path: `docs/pages/${image}` }])
+  const entries = [['collection', JSON.stringify({ books: [{ id: 'book1' }], chapters: [{ bookId: 'book1', content: source }] })]]
+  assert.deepEqual(workspaceAttachmentPaths(entries).sort(), [`docs/notebooks/book1/${image}`, `docs/notebooks/book1/${otherImage}`].sort())
+})

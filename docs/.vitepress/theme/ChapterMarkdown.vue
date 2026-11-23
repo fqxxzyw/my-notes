@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import MarkdownIt from 'markdown-it'
+import { enableSafeHtmlImages } from './safeHtmlImage'
+import { enableTaskMarkers } from './markdownTasks'
 
 const props = defineProps<{ source: string }>()
 // Notebook text never enters the Vue compiler. MarkdownIt escapes embedded HTML
 // and validates link protocols before producing the read view.
 const markdown = new MarkdownIt({ html: false })
+enableSafeHtmlImages(markdown)
+enableTaskMarkers(markdown)
 const rendered = computed(() => markdown.render(props.source))
 </script>
 

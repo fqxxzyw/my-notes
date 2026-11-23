@@ -1,9 +1,10 @@
 import MarkdownIt from 'markdown-it'
 import { markdownEditorLanguage } from './editorHighlight.js'
+import { htmlImageReferences } from './htmlImageRefs'
 
 const parser = new MarkdownIt({ html: true })
 
-/** Rewrite only genuine Markdown image syntax; leave code and links untouched. */
+/** Rewrite only image destinations; leave code, links and other attributes untouched. */
 export function rewriteImportedImages(source: string, destinations: ReadonlyMap<string, string>): { content: string; replaced: string[] } {
   if (!destinations.size) return { content: source, replaced: [] }
   const environment: Record<string, unknown> = {}
@@ -12,6 +13,12 @@ export function rewriteImportedImages(source: string, destinations: ReadonlyMap<
   // editor finishes background parsing. Import must process the whole file.
   const tree = markdownEditorLanguage.language.parser.parse(source)
   const edits: Array<{ from: number; to: number; text: string; target: string }> = []
+  for (const image of htmlImageReferences(source)) {
+    const destination = destinations.get(image.src)
+    if (destination && /^assets\/[a-f0-9]{32}\.(?:png|jpg|gif|webp)$/.test(destination)) {
+      edits.push({ from: image.from, to: image.to, text: destination, target: image.src })
+    }
+  }
   tree.iterate({ enter(node) {
     if (node.name !== 'Image') return
     const raw = source.slice(node.from, node.to)

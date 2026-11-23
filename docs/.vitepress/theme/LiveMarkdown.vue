@@ -7,6 +7,7 @@ import { Decoration, EditorView, keymap, WidgetType, type DecorationSet } from '
 import { applyTextareaChange, markdownBlocks, markdownEnvironment, rawOffsetForTextarea, renderInlineMarkdown, replaceInlineImage, revealInlineMarker, sourceOffsetForText, tableCellRange, textareaOffsetForRaw, type MarkdownBlock } from './liveMarkdown'
 import { emptyInlineDeletion, visibleInlineEditPosition } from './inlineDeletion.js'
 import { markdownEditorLanguage, sourceMarkdownHighlight, visualCodeHighlight } from './editorHighlight.js'
+import { renderSafeHtmlImage } from './safeHtmlImage'
 import { applyImageUrls, originalImageSource } from './imageUrls'
 
 const props = defineProps<{ modelValue: string; mode: 'source' | 'visual'; readonly?: boolean; attachmentContext?: string; imageUrls?: Readonly<Record<string, string>>; savePastedImages?: (files: File[]) => Promise<string[]>; onPasteStatus?: (message: string) => void }>()
@@ -339,6 +340,14 @@ function renderedDecorations(state: EditorState): DecorationSet {
       // them, so they remain directly accessible and can always be edited.
       syntaxTree(state).iterate({ from: block.from, to: block.to, enter(node) {
         if (node.name === 'FencedCode') { addFenceDecorations(state, selection, ranges, node.from, node.to); return false }
+        if (node.name === 'HTMLTag' || node.name === 'HTMLBlock') {
+          const source = state.doc.sliceString(node.from, node.to)
+          const image = renderSafeHtmlImage(source)
+          if (image) {
+            ranges.push(Decoration.replace({ widget: new InlineImage(source, node.from, node.to, image, imageRevision) }).range(node.from, node.to))
+            return false
+          }
+        }
         if (node.name === 'Image') {
           const source = state.doc.sliceString(node.from, node.to)
           ranges.push(Decoration.replace({ widget: new InlineImage(source, node.from, node.to, renderInlineMarkdown(source, environment), imageRevision) }).range(node.from, node.to))

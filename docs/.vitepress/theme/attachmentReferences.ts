@@ -1,5 +1,6 @@
 import MarkdownIt from 'markdown-it'
 import { validateAttachmentPath } from './attachmentStore'
+import { htmlImageReferences } from './htmlImageRefs'
 
 const markdown = new MarkdownIt({ html: false })
 export type AttachmentReference = { src: string; path: string }
@@ -15,16 +16,22 @@ export function workspaceEntriesMatch(expected: Array<[string, string]>, current
  */
 export function attachmentReferences(source: string, bookId: string | null): AttachmentReference[] {
   const found = new Map<string, string>()
-  const tokens = markdown.parse(source, {})
-  for (const token of tokens) for (const child of token.children || []) {
-    if (child.type !== 'image') continue
-    const src = child.attrGet('src')
-    if (!src || !/^(?:\.\/)?assets\/[a-f0-9]{32}\.(?:png|jpg|gif|webp)$/.test(src)) continue
+  const add = (src: string | null) => {
+    if (!src || !/^(?:\.\/)?assets\/[a-f0-9]{32}\.(?:png|jpg|gif|webp)$/.test(src)) return
     try {
       const base = bookId === null ? 'docs/pages' : `docs/notebooks/${bookId}`
       found.set(src, validateAttachmentPath(`${base}/${src.replace(/^\.\//, '')}`))
     } catch { /* Existing non-managed paths remain ordinary Markdown links. */ }
   }
+  const tokens = markdown.parse(source, {})
+  for (const token of tokens) for (const child of token.children || []) {
+    if (child.type !== 'image') continue
+    add(child.attrGet('src'))
+  }
+  // Typora writes scaled images as HTML <img> tags. Treat their managed
+  // sources exactly like Markdown images for sync, restore and workspace copy.
+  // The extractor filters code blocks, comments, and raw script/style text.
+  for (const reference of htmlImageReferences(source)) add(reference.src)
   return [...found].map(([src, path]) => ({ src, path }))
 }
 

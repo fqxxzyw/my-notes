@@ -1,4 +1,5 @@
 import MarkdownIt from 'markdown-it'
+import { htmlImageReferences } from './htmlImageRefs'
 
 export interface DroppedMarkdownFile { path: string; name: string; content: string }
 export interface DroppedSkip { path: string; reason: 'not-markdown' | 'too-large' | 'too-many' | 'invalid-utf8' | 'read-error' | 'unsupported' | 'invalid-path' | 'invalid-image' | 'ambiguous' }
@@ -29,16 +30,25 @@ function localTargets(markdown: string): { targets: string[]; images: string[]; 
     if (image) images.add(value)
     else links.add(value)
   }
+  // Resolve Typora's HTML image tags just like Markdown images. The source
+  // scanner ignores code, comments and raw-text tags before any file is read.
+  for (const image of htmlImageReferences(markdown)) add(image.src, true)
   const visit = (tokens: any[]) => {
     for (const token of tokens) {
       if (token.type === 'link_open') add(token.attrGet('href') || '')
       if (token.type === 'image') add(token.attrGet('src') || '', true)
       if (token.type === 'html_inline' || token.type === 'html_block') {
-        const attributes = /\b(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi
+        const attributes = /\b(src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi
+        const htmlImages = htmlImageReferences(token.content)
         let match: RegExpExecArray | null
-        // Raw HTML is not rendered by the app; keep these paths in warnings
-        // rather than claiming that importing their files made them visible.
-        while ((match = attributes.exec(token.content))) add(match[1] || match[2] || match[3] || '')
+        while ((match = attributes.exec(token.content))) {
+          const value = match[2] || match[3] || match[4] || ''
+          const valueOffset = match.index + match[0].lastIndexOf(value)
+          // The same HTML image is handled above, not a separate link. Other
+          // HTML resources still remain in warnings and are not auto-imported.
+          if (match[1].toLowerCase() === 'src' && htmlImages.some(image => image.from === valueOffset)) continue
+          add(value)
+        }
       }
       if (token.children) visit(token.children)
     }

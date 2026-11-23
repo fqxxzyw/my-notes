@@ -1,4 +1,6 @@
 import MarkdownIt from 'markdown-it'
+import { enableSafeHtmlImages } from './safeHtmlImage'
+import { enableTaskMarkers } from './markdownTasks'
 
 /** A rendered block is only a view of these original source offsets. */
 export type MarkdownBlock = { from: number; to: number; source: string; html: string; type: string; direct: boolean }
@@ -12,26 +14,8 @@ export function revealInlineMarker(selections: readonly { from: number; to: numb
 
 
 const markdown = new MarkdownIt({ html: false, linkify: false, typographer: false })
-
-// Markdown-it supports GFM tables and strikethrough. Render task markers as
-// disabled checkboxes; clicking the block opens its unchanged Markdown source.
-markdown.core.ruler.after('inline', 'paper-task-markers', state => {
-  const stack: string[] = []
-  for (const token of state.tokens) {
-    if (token.nesting === -1) stack.pop()
-    if (token.type === 'inline' && stack.includes('list_item_open') && token.children?.length) {
-      const first = token.children[0]
-      const match = first.type === 'text' ? /^\[([ xX])\]\s+/.exec(first.content) : null
-      if (match) {
-        first.content = first.content.slice(match[0].length)
-        const box = new state.Token('html_inline', '', 0)
-        box.content = `<input type="checkbox" disabled${match[1].toLowerCase() === 'x' ? ' checked' : ''}> `
-        token.children.unshift(box)
-      }
-    }
-    if (token.nesting === 1) stack.push(token.type)
-  }
-})
+enableSafeHtmlImages(markdown)
+enableTaskMarkers(markdown)
 
 /** Render complete top-level blocks without changing, normalizing or serializing source. */
 export function markdownBlocks(source: string): MarkdownBlock[] {

@@ -1,5 +1,3 @@
-import { EditorState } from '@codemirror/state'
-import { syntaxTree } from '@codemirror/language'
 import { markdownEditorLanguage } from './editorHighlight.js'
 
 const formats = {
@@ -32,10 +30,13 @@ export function toggleInlineFormat(source, start, end, kind) {
     const text = `${format.marker}${placeholder}${format.marker}`
     return { from: start, to: end, text, selectionStart: start + format.marker.length, selectionEnd: start + format.marker.length + placeholder.length }
   }
-  const state = EditorState.create({ doc: source, extensions: [EditorState.lineSeparator.of('\n'), markdownEditorLanguage] })
+  // An EditorState's syntaxTree can be only partially parsed immediately
+  // after creation. Formatting is synchronous and must inspect the entire
+  // note, including selections beyond CodeMirror's initial parse viewport.
+  const tree = markdownEditorLanguage.language.parser.parse(source)
   const candidates = []
   let crossesBoundary = false
-  syntaxTree(state).iterate({ enter(node) {
+  tree.iterate({ from: start, to: end, enter(node) {
     if (node.name !== format.node) return
     const first = node.node.firstChild, last = node.node.lastChild
     if (!first || !last || first === last || first.to > last.from) return
@@ -81,7 +82,7 @@ export function toggleInlineFormat(source, start, end, kind) {
   // Remove complete same-style spans within the selection first; wrapping
   // them again would produce ambiguous sequences such as ****text**.
   const marks = []
-  if (kind !== 'inline-code') syntaxTree(state).iterate({ enter(node) {
+  if (kind !== 'inline-code') tree.iterate({ from: start, to: end, enter(node) {
     if (node.name !== format.node || node.from < start || node.to > end) return
     const first = node.node.firstChild, last = node.node.lastChild
     if (!first || !last || first === last) return
@@ -93,10 +94,10 @@ export function toggleInlineFormat(source, start, end, kind) {
   const result = wrap(selected, marker, kind === 'inline-code')
   if (result.text !== selected) {
     const nextSource = source.slice(0, start) + result.text + source.slice(end)
-    const nextState = EditorState.create({ doc: nextSource, extensions: [EditorState.lineSeparator.of('\n'), markdownEditorLanguage] })
+    const nextTree = markdownEditorLanguage.language.parser.parse(nextSource)
     const selectedFrom = start + result.from, selectedTo = start + result.to
     let rendered = false
-    syntaxTree(nextState).iterate({ enter(node) {
+    nextTree.iterate({ from: selectedFrom, to: selectedTo, enter(node) {
       if (node.name !== format.node) return
       const first = node.node.firstChild, last = node.node.lastChild
       if (first && last && selectedFrom >= first.to && selectedTo <= last.from) rendered = true

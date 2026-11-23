@@ -43,16 +43,17 @@ test('a repaired edited draft syncs with its imported image and both restore byt
   const { createNotebookStore } = await load('docs/.vitepress/theme/notebookStore.ts')
   const { attachmentReferences } = await load('docs/.vitepress/theme/attachmentReferences.ts')
   const png = Uint8Array.from([137,80,78,71,13,10,26,10,1,2,3,4])
-  const original = new File(['# 标题\n![图](note.assets/picture.png)'], 'note.md')
+  const original = new File(['# 标题\n![图](note.assets/picture.png)\n\n<img src="note.assets/picture.png" alt="插图" style="zoom:50%;" />'], 'note.md')
   const picture = new File([png], 'picture.png')
   Object.defineProperty(original, 'webkitRelativePath', { value: 'book/note.md' })
   Object.defineProperty(picture, 'webkitRelativePath', { value: 'book/note.assets/picture.png' })
   const imported = await readDroppedMarkdown({ files: [original, picture] })
   assert.equal(imported.images.length, 1)
   const path = `docs/notebooks/book/${destination}`
-  const draft = '# 标题\n\n用户编辑的内容应保留。\n\n![图](note.assets/picture.png)'
+  const draft = '# 标题\n\n用户编辑的内容应保留。\n\n![图](note.assets/picture.png)\n\n<img src="note.assets/picture.png" alt="插图" style="zoom:50%;" />'
   const repaired = rewriteImportedImages(draft, new Map([[imported.images[0].references[0].target, destination]])).content
   assert.match(repaired, /用户编辑的内容应保留/)
+  assert.ok(repaired.includes(`<img src="${destination}" alt="插图" style="zoom:50%;" />`))
   assert.deepEqual(attachmentReferences(repaired, 'book').map(ref => ref.path), [path])
   const sha = value => value.repeat(40)
   const hash = data => createHash('sha1').update(`blob ${data.length}\0`).update(data).digest('hex')

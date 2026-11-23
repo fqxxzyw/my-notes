@@ -1,12 +1,14 @@
 import MarkdownIt from 'markdown-it'
 import { htmlImageReferences } from './htmlImageRefs'
+import { markdownEditorLanguage } from './editorHighlight.js'
 
-export interface DroppedMarkdownFile { path: string; name: string; content: string }
+/** sourcePath is a transient native file-picker result; never persist it in notes. */
+export interface DroppedMarkdownFile { path: string; name: string; content: string; sourcePath?: string }
 export interface DroppedSkip { path: string; reason: 'not-markdown' | 'too-large' | 'too-many' | 'invalid-utf8' | 'read-error' | 'unsupported' | 'invalid-path' | 'invalid-image' | 'ambiguous' }
 export interface DroppedLocalResource { markdownPath: string; target: string }
 export interface DroppedImage { path: string; bytes: Uint8Array; references: DroppedLocalResource[] }
 export interface DroppedMarkdownResult { files: DroppedMarkdownFile[]; folders: string[]; skipped: DroppedSkip[]; localResources: DroppedLocalResource[]; images: DroppedImage[] }
-export interface DropReadLimits { maxFiles?: number; maxFileBytes?: number; maxTotalBytes?: number; maxEntries?: number; maxDepth?: number; maxImages?: number; maxImageBytes?: number; maxTotalImageBytes?: number }
+export interface DropReadLimits { maxFiles?: number; maxFileBytes?: number; maxTotalBytes?: number; maxEntries?: number; maxDepth?: number; maxImages?: number; maxImageBytes?: number; maxTotalImageBytes?: number; referenceFiles?: DroppedMarkdownFile[]; selectedImageFolder?: boolean }
 
 interface Entry {
   name: string
@@ -17,6 +19,11 @@ interface Entry {
 }
 
 const parser = new MarkdownIt({ html: true })
+// This parser only discovers references; it never renders or opens URLs.
+// Accept local Windows file images so both inline and reference-style Typora
+// syntax can be repaired. Renderers keep their normal file:// rejection.
+const safeLink = parser.validateLink.bind(parser)
+parser.validateLink = target => safeLink(target) || /^file:/i.test(target) && windowsImagePath(target) !== null
 
 /** Report relative links and image targets; no files or links are followed. */
 function localTargets(markdown: string): { targets: string[]; images: string[]; links: string[] } {
@@ -25,7 +32,8 @@ function localTargets(markdown: string): { targets: string[]; images: string[]; 
   const links = new Set<string>()
   const add = (target: string, image = false) => {
     const value = target.trim()
-    if (!value || value.startsWith('#') || value.startsWith('/') || value.startsWith('\\') || /^[a-z][a-z\d+.-]*:/i.test(value)) return
+    if (!value || value.startsWith('#')) return
+    if (!(image && windowsImagePath(value)) && (value.startsWith('/') || value.startsWith('\\') || /^[a-z][a-z\d+.-]*:/i.test(value))) return
     found.add(value)
     if (image) images.add(value)
     else links.add(value)
@@ -54,7 +62,85 @@ function localTargets(markdown: string): { targets: string[]; images: string[]; 
     }
   }
   visit(parser.parse(markdown, {}))
+  // markdown-it intentionally rejects file:// image URLs. Lezer still
+  // identifies their Markdown URL nodes, allowing an explicitly chosen image
+  // folder to repair them without ever opening the original filesystem path.
+  markdownEditorLanguage.language.parser.parse(markdown).iterate({ enter(node) {
+    if (node.name !== 'Image') return
+    let child = node.node.firstChild
+    while (child && child.name !== 'URL') child = child.nextSibling
+    if (!child) return false
+    let raw = markdown.slice(child.from, child.to)
+    if (raw.startsWith('<') && raw.endsWith('>')) raw = raw.slice(1, -1)
+    const target = parser.normalizeLink(parser.utils.unescapeAll(raw))
+    if (windowsImagePath(target)) add(target, true)
+    return false
+  } })
   return { targets: [...found], images: [...images], links: [...links] }
+}
+
+/** Only Windows file paths appearing in actual image syntax. The desktop
+ * importer may explicitly resolve these after the user chose the Markdown;
+ * no ordinary link, code example, comment, or remote URL is returned. */
+export function absoluteImageReferences(source: string): string[] {
+  return localTargets(source).images.filter(target => windowsImagePath(target) !== null)
+}
+
+/** Actual relative or supported Windows-local images, not ordinary links or
+ * remote/data URLs. Consumers must only use paths under their own policy. */
+export function localImageReferences(source: string): string[] {
+  return localTargets(source).images
+}
+
+/** Recognize Windows absolute image paths, never resolve or access them. */
+function parseWindowsImagePath(target: string, encoded: boolean): { drive: string; parts: string[] } | null {
+  try {
+    let decoded = encoded ? decodeURIComponent(target.trim()) : target
+    if (encoded && /^file:\/\/\/[A-Za-z]:[\\/]/i.test(decoded)) decoded = decoded.slice(8)
+    if (!/^[A-Za-z]:[\\/]/.test(decoded) || /[\u0000-\u001f\u007f]/.test(decoded)) return null
+    const parts = decoded.slice(3).split(/[\\/]+/)
+    if (!parts.length || parts.some(part => !part || part === '.' || part === '..') || !/\.(?:png|jpe?g|gif|webp)$/i.test(parts[parts.length - 1])) return null
+    return { drive: decoded[0], parts }
+  } catch { return null }
+}
+
+export function windowsImagePath(target: string): string[] | null {
+  return parseWindowsImagePath(target, true)?.parts ?? null
+}
+
+/** Compare complete Windows paths; a browser picker normally does not expose
+ * one, so absent metadata must never be replaced by filename guessing. */
+function windowsImageKey(target: string, encoded = true): string | null {
+  const parsed = parseWindowsImagePath(target, encoded)
+  if (!parsed) return null
+  return `${parsed.drive.toLowerCase()}:/${parsed.parts.map(part => part.toLowerCase()).join('/')}`
+}
+
+/** Find a candidate solely in user-selected paths; never query local disk. */
+export function selectedImageMatch(target: string, selectedPaths: readonly string[], allowRelative = false): { path: string | null; ambiguous: boolean } {
+  const absolute = windowsImagePath(target)
+  // Name-only repair is allowed solely after the user explicitly chooses an
+  // image folder and reviews the suggested mapping; it is not identity.
+  if (!allowRelative) return { path: null, ambiguous: false }
+  let segments: string[]
+  if (absolute) segments = absolute
+  else {
+    if (!allowRelative || !target || /^[a-z][a-z\d+.-]*:/i.test(target) || /^[\\/]/.test(target)) return { path: null, ambiguous: false }
+    try {
+      segments = target.split(/[?#]/, 1)[0].split('/').map(part => decodeURIComponent(part)).filter(part => part && part !== '.')
+    } catch { return { path: null, ambiguous: false } }
+    if (!segments.length || segments.some(part => part === '..' || /[\\/\0]/.test(part))) return { path: null, ambiguous: false }
+  }
+  const filename = segments[segments.length - 1].toLowerCase()
+  const names = selectedPaths.filter(path => {
+    if (!validInputPath(path)) return false
+    const parts = path.split('/')
+    return parts[parts.length - 1].toLowerCase() === filename
+  })
+  // Browser file pickers do not reveal the selected folder's real absolute
+  // path. A duplicated filename cannot be safely disambiguated by guessing.
+  if (names.length > 1) return { path: null, ambiguous: true }
+  return { path: names[0] || null, ambiguous: false }
 }
 
 /** FileList paths and entry names must never escape the explicitly selected roots. */
@@ -114,6 +200,15 @@ export async function readDroppedMarkdown(transfer: DataTransfer, options: DropR
   const addFolder = (name: string) => { if (validInputPath(name) && !name.includes('/') && !result.folders.includes(name)) result.folders.push(name) }
   const addRelativeRoot = (path: string) => { if (validInputPath(path) && path.includes('/')) addFolder(path.split('/')[0]) }
   const skip = (path: string, reason: DroppedSkip['reason']) => result.skipped.push({ path, reason })
+  const addMarkdown = (file: DroppedMarkdownFile) => {
+    if (!validInputPath(file.path)) throw new Error('笔记的源路径无效。')
+    result.files.push(file)
+    const resources = localTargets(file.content)
+    for (const target of resources.targets) result.localResources.push({ markdownPath: file.path, target })
+    for (const target of resources.images) imageReferences.push({ markdownPath: file.path, target })
+    for (const target of resources.links) nonImageReferences.add(`${file.path}\0${target}`)
+  }
+  for (const file of options.referenceFiles || []) addMarkdown(file)
   const consume = () => {
     if (entriesSeen >= maxEntries) { if (!exhausted) skip('（其余项目）', 'too-many'); exhausted = true; return false }
     entriesSeen++
@@ -128,6 +223,9 @@ export async function readDroppedMarkdown(transfer: DataTransfer, options: DropR
       return
     }
     if (!/\.md$/i.test(file.name)) { skip(path, 'not-markdown'); return }
+    // When locating an already-open note's images, Markdown files inside the
+    // selected image folder are not imported or treated as additional notes.
+    if (options.selectedImageFolder && options.referenceFiles?.length) return
     if (result.files.length >= maxFiles) { skip(path, 'too-many'); return }
     if (file.size > maxFileBytes || totalBytes + file.size > maxTotalBytes) { skip(path, 'too-large'); return }
     // Count attempted reads against the budget, including invalid files.
@@ -136,11 +234,11 @@ export async function readDroppedMarkdown(transfer: DataTransfer, options: DropR
     try { bytes = await fileBytes(file) } catch { skip(path, 'read-error'); return }
     let content: string
     try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) } catch { skip(path, 'invalid-utf8'); return }
-    result.files.push({ path, name: file.name, content })
-    const resources = localTargets(content)
-    for (const target of resources.targets) result.localResources.push({ markdownPath: path, target })
-    for (const target of resources.images) imageReferences.push({ markdownPath: path, target })
-    for (const target of resources.links) nonImageReferences.add(`${path}\0${target}`)
+    const sourcePath = (file as File & { paperSourcePath?: unknown }).paperSourcePath
+    // Only a desktop-origin picker supplies this temporary field. Arbitrary or
+    // malformed properties cannot create an absolute native path request.
+    const nativeSource = typeof sourcePath === 'string' && sourcePath.length <= 32767 && /^[A-Za-z]:[\\/]/.test(sourcePath) && !/[\u0000-\u001f\u007f]/.test(sourcePath) ? sourcePath : undefined
+    addMarkdown({ path, name: file.name, content, ...(nativeSource ? { sourcePath: nativeSource } : {}) })
   }
   const walk = async (entry: Entry, parent: string, depth: number): Promise<void> => {
     if (exhausted || !consume()) return
@@ -196,7 +294,24 @@ export async function readDroppedMarkdown(transfer: DataTransfer, options: DropR
   }
   const referencesByPath = new Map<string, DroppedLocalResource[]>()
   for (const reference of imageReferences) {
-    const path = resolveDroppedImagePath(reference.markdownPath, reference.target)
+    let path = resolveDroppedImagePath(reference.markdownPath, reference.target)
+    if (!path || !imageFiles.has(path)) {
+      const key = windowsImageKey(reference.target)
+      if (key && !options.selectedImageFolder) {
+        const exact = [...imageFiles.entries()].filter(([, file]) => {
+          const source = file && (file as File & { paperSourcePath?: unknown }).paperSourcePath
+          // The reference is a URL; the native picker returns an actual file
+          // system path. A literal "%20" in a file name is not a space.
+          return typeof source === 'string' && windowsImageKey(source, false) === key
+        }).map(([name]) => name)
+        if (exact.length === 1) path = exact[0]
+        else { path = null; if (exact.length > 1) skip(reference.target, 'ambiguous') }
+      } else {
+        const match = selectedImageMatch(reference.target, [...imageFiles.keys()], !!options.selectedImageFolder)
+        path = match.path
+        if (match.ambiguous) skip(reference.target, 'ambiguous')
+      }
+    }
     if (path && imageFiles.has(path)) referencesByPath.set(path, [...(referencesByPath.get(path) || []), reference])
   }
   let totalImageBytes = 0

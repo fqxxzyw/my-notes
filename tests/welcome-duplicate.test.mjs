@@ -111,3 +111,23 @@ test('previous image-attachment tutorial is recognized only with identical prist
   modifiedRemote[0].chapters[1].content += '\n用户编辑'
   assert.equal(findPristineWelcomeDuplicate(modifiedLocal, current, modifiedRemote), null)
 })
+
+test('pre-native-image tutorial remains safely recognized after the new tutorial update', () => {
+  const previous = JSON.parse(readFileSync('docs/.vitepress/theme/welcome-before-native-images-v104.json', 'utf8'))
+  const current = Object.fromEntries(['00-welcome.md', '01-writing.md', '02-github.md'].map(name =>
+    [`./builtin/${name}`, readFileSync(`docs/.vitepress/theme/builtin/${name}`, 'utf8')]))
+  const old = fixture(previous)
+  const original = JSON.stringify(old.entries)
+  assert.deepEqual(findPristineWelcomeDuplicate(old.entries, current, old.remote), { localBookId: 'guide_local', remoteBookId: 'guide_remote' })
+  assert.ok(prepareWelcomeImport(old.entries, current, old.remote).duplicate)
+  assert.equal(JSON.stringify(old.entries), original, 'the source workspace remains untouched')
+  const latest = fixture(current)
+  assert.equal(findPristineWelcomeDuplicate(old.entries, current, latest.remote), null)
+  assert.equal(findPristineWelcomeDuplicate(latest.entries, current, old.remote), null)
+  const editedLocal = modify(old.entries, data => { data.chapters[1].content += '\n我的编辑' })
+  const editedRemote = structuredClone(old.remote)
+  editedRemote[0].chapters[1].content += '\n我的编辑'
+  assert.equal(findPristineWelcomeDuplicate(editedLocal, current, editedRemote), null, 'matching user edits are not deduplicated')
+  const incomplete = structuredClone(old.remote); incomplete[0].chapters.pop()
+  assert.equal(findPristineWelcomeDuplicate(old.entries, current, incomplete), null)
+})

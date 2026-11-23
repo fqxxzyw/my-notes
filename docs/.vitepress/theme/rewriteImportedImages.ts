@@ -1,8 +1,13 @@
 import MarkdownIt from 'markdown-it'
 import { markdownEditorLanguage } from './editorHighlight.js'
 import { htmlImageReferences } from './htmlImageRefs'
+import { windowsImagePath } from './readDroppedMarkdown'
 
 const parser = new MarkdownIt({ html: true })
+// This parser is only used to locate source text after a file has been
+// selected/read by the importer. It never renders or loads the file URI.
+const safeLink = parser.validateLink.bind(parser)
+parser.validateLink = target => safeLink(target) || /^file:/i.test(target) && windowsImagePath(target) !== null
 
 /** Rewrite only image destinations; leave code, links and other attributes untouched. */
 export function rewriteImportedImages(source: string, destinations: ReadonlyMap<string, string>): { content: string; replaced: string[] } {

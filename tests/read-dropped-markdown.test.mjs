@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { build } from 'esbuild'
 
 const bundle = await build({ entryPoints: ['docs/.vitepress/theme/readDroppedMarkdown.ts'], bundle: true, platform: 'node', format: 'esm', write: false })
-const { readDroppedMarkdown, resolveDroppedImagePath } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString('base64')}`)
+const { readDroppedMarkdown, resolveDroppedImagePath, windowsImagePath, selectedImageMatch, absoluteImageReferences, localImageReferences } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString('base64')}`)
 const file = (name, content) => new File([content], name)
 const fileEntry = (value) => ({ name: value.name, isFile: true, isDirectory: false, file: resolve => resolve(value) })
 const directory = (name, batches) => ({ name, isFile: false, isDirectory: true, createReader() { let i = 0; return { readEntries: resolve => resolve(batches[i++] || []) } } })
@@ -115,4 +115,103 @@ test('unsafe FileList root never becomes an import folder', async () => {
   assert.deepEqual(result.folders, [])
   assert.deepEqual(result.files, [])
   assert.equal(result.skipped[0].reason, 'invalid-path')
+})
+
+test('Windows absolute image references use only files explicitly selected with the Markdown', async () => {
+  const source = '![截图](C:\\Users\\Lenovo\\AppData\\Roaming\\Typora\\typora-user-images\\图一.png)\n<img src="C:\\Users\\Lenovo\\图片\\二.png" style="zoom:50%" />\n`![示例](C:\\Users\\Lenovo\\其他.png)`\n![外链](https://example.org/图一.png)'
+  const note = file('note.md', source)
+  const one = image('图一.png'), two = image('二.png')
+  Object.defineProperty(one, 'paperSourcePath', { value: 'C:\\Users\\Lenovo\\AppData\\Roaming\\Typora\\typora-user-images\\图一.png' })
+  Object.defineProperty(two, 'paperSourcePath', { value: 'C:\\Users\\Lenovo\\图片\\二.png' })
+  const result = await readDroppedMarkdown({ files: [note, one, two, image('其他.png')] })
+  assert.deepEqual(result.images.map(item => item.path), ['图一.png', '二.png'])
+  assert.ok(result.images[0].references[0].target.startsWith('C:%5CUsers%5CLenovo'))
+  assert.deepEqual(result.localResources, [])
+  assert.equal(result.files[0].content, source)
+  assert.deepEqual(result.skipped, [{ path: '其他.png', reason: 'not-markdown' }])
+})
+
+test('an explicitly selected picture folder can repair the open Markdown independently', async () => {
+  const source = '![绝对](file:///C:/Users/Lenovo/Pictures/%E5%9B%BE.png)\n![相对](note.assets/other.png)\n![缺失](C:/old/missing.png)'
+  const selected = [image('图.png'), image('other.png')]
+  Object.defineProperty(selected[0], 'webkitRelativePath', { value: '截图/图.png' })
+  Object.defineProperty(selected[1], 'webkitRelativePath', { value: '截图/other.png' })
+  const virtualNote = { path: '当前.md', name: '当前.md', content: source }
+  const result = await readDroppedMarkdown({ files: selected }, { referenceFiles: [virtualNote], selectedImageFolder: true })
+  assert.deepEqual(result.files, [virtualNote])
+  assert.deepEqual(result.images.map(item => item.path), ['截图/图.png', '截图/other.png'])
+  assert.equal(result.images[0].references[0].target, 'file:///C:/Users/Lenovo/Pictures/%E5%9B%BE.png')
+  assert.deepEqual(result.localResources, [{ markdownPath: '当前.md', target: 'C:/old/missing.png' }])
+})
+
+test('duplicate picture filenames remain ambiguous; URL schemes and parent traversal never match', async () => {
+  assert.deepEqual(windowsImagePath('C:%5CUsers%5CLenovo%5C%E5%9B%BE.png'), ['Users', 'Lenovo', '图.png'])
+  assert.deepEqual(windowsImagePath('file:///C:/Users/Lenovo/%E5%9B%BE.png'), ['Users', 'Lenovo', '图.png'])
+  for (const unsafe of ['https://example.com/图.png', 'C:%5CUsers%5C..%5Cprivate.png', 'file:///etc/passwd', 'C:relative.png']) assert.equal(windowsImagePath(unsafe), null)
+  assert.deepEqual(selectedImageMatch('C:/Users/Lenovo/a.png', ['选择/一/a.png', '选择/二/a.png'], true), { path: null, ambiguous: true })
+  assert.deepEqual(selectedImageMatch('../private.png', ['选择/private.png'], true), { path: null, ambiguous: false })
+  const note = file('note.md', '![图](C:/Users/Lenovo/a.png)')
+  const a = image('a.png'), b = image('a.png', Uint8Array.from([...png, 9]))
+  Object.defineProperty(a, 'webkitRelativePath', { value: '选择/一/a.png' })
+  Object.defineProperty(b, 'webkitRelativePath', { value: '选择/二/a.png' })
+  const result = await readDroppedMarkdown({ files: [note, a, b] }, { selectedImageFolder: true })
+  assert.deepEqual(result.images, [])
+  assert.equal(result.skipped.filter(item => item.reason === 'ambiguous').length, 1)
+  assert.equal(result.localResources.length, 1)
+})
+
+test('ordinary import never guesses an absolute image from an unrelated same-name file', async () => {
+  const note = file('note.md', '![图](C:/Pictures/a.png)')
+  const unrelated = image('a.png')
+  Object.defineProperty(unrelated, 'webkitRelativePath', { value: '选择/其他/a.png' })
+  Object.defineProperty(unrelated, 'paperSourcePath', { value: 'C:\\Desktop\\其他\\a.png' })
+  const result = await readDroppedMarkdown({ files: [note, unrelated] })
+  assert.deepEqual(result.images, [])
+  assert.deepEqual(result.localResources, [{ markdownPath: 'note.md', target: 'C:/Pictures/a.png' }])
+  const matching = image('a.png')
+  Object.defineProperty(matching, 'paperSourcePath', { value: 'c:\\pictures\\a.png' })
+  const withExactPath = await readDroppedMarkdown({ files: [note, matching] })
+  assert.equal(withExactPath.images.length, 1)
+  assert.equal(withExactPath.images[0].references[0].target, 'C:/Pictures/a.png')
+})
+
+test('absolute image URLs decode once but native filesystem names remain literal', async () => {
+  const cases = [
+    ['C:/Pictures/a%20b.png', 'C:\\Pictures\\a%20b.png', false],
+    ['C:/Pictures/a%20b.png', 'C:\\Pictures\\a b.png', true],
+    ['file:///C:/Pictures/a%2520b.png', 'C:\\Pictures\\a%20b.png', true],
+    ['C:/Pictures/a%2Fb.png', 'C:\\Pictures\\a%2Fb.png', false],
+    ['C:/Pictures/a%252Fb.png', 'C:\\Pictures\\a%2Fb.png', true],
+    ['C:/Pictures/100%25.png', 'C:\\Pictures\\100%.png', true],
+  ]
+  for (const [target, source, expected] of cases) {
+    const note = file('note.md', `![图](${target})`)
+    const candidate = image(source.split('\\').at(-1))
+    Object.defineProperty(candidate, 'paperSourcePath', { value: source })
+    const result = await readDroppedMarkdown({ files: [note, candidate] })
+    assert.equal(result.images.length, Number(expected), `${target} versus ${source}`)
+    assert.equal(result.localResources.length, Number(!expected), `${target} versus ${source}`)
+  }
+})
+
+test('desktop discovery returns only Windows paths in real inline/reference/HTML image syntax', () => {
+  const source = '![图](C:\\Users\\Lenovo\\图.png)\r\n![引用][id]\r\n\r\n[id]: file:///C:/Users/Lenovo/另图.png "标题"\r\n\r\n<img src="C:\\Users\\Lenovo\\三.png">\r\n[普通链接](C:/Users/Lenovo/not-image.png)\r\n`![代码](C:/Users/Lenovo/not-code.png)`\r\n<!-- <img src="C:/Users/Lenovo/not-comment.png"> -->\r\n```md\r\n![fence](C:/Users/Lenovo/not-fence.png)\r\n```\r\n'
+  assert.deepEqual(absoluteImageReferences(source), [
+    'C:%5CUsers%5CLenovo%5C%E4%B8%89.png',
+    'C:%5CUsers%5CLenovo%5C%E5%9B%BE.png',
+    'file:///C:/Users/Lenovo/%E5%8F%A6%E5%9B%BE.png'
+  ])
+})
+
+test('desktop native Markdown source path is temporary metadata and only local image references are discovered', async () => {
+  const source = '![相对](../img/图.png)\n![盘符](C:/Users/Example/a.png)\n![文件](file:///C:/Users/Example/b.png)\n![网络](https://example.com/x.png)\n![data](data:image/png;base64,abc)\n[链接](img/not-an-image.png)\n`![代码](img/code.png)`\n<!-- <img src="img/comment.png"> -->\n<img src="img/real.png">'
+  const note = file('note.md', source)
+  Object.defineProperty(note, 'paperSourcePath', { value: 'C:\\Selected\\note.md' })
+  const result = await readDroppedMarkdown({ files: [note] })
+  assert.equal(result.files[0].sourcePath, 'C:\\Selected\\note.md')
+  assert.equal(result.files[0].content, source)
+  assert.deepEqual(new Set(localImageReferences(source)), new Set(['../img/%E5%9B%BE.png', 'C:/Users/Example/a.png', 'file:///C:/Users/Example/b.png', 'img/real.png']))
+  const fake = file('fake.md', 'content')
+  Object.defineProperty(fake, 'paperSourcePath', { value: 'C:\\Selected\\bad\0.md' })
+  assert.equal((await readDroppedMarkdown({ files: [fake] })).files[0].sourcePath, undefined)
 })

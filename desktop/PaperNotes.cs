@@ -204,7 +204,7 @@ namespace PaperNotesDesktop
             }
         }
 
-        private static void ValidateImage(string path, byte[] bytes)
+        internal static void ValidateImage(string path, byte[] bytes)
         {
             if (bytes == null || bytes.Length == 0 || bytes.Length > MaximumBytes) throw new InvalidOperationException("图片为空或超过 20 MiB。");
             bool png = bytes.Length >= 8 && bytes[0] == 137 && bytes[1] == 80 && bytes[2] == 78 && bytes[3] == 71 && bytes[4] == 13 && bytes[5] == 10 && bytes[6] == 26 && bytes[7] == 10;
@@ -212,7 +212,7 @@ namespace PaperNotesDesktop
             bool gif = bytes.Length >= 6 && Encoding.ASCII.GetString(bytes, 0, 6).StartsWith("GIF8", StringComparison.Ordinal) && (bytes[4] == 55 || bytes[4] == 57) && bytes[5] == 97;
             bool webp = bytes.Length >= 12 && Encoding.ASCII.GetString(bytes, 0, 4) == "RIFF" && Encoding.ASCII.GetString(bytes, 8, 4) == "WEBP";
             string ext = Path.GetExtension(path);
-            if (!(ext == ".png" && png || ext == ".jpg" && jpg || ext == ".gif" && gif || ext == ".webp" && webp))
+            if (!(ext == ".png" && png || (ext == ".jpg" || ext == ".jpeg") && jpg || ext == ".gif" && gif || ext == ".webp" && webp))
                 throw new InvalidOperationException("图片内容与文件格式不匹配。");
         }
 
@@ -252,6 +252,423 @@ namespace PaperNotesDesktop
         }
     }
 
+    // Import only exact local image paths referenced by the selected Markdown.
+    // Never enumerate directories, follow reparse points, or access network/ADS paths.
+    internal static class ReferencedImageFiles
+    {
+        private const long MaximumBytes = 20L * 1024 * 1024;
+
+        // The selected source is cached from the same bytes sent to the UI.
+        // Require the requested target to occur there; the Markdown parser in
+        // the trusted UI further restricts requests to actual image syntax.
+        internal static bool MentionsPath(string markdown, string target)
+        {
+            if (String.IsNullOrWhiteSpace(markdown) || String.IsNullOrWhiteSpace(target)) return false;
+            try
+            {
+                return NormalizedMentionsPath(NormalizeSource(markdown), target);
+            }
+            catch { return false; }
+        }
+
+        internal static string NormalizeSource(string markdown)
+        {
+            var result = new StringBuilder();
+            bool inComment = false, inFence = false;
+            char fenceChar = '\0'; int fenceLength = 0;
+            string rawTag = null;
+            using (var reader = new StringReader(markdown))
+            {
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    string containerText = StripMarkdownContainers(line);
+                    var fence = Regex.Match(containerText, @"^ {0,3}(`{3,}|~{3,})");
+                    if (inFence)
+                    {
+                        if (fence.Success && fence.Groups[1].Value[0] == fenceChar && fence.Groups[1].Length >= fenceLength && String.IsNullOrWhiteSpace(containerText.Substring(fence.Length))) inFence = false;
+                        result.Append('\n'); continue;
+                    }
+                    var clean = new StringBuilder();
+                    for (int i = 0; i < line.Length;)
+                    {
+                        if (inComment)
+                        {
+                            int end = line.IndexOf("-->", i, StringComparison.Ordinal);
+                            if (end < 0) break;
+                            inComment = false; i = end + 3; continue;
+                        }
+                        if (rawTag != null)
+                        {
+                            int end = line.IndexOf("</" + rawTag, i, StringComparison.OrdinalIgnoreCase);
+                            if (end < 0) break;
+                            int close = line.IndexOf('>', end);
+                            if (close < 0) break;
+                            rawTag = null; i = close + 1; continue;
+                        }
+                        if (i + 4 <= line.Length && String.CompareOrdinal(line, i, "<!--", 0, 4) == 0) { inComment = true; i += 4; continue; }
+                        bool startedRaw = false;
+                        foreach (string tag in new[] { "script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes", "plaintext", "pre", "code" })
+                        {
+                            string open = "<" + tag;
+                            if (i + open.Length < line.Length && String.Compare(line, i, open, 0, open.Length, StringComparison.OrdinalIgnoreCase) == 0 && (Char.IsWhiteSpace(line[i + open.Length]) || line[i + open.Length] == '>'))
+                            { rawTag = tag; startedRaw = true; break; }
+                        }
+                        if (startedRaw) continue;
+                        clean.Append(line[i++]);
+                    }
+                    string text = clean.ToString();
+                    containerText = StripMarkdownContainers(text);
+                    fence = Regex.Match(containerText, @"^ {0,3}(`{3,}|~{3,})");
+                    if (fence.Success) { inFence = true; fenceChar = fence.Groups[1].Value[0]; fenceLength = fence.Groups[1].Length; result.Append('\n'); continue; }
+                    if (containerText.StartsWith("    ", StringComparison.Ordinal) || containerText.StartsWith("\t", StringComparison.Ordinal)) { result.Append('\n'); continue; }
+                    result.Append(Regex.Replace(text, @"^(?: {0,3}>[ \t]?)+", "")).Append('\n');
+                }
+            }
+            return StripInlineCode(StripUntrustedHtmlTags(result.ToString()));
+        }
+
+        private static string StripUntrustedHtmlTags(string text)
+        {
+            var result = new StringBuilder();
+            for (int i = 0; i < text.Length;)
+            {
+                if (text[i] != '<') { result.Append(text[i++]); continue; }
+                int name = i + 1;
+                if (name < text.Length && text[name] == '/') name++;
+                if (name >= text.Length || !(text[name] >= 'A' && text[name] <= 'Z' || text[name] >= 'a' && text[name] <= 'z')) { result.Append(text[i++]); continue; }
+                int endName = name;
+                while (endName < text.Length && Char.IsLetterOrDigit(text[endName])) endName++;
+                if (endName == name || endName >= text.Length || !(Char.IsWhiteSpace(text[endName]) || text[endName] == '/' || text[endName] == '>')) { result.Append(text[i++]); continue; }
+                int end = endName; char quote = '\0';
+                for (; end < text.Length; end++)
+                {
+                    char c = text[end];
+                    if (quote != '\0') { if (c == quote) quote = '\0'; continue; }
+                    if (c == '\'' || c == '\"') quote = c;
+                    else if (c == '>') break;
+                }
+                if (end >= text.Length) break; // incomplete tag: conservatively discard the rest
+                int lineStart = text.LastIndexOf('\n', i);
+                string prefix = text.Substring(lineStart + 1, i - lineStart - 1);
+                if (Regex.IsMatch(prefix, @"!\[(?:\\.|[^\]\\\r\n])*\]\([ \t]*$") || Regex.IsMatch(prefix, @"^ {0,3}\[[^\]\r\n]+\]:[ \t]*$"))
+                { result.Append(text, i, end - i + 1); i = end + 1; continue; }
+                bool image = name == i + 1 && String.Equals(text.Substring(name, endName - name), "img", StringComparison.OrdinalIgnoreCase);
+                if (image) result.Append(text, i, end - i + 1);
+                i = end + 1;
+            }
+            return result.ToString();
+        }
+
+        private static string StripMarkdownContainers(string text)
+        {
+            string result = Regex.Replace(text, @"^(?: {0,3}>[ \t]?)+", "");
+            return Regex.Replace(result, @"^ {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+(?=`{3,}|~{3,})", "");
+        }
+
+        private static string StripInlineCode(string text)
+        {
+            var clean = new StringBuilder();
+            for (int i = 0; i < text.Length;)
+            {
+                if (text[i] != '`' || MarkdownEscaped(text, i)) { clean.Append(text[i++]); continue; }
+                int start = i; while (i < text.Length && text[i] == '`') i++;
+                string marker = text.Substring(start, i - start);
+                int end = i;
+                for (;;)
+                {
+                    end = text.IndexOf(marker, end, StringComparison.Ordinal);
+                    if (end < 0) break;
+                    int previousLine = i;
+                    bool blankLine = false;
+                    while ((previousLine = text.IndexOf('\n', previousLine)) >= 0 && previousLine < end)
+                    {
+                        int next = previousLine + 1;
+                        while (next < end && (text[next] == ' ' || text[next] == '\t')) next++;
+                        if (next < end && text[next] == '\n') { blankLine = true; break; }
+                        previousLine++;
+                    }
+                    if (blankLine) { end = -1; break; }
+                    if ((end == 0 || text[end - 1] != '`') && (end + marker.Length == text.Length || text[end + marker.Length] != '`')) break;
+                    end += marker.Length;
+                }
+                if (end < 0) { clean.Append(marker); continue; }
+                i = end + marker.Length;
+            }
+            return clean.ToString();
+        }
+
+        internal static bool NormalizedMentionsPath(string normalizedMarkdown, string target)
+        {
+            if (String.IsNullOrWhiteSpace(normalizedMarkdown) || String.IsNullOrWhiteSpace(target)) return false;
+            try
+            {
+                string wanted = NormalizeValue(target.Trim());
+                var options = RegexOptions.CultureInvariant;
+                TimeSpan timeout = TimeSpan.FromSeconds(1);
+                // Direct Markdown image destinations, including angle brackets.
+                foreach (Match match in Regex.Matches(normalizedMarkdown, @"!\[(?:\\.|[^\]\\\r\n])*\]\(", options, timeout))
+                {
+                    if (MarkdownEscaped(normalizedMarkdown, match.Index)) continue;
+                    string candidate = ReadDestination(normalizedMarkdown, match.Index + match.Length);
+                    if (candidate != null && String.Equals(NormalizeValue(candidate), wanted, StringComparison.OrdinalIgnoreCase)) return true;
+                }
+                // Only images with a matching reference label authorize a definition.
+                var labels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (Match match in Regex.Matches(normalizedMarkdown, @"!\[(?<alt>[^\]\r\n]*)\](?:\[(?<ref>[^\]\r\n]*)\])?", options, timeout))
+                {
+                    if (MarkdownEscaped(normalizedMarkdown, match.Index)) continue;
+                    if (!match.Groups["ref"].Success && match.Index + match.Length < normalizedMarkdown.Length && normalizedMarkdown[match.Index + match.Length] == '(') continue;
+                    string label = match.Groups["ref"].Success && match.Groups["ref"].Length > 0 ? match.Groups["ref"].Value : match.Groups["alt"].Value;
+                    labels.Add(Regex.Replace(label.Trim(), @"\s+", " "));
+                }
+                var seenLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (Match match in Regex.Matches(normalizedMarkdown, @"(?m)^ {0,3}\[(?<label>[^\]\r\n]+)\]:[ \t]*(?:<(?<angle>[^>\r\n]+)>|(?<bare>\S+))", options, timeout))
+                {
+                    string label = Regex.Replace(match.Groups["label"].Value.Trim(), @"\s+", " ");
+                    if (!seenLabels.Add(label)) continue;
+                    string candidate = match.Groups["angle"].Success ? match.Groups["angle"].Value : match.Groups["bare"].Value;
+                    if (labels.Contains(label) && String.Equals(NormalizeValue(candidate), wanted, StringComparison.OrdinalIgnoreCase)) return true;
+                }
+                // Typora image tags: duplicate src attributes are ambiguous.
+                foreach (Match match in Regex.Matches(normalizedMarkdown, @"<img(?=[\s/>])(?:[^""'<>]|""[^""]*""|'[^']*')*/?>", RegexOptions.IgnoreCase | options, timeout))
+                {
+                    if (MarkdownEscaped(normalizedMarkdown, match.Index)) continue;
+                    string candidate = HtmlImageSource(match.Value);
+                    if (candidate == null) continue;
+                    if (String.Equals(NormalizeValue(candidate), wanted, StringComparison.OrdinalIgnoreCase)) return true;
+                }
+            }
+            catch (ArgumentException) { return false; }
+            catch (RegexMatchTimeoutException) { return false; }
+            return false;
+        }
+
+        private static string NormalizeValue(string value)
+        {
+            return Uri.UnescapeDataString(System.Net.WebUtility.HtmlDecode(value)).Replace("\\\\", "\\");
+        }
+
+        private static string HtmlImageSource(string tag)
+        {
+            int i = 4; string source = null;
+            while (i < tag.Length)
+            {
+                while (i < tag.Length && Char.IsWhiteSpace(tag[i])) i++;
+                if (i >= tag.Length || tag[i] == '>' || (tag[i] == '/' && i + 1 < tag.Length && tag[i + 1] == '>')) break;
+                int nameStart = i;
+                while (i < tag.Length && !Char.IsWhiteSpace(tag[i]) && "\"'<>/=".IndexOf(tag[i]) < 0) i++;
+                if (i == nameStart) return null;
+                string name = tag.Substring(nameStart, i - nameStart);
+                while (i < tag.Length && Char.IsWhiteSpace(tag[i])) i++;
+                if (i >= tag.Length || tag[i] != '=') { if (String.Equals(name, "src", StringComparison.OrdinalIgnoreCase)) return null; continue; }
+                i++; while (i < tag.Length && Char.IsWhiteSpace(tag[i])) i++;
+                if (i >= tag.Length) return null;
+                string value;
+                if (tag[i] == '\"' || tag[i] == '\'')
+                {
+                    char quote = tag[i++]; int start = i;
+                    while (i < tag.Length && tag[i] != quote) i++;
+                    if (i >= tag.Length) return null;
+                    value = tag.Substring(start, i - start); i++;
+                }
+                else
+                {
+                    int start = i;
+                    while (i < tag.Length && !Char.IsWhiteSpace(tag[i]) && "\"'=<>`".IndexOf(tag[i]) < 0) i++;
+                    if (i == start) return null;
+                    value = tag.Substring(start, i - start);
+                }
+                if (String.Equals(name, "src", StringComparison.OrdinalIgnoreCase)) { if (source != null) return null; source = value; }
+            }
+            return source;
+        }
+
+        private static bool MarkdownEscaped(string text, int position)
+        {
+            int count = 0;
+            while (position > 0 && text[--position] == '\\') count++;
+            return count % 2 != 0;
+        }
+
+        private static string ReadDestination(string text, int start)
+        {
+            int i = start;
+            while (i < text.Length && (text[i] == ' ' || text[i] == '\t')) i++;
+            if (i >= text.Length || text[i] == '\n') return null;
+            if (text[i] == '<')
+            {
+                int end = text.IndexOf('>', i + 1);
+                if (end < 0 || text.IndexOf('\n', i + 1, end - i - 1) >= 0) return null;
+                return EndsImageDestination(text, end + 1) ? text.Substring(i + 1, end - i - 1) : null;
+            }
+            var value = new StringBuilder(); int depth = 0;
+            while (i < text.Length)
+            {
+                char c = text[i++];
+                if (c == '\n' || c == '\r' || Char.IsWhiteSpace(c)) break;
+                if (c == '(') { depth++; if (depth > 32) return null; }
+                if (c == ')') { if (depth == 0) return value.Length == 0 ? null : value.ToString(); depth--; }
+                if (c == '\\' && i < text.Length && (text[i] == '(' || text[i] == ')' || text[i] == ' ')) { value.Append(text[i++]); continue; }
+                value.Append(c);
+            }
+            return value.Length == 0 || depth != 0 || !EndsImageDestination(text, i - 1) ? null : value.ToString();
+        }
+
+        private static bool EndsImageDestination(string text, int position)
+        {
+            int i = position;
+            while (i < text.Length && (text[i] == ' ' || text[i] == '\t')) i++;
+            if (i >= text.Length || text[i] == '\n' || text[i] == '\r') return false;
+            if (text[i] == ')') return true;
+            // Markdown titles are optional but must be quoted and followed by
+            // the actual closing parenthesis; arbitrary trailing words are not
+            // part of a valid image destination.
+            if (i == position || (text[i] != '"' && text[i] != '\'' && text[i] != '(')) return false;
+            char end = text[i] == '(' ? ')' : text[i];
+            i++;
+            bool closed = false;
+            while (i < text.Length && text[i] != '\n' && text[i] != '\r')
+            {
+                if (text[i] == '\\' && i + 1 < text.Length) { i += 2; continue; }
+                if (text[i++] == end) { closed = true; break; }
+            }
+            if (!closed) return false;
+            while (i < text.Length && (text[i] == ' ' || text[i] == '\t')) i++;
+            return i < text.Length && text[i] == ')';
+        }
+
+        internal static byte[] Read(string target, long maximumBytes)
+        {
+            if (String.IsNullOrWhiteSpace(target) || target.Length > 32768) throw new InvalidOperationException("图片路径无效。");
+            string path;
+            try { path = Uri.UnescapeDataString(target.Trim()); }
+            catch { throw new InvalidOperationException("图片路径无效。"); }
+            if (path.StartsWith("file:///", StringComparison.OrdinalIgnoreCase)) path = path.Substring(8);
+            return ReadPath(path, maximumBytes, false);
+        }
+
+        internal static byte[] ReadRelative(string markdownPath, string target, long maximumBytes)
+        {
+            if (String.IsNullOrWhiteSpace(target) || target.Length > 32768) throw new InvalidOperationException("图片路径无效。");
+            string relative;
+            try { relative = Uri.UnescapeDataString(target.Trim().Split(new[] { '?', '#' }, 2)[0]); }
+            catch { throw new InvalidOperationException("图片路径无效。"); }
+            if (String.IsNullOrWhiteSpace(relative) || Path.IsPathRooted(relative) || relative.IndexOf(':') >= 0 || relative.StartsWith("\\", StringComparison.Ordinal) || relative.StartsWith("/", StringComparison.Ordinal))
+                throw new InvalidOperationException("图片相对路径无效。");
+            string path = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(markdownPath), relative.Replace('/', '\\')));
+            return ReadPath(path, maximumBytes, false);
+        }
+
+        internal static byte[] ReadMarkdown(string path, long maximumBytes)
+        {
+            return ReadPath(path, maximumBytes, true);
+        }
+
+        internal static byte[] ReadLiteralImage(string path, long maximumBytes)
+        {
+            return ReadPath(path, maximumBytes, false);
+        }
+
+        private static byte[] ReadPath(string path, long maximumBytes, bool markdown)
+        {
+            if (maximumBytes <= 0 || maximumBytes > (markdown ? 5L * 1024 * 1024 : MaximumBytes)) throw new InvalidOperationException("导入文件容量限制无效。");
+            if (!Regex.IsMatch(path, @"^[A-Za-z]:[\\/]") || Regex.IsMatch(path, @"[\x00-\x1f\x7f]") || path.IndexOfAny(new char[] { '?', '*', '"', '<', '>', '|' }) >= 0)
+                throw new InvalidOperationException("只支持本机磁盘上的图片路径。");
+            path = path.Replace('/', '\\');
+            string[] parts = path.Substring(3).Split('\\');
+            foreach (string part in parts)
+                if (String.IsNullOrEmpty(part) || part == "." || part == ".." || part.IndexOf(':') >= 0 || part.EndsWith(" ", StringComparison.Ordinal) || part.EndsWith(".", StringComparison.Ordinal) || Regex.IsMatch(part, @"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                    throw new InvalidOperationException("图片路径无效。");
+            string extension = Path.GetExtension(path).ToLowerInvariant();
+            if (markdown ? extension != ".md" : extension != ".png" && extension != ".jpg" && extension != ".jpeg" && extension != ".gif" && extension != ".webp")
+                throw new InvalidOperationException("仅支持 PNG、JPEG、GIF 或 WebP 图片。");
+            string root = Path.GetPathRoot(path);
+            DriveInfo drive = new DriveInfo(root);
+            if (drive.DriveType != DriveType.Fixed && drive.DriveType != DriveType.Removable)
+                throw new InvalidOperationException("不支持网络或设备图片路径。");
+            string directory = root;
+            for (int i = 0; i < parts.Length - 1; i++)
+            {
+                directory = Path.Combine(directory, parts[i]);
+                if (!Directory.Exists(directory)) return null;
+                if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0) throw new InvalidOperationException("图片目录不能是链接。");
+            }
+            if (!File.Exists(path)) return null;
+            FileAttributes attributes = File.GetAttributes(path);
+            if ((attributes & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0) throw new InvalidOperationException("图片文件不能是链接。");
+            byte[] bytes;
+            using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                if ((!markdown && stream.Length <= 0) || stream.Length > maximumBytes) throw new InvalidOperationException("文件为空或超过本次导入的大小限制。");
+                bytes = new byte[(int)stream.Length];
+                int offset = 0;
+                while (offset < bytes.Length)
+                {
+                    int count = stream.Read(bytes, offset, bytes.Length - offset);
+                    if (count == 0) throw new InvalidOperationException("读取图片时文件发生变化。");
+                    offset += count;
+                }
+                if (stream.ReadByte() != -1) throw new InvalidOperationException("读取图片时文件发生变化。");
+            }
+            if (!markdown) AttachmentFiles.ValidateImage(path.ToLowerInvariant(), bytes);
+            return bytes;
+        }
+    }
+
+    internal static class SelectedImportFolder
+    {
+        // Enumerate only the explicitly selected tree, never follow junctions.
+        // Bytes are read later, on demand, only for Markdown and referenced images.
+        internal static List<Dictionary<string, object>> Enumerate(string selected, HashSet<string> markdownPaths, HashSet<string> imagePaths)
+        {
+            string root = Path.GetFullPath(selected).TrimEnd(Path.DirectorySeparatorChar);
+            string driveRoot = Path.GetPathRoot(root);
+            if (String.IsNullOrEmpty(driveRoot) || root.Length <= driveRoot.Length || (new DriveInfo(driveRoot).DriveType != DriveType.Fixed && new DriveInfo(driveRoot).DriveType != DriveType.Removable))
+                throw new InvalidOperationException("请选择本机磁盘上的具体笔记文件夹。");
+            string ancestor = driveRoot;
+            foreach (string component in root.Substring(driveRoot.Length).Split(Path.DirectorySeparatorChar))
+            {
+                if (component.Length == 0) continue;
+                ancestor = Path.Combine(ancestor, component);
+                if ((File.GetAttributes(ancestor) & FileAttributes.ReparsePoint) != 0) throw new InvalidOperationException("请选择实际文件夹，不能选择文件夹链接。");
+            }
+            string prefix = root + Path.DirectorySeparatorChar;
+            string rootName = Path.GetFileName(root);
+            var files = new List<Dictionary<string, object>>();
+            var pending = new Stack<KeyValuePair<string, int>>();
+            pending.Push(new KeyValuePair<string, int>(root, 0));
+            int count = 0, metadataLength = 0;
+            while (pending.Count > 0)
+            {
+                var item = pending.Pop();
+                foreach (string entry in Directory.EnumerateFileSystemEntries(item.Key))
+                {
+                    if (++count > 2000) throw new InvalidOperationException("文件夹项目超过 2000 个，请选择更具体的笔记文件夹。");
+                    string path = Path.GetFullPath(entry);
+                    if (!path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("文件夹中存在无效路径。");
+                    FileAttributes attributes = File.GetAttributes(path);
+                    if ((attributes & FileAttributes.ReparsePoint) != 0) throw new InvalidOperationException("文件夹中包含链接或重解析点，请选择实际文件所在文件夹。");
+                    if ((attributes & FileAttributes.Directory) != 0)
+                    {
+                        if (item.Value >= 31) throw new InvalidOperationException("文件夹嵌套超过 32 层。");
+                        pending.Push(new KeyValuePair<string, int>(path, item.Value + 1)); continue;
+                    }
+                    string extension = Path.GetExtension(path).ToLowerInvariant();
+                    bool markdown = extension == ".md";
+                    bool image = extension == ".png" || extension == ".jpg" || extension == ".jpeg" || extension == ".gif" || extension == ".webp";
+                    if (!markdown && !image) continue;
+                    string relative = rootName + "/" + path.Substring(prefix.Length).Replace('\\', '/');
+                    metadataLength += path.Length + relative.Length;
+                    if (metadataLength > 2 * 1024 * 1024) throw new InvalidOperationException("文件夹路径信息过大，请选择更具体的笔记文件夹。");
+                    files.Add(new Dictionary<string, object> { { "path", path }, { "relative", relative }, { "size", new FileInfo(path).Length }, { "markdown", markdown } });
+                    if (markdown) markdownPaths.Add(path); else imagePaths.Add(path);
+                }
+            }
+            return files;
+        }
+    }
+
     internal sealed class MainWindow : Form
     {
         private const string AppHost = "paper.local";
@@ -264,6 +681,9 @@ namespace PaperNotesDesktop
         private Microsoft.Web.WebView2.WinForms.WebView2 webView;
         private readonly StartupScreen startupScreen;
         private readonly List<ResizeGrip> resizeGrips = new List<ResizeGrip>();
+        private readonly HashSet<string> selectedMarkdownPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> selectedImagePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> selectedMarkdownNormalized = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private readonly Stopwatch startupClock = Stopwatch.StartNew();
         private bool startupRevealed;
 
@@ -519,6 +939,98 @@ namespace PaperNotesDesktop
             var response = new Dictionary<string, object> { { "channel", "paper-notes" }, { "id", id } };
             try
             {
+                if (action == "import.pickMarkdownFiles")
+                {
+                    selectedMarkdownPaths.Clear();
+                    selectedImagePaths.Clear();
+                    selectedMarkdownNormalized.Clear();
+                    using (var picker = new OpenFileDialog())
+                    {
+                        picker.Title = "选择 Markdown 文件";
+                        picker.Filter = "Markdown 文件 (*.md)|*.md";
+                        picker.Multiselect = true;
+                        picker.CheckFileExists = true;
+                        if (picker.ShowDialog(this) == DialogResult.OK)
+                        {
+                            if (picker.FileNames.Length > 300) throw new InvalidOperationException("一次最多导入 300 个 Markdown 文件。");
+                            foreach (string path in picker.FileNames) selectedMarkdownPaths.Add(Path.GetFullPath(path));
+                        }
+                    }
+                    response["paths"] = new List<string>(selectedMarkdownPaths).ToArray();
+                    response["ok"] = true;
+                    webView.CoreWebView2.PostWebMessageAsJson(json.Serialize(response));
+                    return;
+                }
+                if (action == "import.pickMarkdownFolder")
+                {
+                    selectedMarkdownPaths.Clear();
+                    selectedImagePaths.Clear();
+                    selectedMarkdownNormalized.Clear();
+                    var files = new List<Dictionary<string, object>>();
+                    using (var picker = new FolderBrowserDialog())
+                    {
+                        picker.Description = "选择包含 Markdown 和图片的文件夹";
+                        picker.ShowNewFolderButton = false;
+                        if (picker.ShowDialog(this) == DialogResult.OK)
+                        {
+                            var markdown = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            var images = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            files = SelectedImportFolder.Enumerate(picker.SelectedPath, markdown, images);
+                            selectedMarkdownPaths.UnionWith(markdown);
+                            selectedImagePaths.UnionWith(images);
+                        }
+                    }
+                    response["files"] = files;
+                    response["ok"] = true;
+                    webView.CoreWebView2.PostWebMessageAsJson(json.Serialize(response));
+                    return;
+                }
+                if (action == "import.readMarkdown")
+                {
+                    string path = GetString(request, "path");
+                    long maximumBytes;
+                    if (!selectedMarkdownPaths.Contains(path) || !Int64.TryParse(GetString(request, "maxBytes"), out maximumBytes)) throw new InvalidOperationException("只能读取刚才选择的 Markdown 文件。");
+                    byte[] bytes = ReferencedImageFiles.ReadMarkdown(path, maximumBytes);
+                    if (bytes == null) throw new InvalidOperationException("选择的 Markdown 文件不存在。");
+                    try
+                    {
+                        string content = new UTF8Encoding(false, true).GetString(bytes);
+                        selectedMarkdownNormalized[path] = ReferencedImageFiles.NormalizeSource(content);
+                    }
+                    catch (DecoderFallbackException) { throw new InvalidOperationException("Markdown 不是有效的 UTF-8 文件。"); }
+                    response["data"] = bytes == null ? null : Convert.ToBase64String(bytes);
+                    response["ok"] = true;
+                    webView.CoreWebView2.PostWebMessageAsJson(json.Serialize(response));
+                    return;
+                }
+                if (action == "import.readSelectedImage")
+                {
+                    string path = GetString(request, "path");
+                    long maximumBytes;
+                    if (!selectedImagePaths.Contains(path) || !Int64.TryParse(GetString(request, "maxBytes"), out maximumBytes)) throw new InvalidOperationException("只能读取所选文件夹中的图片。");
+                    byte[] bytes = ReferencedImageFiles.ReadLiteralImage(path, maximumBytes);
+                    response["data"] = bytes == null ? null : Convert.ToBase64String(bytes);
+                    response["ok"] = true;
+                    webView.CoreWebView2.PostWebMessageAsJson(json.Serialize(response));
+                    return;
+                }
+                if (action == "import.readImage")
+                {
+                    long maximumBytes;
+                    if (!Int64.TryParse(GetString(request, "maxBytes"), out maximumBytes)) throw new InvalidOperationException("图片导入容量限制无效。");
+                    string path = GetString(request, "path");
+                    string markdownPath = GetString(request, "markdownPath");
+                    string markdown;
+                    if (!selectedMarkdownPaths.Contains(markdownPath) || !selectedMarkdownNormalized.TryGetValue(markdownPath, out markdown) || !ReferencedImageFiles.NormalizedMentionsPath(markdown, path))
+                        throw new InvalidOperationException("只能读取刚才选择的 Markdown 文件中引用的图片。");
+                    string decoded = Uri.UnescapeDataString(path);
+                    bool absolute = decoded.StartsWith("file:///", StringComparison.OrdinalIgnoreCase) || Regex.IsMatch(decoded, @"^[A-Za-z]:[\\/]");
+                    byte[] bytes = absolute ? ReferencedImageFiles.Read(path, maximumBytes) : ReferencedImageFiles.ReadRelative(markdownPath, path, maximumBytes);
+                    response["data"] = bytes == null ? null : Convert.ToBase64String(bytes);
+                    response["ok"] = true;
+                    webView.CoreWebView2.PostWebMessageAsJson(json.Serialize(response));
+                    return;
+                }
                 if (action == "attachment.get" || action == "attachment.put")
                 {
                     string baseDirectory = Path.Combine(Path.GetDirectoryName(profile), "附件");
@@ -584,7 +1096,7 @@ namespace PaperNotesDesktop
             catch
             {
                 response["ok"] = false;
-                response["error"] = action.StartsWith("attachment.", StringComparison.Ordinal) ? "无法访问本机图片附件，请检查磁盘空间或权限。" : "无法访问 Windows 加密存储。";
+                response["error"] = action.StartsWith("import.", StringComparison.Ordinal) ? "无法读取选择的文件，请检查文件是否存在及权限。" : action.StartsWith("attachment.", StringComparison.Ordinal) ? "无法访问本机图片附件，请检查磁盘空间或权限。" : "无法访问 Windows 加密存储。";
             }
             webView.CoreWebView2.PostWebMessageAsJson(json.Serialize(response));
         }

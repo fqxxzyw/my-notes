@@ -18,6 +18,7 @@ import ThemePicker from './ThemePicker.vue'
 import { createSyncIndicator, type TransferState } from './syncIndicator'
 import { hasUserData } from './workspaceData'
 import { readDroppedMarkdown, type DroppedMarkdownResult } from './readDroppedMarkdown'
+import { pickDesktopMarkdownFiles, pickDesktopMarkdownFolder, resolveDesktopImportedImages } from './desktopImportImages'
 import { sortChapters, validateChapterOrder } from './notebookChapterOrder'
 import { prepareLocalCollection, assertLocalMetadataWritable, restoreNotebookBase } from './localMetadataSafety'
 import { newAttachmentPath, putAttachment, getAttachment, attachmentMime, MAX_ATTACHMENT_BYTES, type NoteAttachment } from './attachmentStore'
@@ -72,6 +73,7 @@ const draggingFiles = ref(false)
 const importFileInput = ref<HTMLInputElement | null>(null)
 const importFolderInput = ref<HTMLInputElement | null>(null)
 const repairFolderInput = ref<HTMLInputElement | null>(null)
+const repairImageFolderInput = ref<HTMLInputElement | null>(null)
 const moveBooksTarget = ref('')
 const deleteCabinetIds = ref<string[]>([])
 const renamingCabinetId = ref('')
@@ -436,6 +438,28 @@ function fileInputImport(event: Event) {
   else if (files?.length) error.value = '请等待当前操作完成后再导入。'
   input.value = ''
 }
+
+/** Native desktop picker retains the Markdown directory for relative images. */
+async function chooseImportFiles() {
+  if (busy.value || writing) { error.value = '请等待当前操作完成后再导入。'; return }
+  if (!isDesktop.value) { importFileInput.value?.click(); return }
+  try {
+    const files = await pickDesktopMarkdownFiles()
+    if (files === null) throw new Error('无法打开桌面文件选择器，请重试。')
+    if (files.length) await importMarkdown(readDroppedMarkdown({ files, items: [] } as unknown as DataTransfer))
+  } catch (e) { error.value = e instanceof Error ? e.message : '无法打开文件，请重试。' }
+}
+
+/** Native desktop folder picker retains the real Markdown file directories. */
+async function chooseImportFolder() {
+  if (busy.value || writing) { error.value = '请等待当前操作完成后再导入。'; return }
+  if (!isDesktop.value) { importFolderInput.value?.click(); return }
+  try {
+    const files = await pickDesktopMarkdownFolder()
+    if (files === null) throw new Error('无法打开桌面文件夹选择器，请重试。')
+    if (files.length) await importMarkdown(readDroppedMarkdown({ files, items: [] } as unknown as DataTransfer))
+  } catch (e) { error.value = e instanceof Error ? e.message : '无法打开文件夹，请重试。' }
+}
 function importedImageMime(path: string): string {
   const extension = path.toLowerCase().split('.').pop()
   return extension === 'jpg' || extension === 'jpeg' ? 'image/jpeg' : extension === 'png' ? 'image/png' : extension === 'gif' ? 'image/gif' : extension === 'webp' ? 'image/webp' : ''
@@ -464,7 +488,7 @@ function prepareImportedImages(file: DroppedMarkdownResult['files'][number], boo
     const path = known.get(`${bookId || ''}\0${originalPath}`)!
     staged.set(path, { path, bytes: image.bytes })
   }
-  return { content: rewritten.content, unmatched: targets.size - rewritten.replaced.length }
+  return { content: rewritten.content, unmatched: targets.size - rewritten.replaced.length, replaced: rewritten.replaced }
 }
 
 function repairFolderImport(event: Event) {
@@ -475,18 +499,61 @@ function repairFolderImport(event: Event) {
   input.value = ''
 }
 
-async function repairCurrentImages(reading: Promise<DroppedMarkdownResult>) {
+async function chooseRepairFolder() {
+  if (busy.value || writing || !selectedChapter.value) { error.value = '请先打开笔记，并等待当前操作完成后再补齐图片。'; return }
+  if (!isDesktop.value) { repairFolderInput.value?.click(); return }
+  const originalChapter = chapterKey(selectedChapter.value)
+  try {
+    const files = await pickDesktopMarkdownFolder()
+    if (files === null) throw new Error('无法打开桌面文件夹选择器，请重试。')
+    if (!files.length) return
+    if (!selectedChapter.value || chapterKey(selectedChapter.value) !== originalChapter) throw new Error('笔记已切换，请返回原笔记后重试。')
+    await repairCurrentImages(readDroppedMarkdown({ files, items: [] } as unknown as DataTransfer))
+  } catch (e) { error.value = e instanceof Error ? e.message : '无法读取原笔记文件夹，请重试。' }
+}
+
+/** A standalone picture folder is scanned only after the user selects it. */
+function repairImageFolderImport(event: Event) {
+  const input = event.target as HTMLInputElement
+  const files = input.files
+  if (files?.length && !busy.value && !writing && selectedChapter.value) {
+    // The reader captures the picker files synchronously before the input is
+    // reset. A virtual Markdown file carries the current draft without
+    // requiring the original .md to be in the selected image folder.
+    const source = { path: '当前笔记.md', name: '当前笔记.md', content: content.value }
+    void repairCurrentImages(readDroppedMarkdown({ files, items: [] } as unknown as DataTransfer, { referenceFiles: [source], selectedImageFolder: true }), source)
+  } else if (files?.length) error.value = '请先打开笔记，并等待当前操作完成后再补齐图片。'
+  input.value = ''
+}
+
+/** Re-selecting a Markdown file authorizes the desktop to read its images. */
+async function repairImagesFromOriginalPaths() {
+  if (!isDesktop.value || !selectedChapter.value || busy.value || writing) return
+  const originalChapter = chapterKey(selectedChapter.value)
+  try {
+    const files = await pickDesktopMarkdownFiles()
+    if (files === null) throw new Error('无法打开桌面文件选择器，请重试。')
+    if (!files.length) return
+    if (files.length !== 1) throw new Error('请只选择当前笔记对应的一个原始 Markdown 文件。')
+    if (!selectedChapter.value || chapterKey(selectedChapter.value) !== originalChapter) throw new Error('笔记已切换，请返回原笔记后重试。')
+    await repairCurrentImages(readDroppedMarkdown({ files, items: [] } as unknown as DataTransfer), undefined, true)
+  } catch (e) { error.value = e instanceof Error ? e.message : '无法读取原笔记，请重试。' }
+}
+
+async function repairCurrentImages(reading: Promise<DroppedMarkdownResult>, selectedImageSource?: { path: string; name: string; content: string }, resolveOriginalPaths = false) {
   if (busy.value || writing || !selectedChapter.value || !saveDraft()) return
   const chapter = selectedChapter.value
   const original = content.value
+  if (selectedImageSource && selectedImageSource.content !== original) { error.value = '笔记内容已发生变化，请重新选择图片文件夹。'; return }
   clearMessages()
   const success = await run(async () => {
-    const result = await reading
-    let matches = result.files.filter(file => {
+    const parsed = await reading
+    const result = !selectedImageSource || resolveOriginalPaths ? await resolveDesktopImportedImages(parsed) : parsed
+    let matches = selectedImageSource ? result.files.filter(file => file.path === selectedImageSource.path && file.content === original) : result.files.filter(file => {
       const root = result.folders.find(folder => file.path.startsWith(`${folder}/`))
       return safeImportedTitle(root ? file.path.slice(root.length + 1) : file.name) === chapter.title
     })
-    if (!matches.length) {
+    if (!selectedImageSource && !matches.length) {
       // A synced chapter may display its Markdown heading instead of its old
       // filename. Fall back only when one source file has matching image
       // references in the current text; never guess between multiple files.
@@ -503,8 +570,21 @@ async function repairCurrentImages(reading: Promise<DroppedMarkdownResult>) {
     const staged = new Map<string, NoteAttachment>()
     const prepared = prepareImportedImages(source, isPageBookId(chapter.bookId) ? null : chapter.bookId, result.images, staged, new Map())
     const repaired = prepared.content
-    if (!staged.size || repaired === original) throw new Error('没有找到可补齐的图片；请检查当前笔记的图片路径和原文件夹。')
-    if (!window.confirm(`将从“${source.path}”对应的文件夹补齐 ${staged.size} 张图片到当前笔记“${chapter.title}”。\n\n正文中匹配的图片路径会更新，其他编辑内容会保留。请确认这是原始笔记文件夹。`)) return
+    const ambiguous = result.skipped.filter(item => item.reason === 'ambiguous').length
+    const remaining = result.localResources.filter(item => item.markdownPath === source.path).length + prepared.unmatched
+    if (!staged.size || repaired === original) throw new Error(ambiguous ? '图片文件夹中存在同名图片，无法安全确定来源；请选择不含重名图片的文件夹。' : resolveOriginalPaths ? '无法从原路径找到可补齐的图片；请检查原图片是否仍在本机，或选择“从图片文件夹补齐”。' : '没有找到可补齐的图片；请检查当前笔记的图片路径和所选文件夹。')
+    if (selectedImageSource && !resolveOriginalPaths) {
+      const readable = (value: string) => { try { return decodeURIComponent(value).replace(/[\r\n]/g, ' ') } catch { return value.replace(/[\r\n]/g, ' ') } }
+      const mappings = prepared.replaced.flatMap(target => {
+        const image = result.images.find(item => item.references.some(ref => ref.markdownPath === source.path && ref.target === target))
+        return image ? [`${readable(target)} → ${readable(image.path)}`] : []
+      })
+      const preview = mappings.slice(0, 5).join('\n')
+      const more = mappings.length > 5 ? `\n……另有 ${mappings.length - 5} 处匹配` : ''
+      const unresolved = `${ambiguous ? `\n${ambiguous} 处图片重名，无法安全匹配。` : ''}${remaining ? `\n${remaining} 处图片或链接未能匹配，将保持原样。` : ''}`
+      if (!window.confirm(`将从所选图片文件夹补齐 ${staged.size} 张图片到当前笔记“${chapter.title}”。\n\n${preview}${more}${unresolved}\n\n请确认所选文件夹中的图片对应这些路径；正文的其他内容会保留。`)) return
+    }
+    if (!selectedImageSource && !window.confirm(`将从“${source.path}”对应的文件夹补齐 ${staged.size} 张图片到当前笔记“${chapter.title}”。\n\n正文中匹配的图片路径会更新，其他编辑内容会保留。请确认这是原始笔记文件夹。`)) return
     for (const image of staged.values()) await putAttachment(initialRepository, image)
     if (selectedChapter.value !== chapter || content.value !== original) throw new Error('图片读取期间笔记已变化，未修改正文；请重新操作。')
     // Persist the new draft before replacing visible content. Existing remote
@@ -515,8 +595,7 @@ async function repairCurrentImages(reading: Promise<DroppedMarkdownResult>) {
     suspendDraft = true
     try { content.value = repaired } finally { suspendDraft = false }
     if (autoSave.value) { autoKeys.add(chapterKey(chapter)); scheduleAuto() }
-    const remaining = result.localResources.filter(item => item.markdownPath === source.path).length + prepared.unmatched
-    notice.value = `已补齐 ${staged.size} 张图片到当前笔记，请同步以保存到 GitHub。${remaining ? `还有 ${remaining} 处相对图片或链接未能导入，请检查。` : ''}`
+    notice.value = `已补齐 ${staged.size} 张图片到当前笔记，请同步以保存到 GitHub。${ambiguous ? `${ambiguous} 处图片存在重名，未自动匹配。` : ''}${remaining ? `还有 ${remaining} 处图片或链接未能导入，请检查。` : ''}`
   })
   if (success) importing.value = false
 }
@@ -527,7 +606,7 @@ async function importMarkdown(reading: Promise<DroppedMarkdownResult>) {
   const targetCabinet = activeCabinet.value || 'general'
   clearMessages()
   const success = await run(async () => {
-    const result = await reading
+    const result = await resolveDesktopImportedImages(await reading)
     const beforeBooks = localBooks.value
     const beforeChapters = localChapters.value
     const addedBooks: ShelfBook[] = []
@@ -1934,15 +2013,19 @@ async function openSearchResult(chapter: Chapter) {
         <div class="archive-dialog-heading"><h2 id="import-title">导入笔记</h2><button type="button" aria-label="关闭" @click="importing = false">×</button></div>
         <p>选择 Markdown 文件，或选择文件夹导入为一本书；文件夹内引用的图片会一起导入。也可以直接拖入窗口。</p>
         <p>{{ selectedBook && selectedBook.kind !== 'page' ? '文件将导入当前笔记本的章节。' : '单个文件将作为独立书页，放入当前书柜。' }}</p>
+        <p v-if="selectedChapter">如果原笔记中的图片位于其他文件夹，可选择图片文件夹补齐当前笔记。</p>
         <p v-if="error" class="feedback error" role="alert">{{ error }}</p>
         <div class="archive-dialog-actions">
-          <button type="button" class="archive-new" :disabled="busy" @click="importFileInput?.click()">选择文件</button>
-          <button type="button" class="archive-new" :disabled="busy" @click="importFolderInput?.click()">选择文件夹</button>
-          <button v-if="selectedChapter" type="button" class="archive-new" :disabled="busy" @click="repairFolderInput?.click()">补齐当前笔记图片</button>
+          <button type="button" class="archive-new" :disabled="busy" @click="chooseImportFiles">选择文件</button>
+          <button type="button" class="archive-new" :disabled="busy" @click="chooseImportFolder">选择文件夹</button>
+          <button v-if="selectedChapter" type="button" class="archive-new" :disabled="busy" @click="chooseRepairFolder">补齐当前笔记图片</button>
+          <button v-if="selectedChapter" type="button" class="archive-new" :disabled="busy" title="用于原图片放在其他位置或旧电脑绝对路径的情况" @click="repairImageFolderInput?.click()">从图片文件夹补齐</button>
+          <button v-if="selectedChapter && isDesktop" type="button" class="archive-new" :disabled="busy" title="选择原始 Markdown，读取其中指向本机的图片路径" @click="repairImagesFromOriginalPaths">选择原笔记自动补齐</button>
         </div>
         <input ref="importFileInput" class="sr-only" type="file" accept=".md,text/markdown" multiple @change="fileInputImport">
         <input ref="importFolderInput" class="sr-only" type="file" webkitdirectory multiple @change="fileInputImport">
         <input ref="repairFolderInput" class="sr-only" type="file" webkitdirectory multiple @change="repairFolderImport">
+        <input ref="repairImageFolderInput" class="sr-only" type="file" webkitdirectory multiple @change="repairImageFolderImport">
       </div>
     </div>
     <section v-show="!selectedBook && (!selectedChapter || view !== 'edit')" class="intro" aria-labelledby="desk-title">

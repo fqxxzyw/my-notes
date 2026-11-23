@@ -33,6 +33,19 @@ test('finds images beyond the editor background parsing viewport', () => {
   assert.deepEqual(result.replaced, ['folder/a.png'])
 })
 
+test('repairs only explicitly mapped Windows and file URI image destinations', () => {
+  const source = '表情😀\r\n![盘符](C:\\Users\\Lenovo\\图.png "原题")\r\n![文件](<file:///C:/Users/Lenovo/%E5%8F%A6%E5%9B%BE.png> "标题")\r\n![引用][pic]\r\n[普通链接][pic]\r\n\r\n[pic]: file:///C:/Users/Lenovo/%E5%8F%A6%E5%9B%BE.png "标题"\r\n\r\n<img src="C:\\Users\\Lenovo\\图.png" alt="图" style="zoom:50%" />\r\n`![示例](C:\\Users\\Lenovo\\图.png)`\r\n```md\r\n![示例](C:\\Users\\Lenovo\\图.png)\r\n```\r\n'
+  const windows = 'C:%5CUsers%5CLenovo%5C%E5%9B%BE.png'
+  const file = 'file:///C:/Users/Lenovo/%E5%8F%A6%E5%9B%BE.png'
+  const another = `assets/${'b'.repeat(32)}.png`
+  const result = rewriteImportedImages(source, new Map([[windows, destination], [file, another]]))
+  assert.equal(result.content,
+    `表情😀\r\n![盘符](${destination} "原题")\r\n![文件](<${another}> "标题")\r\n![引用](${another} "标题")\r\n[普通链接][pic]\r\n\r\n[pic]: file:///C:/Users/Lenovo/%E5%8F%A6%E5%9B%BE.png "标题"\r\n\r\n<img src="${destination}" alt="图" style="zoom:50%" />\r\n\`![示例](C:\\Users\\Lenovo\\图.png)\`\r\n\`\`\`md\r\n![示例](C:\\Users\\Lenovo\\图.png)\r\n\`\`\`\r\n`)
+  assert.deepEqual(new Set(result.replaced), new Set([windows, file]))
+  assert.equal(rewriteImportedImages(source, new Map([[file, '../untrusted.png']])).content, source)
+  assert.equal(rewriteImportedImages(source, new Map([['file:///C:/Users/Lenovo/no.png', destination]])).content, source)
+})
+
 test('a repaired edited draft syncs with its imported image and both restore byte-for-byte', async () => {
   globalThis.crypto ??= webcrypto
   const load = async path => {

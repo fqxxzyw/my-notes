@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
+import { readFileSync } from 'node:fs'
 
 const compiled = await build({ entryPoints: ['docs/.vitepress/theme/welcomeDuplicate.ts', 'docs/.vitepress/theme/welcomeStore.ts'], bundle: true, platform: 'node', format: 'esm', write: false, outdir: 'out' })
 const load = async name => import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles.find(file => file.path.endsWith(`${name}.js`)).contents).toString('base64')}`)
@@ -8,10 +9,10 @@ const { addWelcomeNotebook } = await load('welcomeStore')
 const { findPristineWelcomeDuplicate, prepareWelcomeImport } = await load('welcomeDuplicate')
 const templates = { './builtin/index.md': '# 手册', './builtin/00-start.md': '# 欢迎\n\n开始', './builtin/01-write.md': '# 写作\n\n记录' }
 const key = 'paper-notes:v2:local:paper-notes-local-collection'
-function fixture() {
+function fixture(version = templates) {
   const map = new Map()
   const storage = { getItem: key => map.get(key) ?? null, setItem: (key, value) => map.set(key, value) }
-  const { book, chapters } = addWelcomeNotebook(storage, '', templates, () => 'guide_local')
+  const { book, chapters } = addWelcomeNotebook(storage, '', version, () => 'guide_local')
   const remote = [{ book: { ...book, id: 'guide_remote', sha: 'a'.repeat(40), indexContent: '# 使用说明与教程\n' }, chapters: chapters.map(chapter => ({ ...chapter, bookId: 'guide_remote', sha: 'b'.repeat(40) })) }]
   return { entries: [...map], remote }
 }
@@ -71,4 +72,26 @@ test('same-title unrelated notebooks remain independent', () => {
   const result = prepareWelcomeImport(other, templates, remote)
   assert.deepEqual(JSON.parse(result.entries[0][1]).books.map(book => book.id), ['mine'])
   assert.equal(JSON.parse(result.entries[0][1]).chapters[0].content, '重要')
+})
+
+test('v1.0.4 is recognized only when both complete manuals match that released template', () => {
+  const old = JSON.parse(readFileSync('docs/.vitepress/theme/welcome-v104.json', 'utf8'))
+  const current = Object.fromEntries(['00-welcome.md', '01-writing.md', '02-github.md'].map(name =>
+    [`./builtin/${name}`, readFileSync(`docs/.vitepress/theme/builtin/${name}`, 'utf8')]))
+  const previous = fixture(old)
+  const source = JSON.stringify(previous.entries)
+  assert.deepEqual(findPristineWelcomeDuplicate(previous.entries, current, previous.remote), { localBookId: 'guide_local', remoteBookId: 'guide_remote' })
+  const prepared = prepareWelcomeImport(previous.entries, current, previous.remote)
+  assert.ok(prepared.duplicate)
+  assert.equal(JSON.stringify(previous.entries), source, 'original workspace is preserved')
+
+  const latest = fixture(current)
+  assert.equal(findPristineWelcomeDuplicate(latest.entries, current, previous.remote), null, 'new local is not the old remote')
+  assert.equal(findPristineWelcomeDuplicate(previous.entries, current, latest.remote), null, 'old local is not the new remote')
+  const editedBoth = modify(previous.entries, data => { data.chapters[0].content += '\n我的笔记' })
+  const changedRemote = structuredClone(previous.remote)
+  changedRemote[0].chapters[0].content += '\n我的笔记'
+  assert.equal(findPristineWelcomeDuplicate(editedBoth, current, changedRemote), null, 'matching user edits are never treated as a built-in version')
+  const incomplete = structuredClone(previous.remote); incomplete[0].chapters.pop()
+  assert.equal(findPristineWelcomeDuplicate(previous.entries, current, incomplete), null)
 })

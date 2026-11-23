@@ -20,6 +20,10 @@ import { hasUserData } from './workspaceData'
 import { readDroppedMarkdown, type DroppedMarkdownResult } from './readDroppedMarkdown'
 import { sortChapters, validateChapterOrder } from './notebookChapterOrder'
 import { prepareLocalCollection, assertLocalMetadataWritable, restoreNotebookBase } from './localMetadataSafety'
+import { newAttachmentPath, putAttachment, getAttachment, attachmentMime, MAX_ATTACHMENT_BYTES, type NoteAttachment } from './attachmentStore'
+import { attachmentReferences, workspaceAttachmentPaths, workspaceEntriesMatch } from './attachmentReferences'
+import { applyImageUrls } from './imageUrls'
+import { finishAttachmentRestore } from './attachmentRestore'
 
 const initialRepository = getConfiguredRepository()
 const repository = ref(initialRepository)
@@ -39,6 +43,11 @@ const chapters = ref<Chapter[]>([])
 const selectedBook = ref<ShelfBook | null>(null)
 const selectedChapter = ref<Chapter | null>(null)
 const content = ref('')
+const imageUrls = ref<Record<string, string>>({})
+const imageWarning = ref('')
+const readingPaper = ref<HTMLElement | null>(null)
+let imageRefresh = 0
+let imageObjects = new Map<string, string>()
 const tokenInput = ref('')
 const connected = ref(false)
 const tokenLoading = ref(true)
@@ -204,6 +213,25 @@ function workspaceEntries(kind: 'legacy' | 'local'): Array<[string, string]> {
 function workspaceHasContent(kind: 'legacy' | 'local'): boolean {
   return workspaceEntries(kind).some(([key, value]) => hasUserData(key, value))
 }
+function assertWorkspaceUnchanged(kind: 'legacy' | 'local', expected: Array<[string, string]>) {
+  if (!workspaceEntriesMatch(expected, workspaceEntries(kind))) {
+    throw new Error('复制期间原工作区发生变化，已保留原数据，请重新复制。')
+  }
+}
+function sameImageBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index])
+}
+async function copyWorkspaceAttachments(source: Array<[string, string]>, target: string) {
+  // Never overwrite an unrelated target attachment. Copy before copying any
+  // Markdown so an incomplete import cannot leave references to missing data.
+  for (const path of workspaceAttachmentPaths(source)) {
+    const original = await getAttachment('', path)
+    if (!original) throw new Error('本机有图片附件缺失，未复制笔记；请先恢复图片。')
+    const existing = await getAttachment(target, path)
+    if (existing && !sameImageBytes(existing.bytes, original.bytes)) throw new Error('目标工作区存在同名但内容不同的图片，未复制笔记。')
+    if (!existing) await putAttachment(target, original)
+  }
+}
 function importWorkspace(kind: 'legacy' | 'local', target: string, source = workspaceEntries(kind)): void {
   assertLocalMetadataWritable(localMetadataDamaged)
   const oldPrefix = kind === 'legacy' ? 'paper-notes-draft:' : `${namespaceKey('paper-notes-draft', '')}:`
@@ -218,14 +246,19 @@ function importWorkspace(kind: 'legacy' | 'local', target: string, source = work
   try { for (const [key, value] of mapped) { localStorage.setItem(key, value); written.push(key) } }
   catch (e) { for (const key of written) { const old = previous.get(key); if (old == null) localStorage.removeItem(key); else localStorage.setItem(key, old) } throw e }
 }
-function importOlderWorkspace() {
+async function importOlderWorkspace() {
   if (!initialRepository) { error.value = '请先连接自己的 GitHub 仓库，再选择是否导入旧版本地数据。'; return }
   if (writing || busy.value || !saveDraft()) return
   try {
     if (!workspaceHasContent('legacy')) { notice.value = '没有找到旧版本地数据。'; return }
     if (!window.confirm(`旧版本地数据没有记录仓库归属。只有确认这些笔记属于 ${initialRepository}，才应导入。原数据会保留，导入后仍需手动选择同步。\n\n确认导入？`)) return
-    importWorkspace('legacy', initialRepository)
-    location.reload()
+    const success = await run(async () => {
+      const source = workspaceEntries('legacy')
+      await copyWorkspaceAttachments(source, initialRepository)
+      assertWorkspaceUnchanged('legacy', source)
+      importWorkspace('legacy', initialRepository, source)
+    })
+    if (success) location.reload()
   } catch (e) { error.value = `无法导入旧版本地数据：${message(e)}` }
 }
 async function readWelcomeCandidates(candidate: ReturnType<typeof createNotebookStore>): Promise<WelcomeCandidate[] | null> {
@@ -244,7 +277,11 @@ async function importUnboundWorkspace() {
     if (!window.confirm(`确认将未关联仓库的本机笔记复制到 ${initialRepository} 的工作区？原数据会保留，复制后仍需手动选择同步。`)) return
     const success = await run(async () => {
       const remote = connected.value ? await readWelcomeCandidates(store) : null
-      importWorkspace('local', initialRepository, prepareWelcomeImport(workspaceEntries('local'), snapshotFiles, remote).entries)
+      const original = workspaceEntries('local')
+      const source = prepareWelcomeImport(original, snapshotFiles, remote).entries
+      await copyWorkspaceAttachments(source, initialRepository)
+      assertWorkspaceUnchanged('local', original)
+      importWorkspace('local', initialRepository, source)
     })
     if (success) location.reload()
   } catch (e) { error.value = `无法导入本机笔记：${message(e)}` }
@@ -550,6 +587,76 @@ const searchResults = computed(() => {
   if (!q) return []
   return searchIndex.value.filter(chapter => chapter.title.toLowerCase().includes(q) || chapter.content.toLowerCase().includes(q))
 })
+
+function chapterAttachmentReferences(chapter: Chapter, body = chapter.content) {
+  return attachmentReferences(body, isPageBookId(chapter.bookId) ? null : chapter.bookId)
+}
+
+/** Commit image bytes first; the editor inserts Markdown only after success. */
+async function savePastedImages(files: File[]): Promise<string[]> {
+  const chapter = selectedChapter.value
+  if (!chapter || busy.value) throw new Error('请先打开可编辑的章节。')
+  const context = chapterKey(chapter)
+  const names: string[] = []
+  for (const file of files) {
+    if (!file.size || file.size > MAX_ATTACHMENT_BYTES) throw new Error('单张图片为空或超过 20 MiB，请缩小后重试。')
+    const path = newAttachmentPath(isPageBookId(chapter.bookId) ? null : chapter.bookId, file.type)
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    if (!selectedChapter.value || chapterKey(selectedChapter.value) !== context) throw new Error('已切换章节，请在目标位置重新粘贴图片。')
+    await putAttachment(initialRepository, { path, bytes })
+    names.push(`assets/${path.split('/').pop()}`)
+  }
+  return names
+}
+function reportImagePasteStatus(message: string) { error.value = message }
+
+async function localOrRemoteImage(path: string): Promise<NoteAttachment | null> {
+  const cached = await getAttachment(initialRepository, path)
+  if (cached || !connected.value) return cached
+  const remote = await store.readAttachment(path)
+  await putAttachment(initialRepository, remote)
+  return remote
+}
+
+async function refreshImageUrls() {
+  const run = ++imageRefresh
+  const chapter = selectedChapter.value
+  const refs = chapter ? chapterAttachmentReferences(chapter, content.value) : []
+  const previous = imageObjects
+  const next = new Map<string, string>()
+  const created: string[] = []
+  let failed = false
+  for (const ref of refs) {
+    // Different valid relative spellings (assets/... and ./assets/...) can
+    // name the same file; reuse this run's URL before allocating another.
+    let url = next.get(ref.path) || previous.get(ref.path)
+    if (!url) {
+      try {
+        const image = await localOrRemoteImage(ref.path)
+        if (!image) { failed = true; continue }
+        url = URL.createObjectURL(new Blob([image.bytes], { type: attachmentMime(image.path) }))
+        created.push(url)
+      } catch { failed = true; continue }
+    }
+    next.set(ref.path, url)
+  }
+  if (run !== imageRefresh || disposed) { created.forEach(url => URL.revokeObjectURL(url)); return }
+  imageObjects = next
+  imageUrls.value = Object.fromEntries(refs.flatMap(ref => next.has(ref.path) ? [[ref.src, next.get(ref.path)!]] : []))
+  imageWarning.value = failed ? '部分图片附件暂不可用；请连接仓库并恢复，或检查本地存储。' : ''
+  await nextTick()
+  for (const [path, url] of previous) if (next.get(path) !== url) URL.revokeObjectURL(url)
+}
+let imageRefreshTimer: ReturnType<typeof setTimeout> | undefined
+watch([selectedChapter, content, connected], () => {
+  // Invalidate pending reads immediately, then coalesce typing into one parse.
+  imageRefresh++
+  clearTimeout(imageRefreshTimer)
+  imageRefreshTimer = setTimeout(() => { void refreshImageUrls() }, 80)
+})
+watch([view, content, imageUrls], () => {
+  void nextTick(() => { if (readingPaper.value) applyImageUrls(readingPaper.value, imageUrls.value) })
+}, { flush: 'post' })
 
 function message(e: unknown) {
   return e instanceof Error ? e.message : '操作没有完成，请稍后重试。'
@@ -875,8 +982,25 @@ async function refresh() {
     const head = await store.readHead()
     const [remoteBooks, latestCatalog, pages] = await Promise.all([store.listNotebooks(), store.readCatalog(false), store.listPages()])
     const allChapters = await Promise.all(remoteBooks.map(async book => [book.id, await store.listChapters(book.id)] as const))
+    const imagePaths = new Set<string>()
+    for (const [, items] of allChapters) for (const chapter of items) {
+      for (const ref of attachmentReferences(chapter.content, chapter.bookId)) imagePaths.add(ref.path)
+    }
+    for (const page of pages) for (const ref of attachmentReferences(page.content, null)) imagePaths.add(ref.path)
+    const downloadedImages: NoteAttachment[] = []
+    for (const path of imagePaths) {
+      const remote = await store.readAttachment(path)
+      const local = await getAttachment(initialRepository, path)
+      if (local && !sameImageBytes(local.bytes, remote.bytes)) throw new Error('本地和 GitHub 的同名图片内容不同；原有本地图片已保留，请先处理冲突。')
+      if (!local) downloadedImages.push(remote)
+    }
     if (await store.readHead() !== head) throw new Error('恢复期间 GitHub 内容发生变化，请重新恢复。')
     if (writing || version !== localMutationVersion) throw new Error('同步期间目录发生变化，请稍后重新读取。')
+    await finishAttachmentRestore(downloadedImages, head, {
+      put: image => putAttachment(initialRepository, image),
+      readHead: () => store.readHead(),
+      isCurrent: () => !writing && version === localMutationVersion && request === bookRun && !disposed
+    })
     const complete: RemoteSnapshot = { head, books: remoteBooks, chapters: Object.fromEntries(allChapters), pages, catalog: latestCatalog }
     try { writeRemoteCache(complete, initialRepository) } catch { throw new Error('无法保存完整的 GitHub 备份到本机；原有缓存和草稿均已保留。') }
     restoredSnapshot.value = complete
@@ -921,7 +1045,11 @@ async function connect() {
     await candidate.readHead()
     if (!initialRepository && workspaceHasContent('local') && window.confirm(`检测到尚未关联仓库的本机笔记。是否将它们复制到 ${target} 的本机工作区？原数据会保留，复制后仍需手动选择同步。`)) {
       const remote = await readWelcomeCandidates(candidate)
-      importWorkspace('local', target, prepareWelcomeImport(workspaceEntries('local'), snapshotFiles, remote).entries)
+      const original = workspaceEntries('local')
+      const source = prepareWelcomeImport(original, snapshotFiles, remote).entries
+      await copyWorkspaceAttachments(source, target)
+      assertWorkspaceUnchanged('local', original)
+      importWorkspace('local', target, source)
     }
     try { await saveCredential(token, target) } catch { throw new Error('令牌无法保存到本机，请检查存储权限后重试。') }
     if (target !== initialRepository) setConfiguredRepository(target)
@@ -1162,7 +1290,14 @@ async function performBatch(keys: string[], bookIds: string[], cabinetIds: strin
       return null
     })
     transfer = transferIndicator.start('sync')
-    const result = await store.syncBatch([...newBooks, ...changedBooks], entries.filter(item => !isPageBookId(item.bookId)).map(item => item.chapter), catalogChange, entries.filter(item => isPageBookId(item.bookId)).map(item => chapterAsPage(item.chapter)))
+    const imagePaths = new Set(entries.flatMap(item => chapterAttachmentReferences(item.chapter).map(ref => ref.path)))
+    const images: NoteAttachment[] = []
+    for (const path of imagePaths) {
+      const image = await localOrRemoteImage(path)
+      if (!image) throw new Error('笔记引用的图片附件缺失，未提交笔记；请先恢复图片。')
+      images.push(image)
+    }
+    const result = await store.syncBatch([...newBooks, ...changedBooks], entries.filter(item => !isPageBookId(item.bookId)).map(item => item.chapter), catalogChange, entries.filter(item => isPageBookId(item.bookId)).map(item => chapterAsPage(item.chapter)), images)
     const completedChapters = [...result.chapters, ...result.pages.map(pageAsChapter)]
     updateOfflineAfterCommit(result.parent, result.head, { books: result.books, chapters: result.chapters, pages: result.pages, catalog: result.catalog })
     if (catalogChange && !result.catalog) throw new Error('GitHub 未返回书柜目录版本，请保留本地整理后重试。')
@@ -1591,6 +1726,10 @@ onMounted(() => {
   window.addEventListener('focus', scheduleDesktopRemoteCheck)
 })
 onBeforeUnmount(() => {
+  imageRefresh++
+  clearTimeout(imageRefreshTimer)
+  for (const url of imageObjects.values()) URL.revokeObjectURL(url)
+  imageObjects.clear()
   disposed = true
   headerResizeObserver?.disconnect()
   window.removeEventListener('focus', scheduleDesktopRemoteCheck)
@@ -1938,7 +2077,8 @@ async function openSearchResult(chapter: Chapter) {
           <button :class="{ chosen: view === 'edit' }" :aria-pressed="view === 'edit'" @click="view = 'edit'">编辑</button>
         </div>
       </div>
-      <div v-if="view === 'read'" class="paper">
+      <p v-if="imageWarning" class="feedback" role="status">{{ imageWarning }}</p>
+      <div v-if="view === 'read'" ref="readingPaper" class="paper">
         <ChapterMarkdown :source="content.replace(/^# [^\r\n]+(?:\r?\n|$)/, '')" />
       </div>
       <div v-else class="reference-editor-workspace" :class="{ 'is-sidebar-collapsed': !editorSidebarOpen }">
@@ -1958,7 +2098,9 @@ async function openSearchResult(chapter: Chapter) {
           <OutlineTree v-else :headings="currentOutline" :source="content" :disabled="busy" @jump="goToOutlineHeading" @change="changeOutline" @error="error = $event" />
         </aside>
         <div class="paper editor">
-          <MarkdownEditor ref="markdownEditor" v-model="content" :readonly="busy" />
+          <MarkdownEditor ref="markdownEditor" v-model="content" :readonly="busy"
+            :attachment-context="chapterKey(selectedChapter)" :image-urls="imageUrls" :save-pasted-images="savePastedImages"
+            :on-paste-status="reportImagePasteStatus" />
           <div class="editor-footer">
             <span>{{ content.length }} 字符<span v-if="isHosted && connected" aria-live="polite"> · {{ autoStatus }}</span></span>
             <button class="primary-button" :disabled="busy || (!dirty && !!selectedChapter.sha)" @click="sync">同步到 GitHub ↗</button>

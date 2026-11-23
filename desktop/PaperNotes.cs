@@ -153,6 +153,105 @@ namespace PaperNotesDesktop
         }
     }
 
+    // Immutable assets live alongside the desktop data, not in the bundled
+    // website or the WebView cache. Paths come from a strict managed namespace.
+    internal static class AttachmentFiles
+    {
+        private const int MaximumBytes = 20 * 1024 * 1024;
+        private static readonly Regex AllowedPath = new Regex(@"^docs/(?:notebooks/[A-Za-z0-9_-]+|pages)/assets/[a-f0-9]{32}\.(?:png|jpg|gif|webp)$", RegexOptions.CultureInvariant);
+
+        private static string RepositoryScope(string repository)
+        {
+            string value = (repository ?? "").Trim().ToLowerInvariant();
+            if (value.Length == 0) return "local";
+            string[] parts = value.Split('/');
+            if (parts.Length != 2 || !Regex.IsMatch(parts[0], @"^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$") ||
+                parts[0].Contains("--") || !Regex.IsMatch(parts[1], @"^[a-z0-9._-]{1,100}$") || parts[1] == "." || parts[1] == "..")
+                throw new InvalidOperationException("仓库标识无效。");
+            byte[] digest;
+            using (SHA256 hash = SHA256.Create()) digest = hash.ComputeHash(Encoding.UTF8.GetBytes(value));
+            return "repo-" + BitConverter.ToString(digest).Replace("-", "").ToLowerInvariant();
+        }
+
+        private static string Resolve(string baseDirectory, string repository, string path)
+        {
+            if (String.IsNullOrEmpty(path) || !AllowedPath.IsMatch(path)) throw new InvalidOperationException("图片附件路径无效。");
+            string root = Path.GetFullPath(baseDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            string file = Path.GetFullPath(Path.Combine(root, RepositoryScope(repository), path.Replace('/', Path.DirectorySeparatorChar)));
+            if (!file.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("图片附件路径无效。");
+            return file;
+        }
+
+        private static void CheckDirectory(string directory)
+        {
+            if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidOperationException("图片附件目录不能是链接或重解析点。");
+        }
+
+        private static void CheckParents(string baseDirectory, string file, bool create)
+        {
+            string root = Path.GetFullPath(baseDirectory).TrimEnd(Path.DirectorySeparatorChar);
+            if (!Directory.Exists(root)) { if (!create) return; Directory.CreateDirectory(root); }
+            CheckDirectory(root);
+            string relative = Path.GetDirectoryName(file).Substring(root.Length).TrimStart(Path.DirectorySeparatorChar);
+            string current = root;
+            foreach (string component in relative.Split(Path.DirectorySeparatorChar))
+            {
+                if (component.Length == 0) continue;
+                current = Path.Combine(current, component);
+                if (!Directory.Exists(current)) { if (!create) return; Directory.CreateDirectory(current); }
+                CheckDirectory(current);
+            }
+        }
+
+        private static void ValidateImage(string path, byte[] bytes)
+        {
+            if (bytes == null || bytes.Length == 0 || bytes.Length > MaximumBytes) throw new InvalidOperationException("图片为空或超过 20 MiB。");
+            bool png = bytes.Length >= 8 && bytes[0] == 137 && bytes[1] == 80 && bytes[2] == 78 && bytes[3] == 71 && bytes[4] == 13 && bytes[5] == 10 && bytes[6] == 26 && bytes[7] == 10;
+            bool jpg = bytes.Length >= 3 && bytes[0] == 255 && bytes[1] == 216 && bytes[2] == 255;
+            bool gif = bytes.Length >= 6 && Encoding.ASCII.GetString(bytes, 0, 6).StartsWith("GIF8", StringComparison.Ordinal) && (bytes[4] == 55 || bytes[4] == 57) && bytes[5] == 97;
+            bool webp = bytes.Length >= 12 && Encoding.ASCII.GetString(bytes, 0, 4) == "RIFF" && Encoding.ASCII.GetString(bytes, 8, 4) == "WEBP";
+            string ext = Path.GetExtension(path);
+            if (!(ext == ".png" && png || ext == ".jpg" && jpg || ext == ".gif" && gif || ext == ".webp" && webp))
+                throw new InvalidOperationException("图片内容与文件格式不匹配。");
+        }
+
+        internal static byte[] Read(string baseDirectory, string repository, string path)
+        {
+            string file = Resolve(baseDirectory, repository, path);
+            CheckParents(baseDirectory, file, false);
+            if (!File.Exists(file)) return null;
+            if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0) throw new InvalidOperationException("图片附件不能是链接。");
+            if (new FileInfo(file).Length > MaximumBytes) throw new InvalidOperationException("图片附件超过 20 MiB。");
+            byte[] bytes = File.ReadAllBytes(file);
+            ValidateImage(path, bytes);
+            return bytes;
+        }
+
+        internal static void Write(string baseDirectory, string repository, string path, byte[] bytes)
+        {
+            string file = Resolve(baseDirectory, repository, path);
+            ValidateImage(path, bytes);
+            CheckParents(baseDirectory, file, true);
+            if (File.Exists(file)) { VerifySame(Read(baseDirectory, repository, path), bytes); return; }
+            string temporary = Path.Combine(Path.GetDirectoryName(file), ".image-" + Guid.NewGuid().ToString("N") + ".tmp");
+            try
+            {
+                using (FileStream stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                { stream.Write(bytes, 0, bytes.Length); stream.Flush(true); }
+                try { File.Move(temporary, file); }
+                catch (IOException) { if (!File.Exists(file)) throw; VerifySame(Read(baseDirectory, repository, path), bytes); }
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        }
+
+        private static void VerifySame(byte[] existing, byte[] next)
+        {
+            if (existing == null || existing.Length != next.Length) throw new InvalidOperationException("图片路径已存在不同内容，已保留原文件。");
+            for (int i = 0; i < existing.Length; i++) if (existing[i] != next[i]) throw new InvalidOperationException("图片路径已存在不同内容，已保留原文件。");
+        }
+    }
+
     internal sealed class MainWindow : Form
     {
         private const string AppHost = "paper.local";
@@ -160,7 +259,8 @@ namespace PaperNotesDesktop
         private readonly string root;
         private readonly string profile;
         private readonly string credentialDirectory;
-        private readonly JavaScriptSerializer json = new JavaScriptSerializer();
+        // A 20 MiB binary image is about 28 MiB after base64 encoding.
+        private readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 32 * 1024 * 1024 };
         private Microsoft.Web.WebView2.WinForms.WebView2 webView;
         private readonly StartupScreen startupScreen;
         private readonly List<ResizeGrip> resizeGrips = new List<ResizeGrip>();
@@ -419,6 +519,30 @@ namespace PaperNotesDesktop
             var response = new Dictionary<string, object> { { "channel", "paper-notes" }, { "id", id } };
             try
             {
+                if (action == "attachment.get" || action == "attachment.put")
+                {
+                    string baseDirectory = Path.Combine(Path.GetDirectoryName(profile), "附件");
+                    string repository = GetString(request, "repository");
+                    string path = GetString(request, "path");
+                    if (action == "attachment.get")
+                    {
+                        byte[] bytes = AttachmentFiles.Read(baseDirectory, repository, path);
+                        response["data"] = bytes == null ? null : Convert.ToBase64String(bytes);
+                    }
+                    else
+                    {
+                        string encoded = GetString(request, "data");
+                        if (String.IsNullOrEmpty(encoded) || encoded.Length > 28 * 1024 * 1024)
+                            throw new InvalidOperationException("图片为空或超过 20 MiB。");
+                        byte[] bytes;
+                        try { bytes = Convert.FromBase64String(encoded); }
+                        catch (FormatException) { throw new InvalidOperationException("图片数据无效。"); }
+                        AttachmentFiles.Write(baseDirectory, repository, path, bytes);
+                    }
+                    response["ok"] = true;
+                    webView.CoreWebView2.PostWebMessageAsJson(json.Serialize(response));
+                    return;
+                }
                 if (action != "token.get" && action != "token.set" && action != "token.clear" && action != "token.importLegacy") return;
                 string credentialPath = GetCredentialPath(GetString(request, "repository"));
                 if (action == "token.get")
@@ -460,7 +584,7 @@ namespace PaperNotesDesktop
             catch
             {
                 response["ok"] = false;
-                response["error"] = "无法访问 Windows 加密存储。";
+                response["error"] = action.StartsWith("attachment.", StringComparison.Ordinal) ? "无法访问本机图片附件，请检查磁盘空间或权限。" : "无法访问 Windows 加密存储。";
             }
             webView.CoreWebView2.PostWebMessageAsJson(json.Serialize(response));
         }

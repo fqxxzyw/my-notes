@@ -6,8 +6,9 @@ import { syntaxHighlighting, syntaxTree } from '@codemirror/language'
 import { Decoration, EditorView, keymap, WidgetType, type DecorationSet } from '@codemirror/view'
 import { applyTextareaChange, markdownBlocks, markdownEnvironment, rawOffsetForTextarea, renderInlineMarkdown, replaceInlineImage, sourceOffsetForText, tableCellRange, textareaOffsetForRaw, type MarkdownBlock } from './liveMarkdown'
 import { markdownEditorLanguage, sourceMarkdownHighlight, visualCodeHighlight } from './editorHighlight.js'
+import { applyImageUrls, originalImageSource } from './imageUrls'
 
-const props = defineProps<{ modelValue: string; mode: 'source' | 'visual'; readonly?: boolean }>()
+const props = defineProps<{ modelValue: string; mode: 'source' | 'visual'; readonly?: boolean; attachmentContext?: string; imageUrls?: Readonly<Record<string, string>>; savePastedImages?: (files: File[]) => Promise<string[]>; onPasteStatus?: (message: string) => void }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string]; keydown: [event: KeyboardEvent]; failure: []; selection: [rect: { left: number; top: number; bottom: number } | null] }>()
 const host = ref<HTMLElement | null>(null)
 const fallback = ref<HTMLTextAreaElement | null>(null)
@@ -19,6 +20,7 @@ const readonlyCompartment = new Compartment()
 let view: EditorView | null = null
 let composing = false
 let selectionFrame = 0
+let imageRevision = 0
 const refreshVisual = StateEffect.define<null>()
 
 function reportSelection() {
@@ -31,9 +33,8 @@ function reportSelection() {
   })
 }
 
-// Keep pasted images inside the Markdown itself so offline drafts, undo,
-// GitHub sync and restore all move them together. Reject unsupported or
-// excessive clipboard data rather than silently inserting a broken blob URL.
+// The parent persists files before their portable relative URLs are inserted.
+// A failed write never leaves a reference to an image that doesn't exist.
 function handleImagePaste(event: ClipboardEvent): boolean {
   if (props.readonly) return false
   const items = Array.from(event.clipboardData?.items || []).filter(item => item.kind === 'file' && item.type.startsWith('image/'))
@@ -45,37 +46,59 @@ function handleImagePaste(event: ClipboardEvent): boolean {
     pasteError.value = '仅支持粘贴 PNG、JPEG、GIF 或 WebP 图片。'
     return true
   }
-  if (files.reduce((sum, file) => sum + (file?.size || 0), 0) > 1024 * 1024) {
-    pasteError.value = '粘贴的图片合计超过 1 MB，请压缩后重试；图片会保存到笔记正文中。'
+  if (files.some(file => (file?.size || 0) > 20 * 1024 * 1024)) {
+    pasteError.value = '单张图片不能超过 20 MiB，请压缩后重试。'
+    return true
+  }
+  const saveImages = props.savePastedImages
+  if (!saveImages || !props.attachmentContext) {
+    pasteError.value = '当前笔记的图片存储不可用，请稍后重试。'
     return true
   }
   const before = currentText(), selection = selectionRange(), originalView = view, originalFallback = fallback.value
+  const originalContext = props.attachmentContext
+  // Keep a stable parent callback even if the editor unmounts while a large
+  // image is being written. The parent can then show a visible page notice.
+  const reportStatus = props.onPasteStatus
+  const report = (message: string) => { if (reportStatus) reportStatus(message); else pasteError.value = message }
   pasteError.value = ''
-  Promise.all(files.map(file => new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onerror = () => reject(new Error('读取图片失败'))
-    reader.onabort = () => reject(new Error('读取图片已取消'))
-    reader.onload = () => typeof reader.result === 'string' && /^data:image\/(?:png|jpeg|gif|webp);base64,/i.test(reader.result) ? resolve(reader.result) : reject(new Error('图片格式无效'))
-    reader.readAsDataURL(file!)
-  }))).then(images => {
+  let saved: Promise<string[]>
+  try { saved = Promise.resolve(saveImages(files as File[])) }
+  catch (error) { saved = Promise.reject(error) }
+  saved.then(images => {
     const now = selectionRange()
-    if (view !== originalView || fallback.value !== originalFallback || currentText() !== before || now.start !== selection.start || now.end !== selection.end) {
+    if (props.attachmentContext !== originalContext || view !== originalView || fallback.value !== originalFallback) {
+      report('图片处理期间已离开原章节，未插入正文；请回到原章节重新粘贴。')
+      return
+    }
+    if (props.readonly) {
+      report('图片已保存到本机，但编辑器正忙，未插入正文；请在同步或恢复结束后重新粘贴。')
+      return
+    }
+    if (currentText() !== before || now.start !== selection.start || now.end !== selection.end) {
       pasteError.value = '读取图片时正文或选区已改变，请在目标位置重新粘贴。'
+      return
+    }
+    if (images.length !== files.length || images.some(image => !/^assets\/[a-f0-9]{32}\.(?:png|jpg|gif|webp)$/.test(image))) {
+      pasteError.value = '图片保存结果无效，请重新粘贴。'
       return
     }
     const insert = images.map((image, index) => `![图片${images.length > 1 ? index + 1 : ''}](${image})`).join('\n')
     replace(selection.start, selection.end, insert, selection.start + insert.length, selection.start + insert.length, true)
-  }).catch(() => { pasteError.value = '无法读取剪贴板图片，请重新复制后再试。' })
+  }).catch((error: unknown) => {
+    report(error instanceof Error && error.message ? `图片未插入正文：${error.message}` : '无法保存图片，请检查本地存储空间后重试。')
+  })
   return true
 }
 
 class RenderedBlock extends WidgetType {
-  constructor(private readonly block: MarkdownBlock) { super() }
-  eq(other: RenderedBlock) { return this.block.from === other.block.from && this.block.to === other.block.to && this.block.html === other.block.html }
+  constructor(private readonly block: MarkdownBlock, private readonly imageVersion: number) { super() }
+  eq(other: RenderedBlock) { return this.block.from === other.block.from && this.block.to === other.block.to && this.block.html === other.block.html && this.imageVersion === other.imageVersion }
   toDOM(editor: EditorView) {
     const element = document.createElement('div')
     element.className = 'cm-paper-rendered vp-doc'
     element.innerHTML = this.block.html
+    applyImageUrls(element, props.imageUrls)
     element.title = '点击此处编辑 Markdown'
     if (this.block.type === 'table_open') {
       element.title = '点击普通单元格编辑；复杂格式可在源代码中修改'
@@ -178,12 +201,13 @@ class InlineMarker extends WidgetType {
 }
 
 class InlineImage extends WidgetType {
-  constructor(private readonly source: string, private readonly from: number, private readonly to: number, private readonly html: string) { super() }
-  eq(other: InlineImage) { return this.source === other.source && this.from === other.from && this.to === other.to && this.html === other.html }
+  constructor(private readonly source: string, private readonly from: number, private readonly to: number, private readonly html: string, private readonly imageVersion: number) { super() }
+  eq(other: InlineImage) { return this.source === other.source && this.from === other.from && this.to === other.to && this.html === other.html && this.imageVersion === other.imageVersion }
   toDOM(editor: EditorView) {
     const wrapper = document.createElement('span')
     wrapper.className = 'cm-paper-image'
     wrapper.innerHTML = this.html
+    applyImageUrls(wrapper, props.imageUrls)
     const img = wrapper.querySelector('img')
     if (!img) return wrapper
     img.title = '点击图片编辑地址与描述'
@@ -197,7 +221,7 @@ class InlineImage extends WidgetType {
       const alt = document.createElement('input')
       alt.value = img.alt; alt.placeholder = '图片描述'; alt.setAttribute('aria-label', '图片描述')
       const url = document.createElement('input')
-      url.value = img.getAttribute('src') || ''; url.placeholder = '图片地址'; url.setAttribute('aria-label', '图片地址')
+      url.value = originalImageSource(img); url.placeholder = '图片地址'; url.setAttribute('aria-label', '图片地址')
       const save = document.createElement('button')
       save.type = 'submit'; save.textContent = '保存'
       const cancel = document.createElement('button')
@@ -210,7 +234,7 @@ class InlineImage extends WidgetType {
       cancel.addEventListener('click', () => { form.remove(); editor.focus() })
       form.addEventListener('submit', e => {
         e.preventDefault(); e.stopPropagation()
-        if (alt.value === img.alt && url.value === (img.getAttribute('src') || '')) { form.remove(); editor.focus(); return }
+        if (alt.value === img.alt && url.value === originalImageSource(img)) { form.remove(); editor.focus(); return }
         const replacement = replaceInlineImage(this.source, alt.value, url.value)
         if (!replacement) { status.textContent = '此图片格式暂不支持在此修改，请切换源代码。'; return }
         if (editor.state.doc.sliceString(this.from, this.to) !== this.source) { status.textContent = '正文已改变，请重新打开图片编辑。'; return }
@@ -270,7 +294,7 @@ function renderedDecorations(state: EditorState): DecorationSet {
         continue
       }
       if (block.type === 'table_open' || (!active && !block.direct)) {
-        ranges.push(Decoration.replace({ widget: new RenderedBlock(block), block: true }).range(block.from, block.to))
+        ranges.push(Decoration.replace({ widget: new RenderedBlock(block, imageRevision), block: true }).range(block.from, block.to))
         continue
       }
       // Plain text and headings remain editable lines at all times. This
@@ -286,7 +310,7 @@ function renderedDecorations(state: EditorState): DecorationSet {
         if (node.name === 'FencedCode') { addFenceDecorations(state, selection, ranges, node.from, node.to); return false }
         if (node.name === 'Image') {
           const source = state.doc.sliceString(node.from, node.to)
-          ranges.push(Decoration.replace({ widget: new InlineImage(source, node.from, node.to, renderInlineMarkdown(source, environment)) }).range(node.from, node.to))
+          ranges.push(Decoration.replace({ widget: new InlineImage(source, node.from, node.to, renderInlineMarkdown(source, environment), imageRevision) }).range(node.from, node.to))
           return false
         }
         if (/^ATXHeading[1-6]$/.test(node.name)) {
@@ -401,6 +425,10 @@ watch(() => props.modelValue, value => {
 })
 watch(() => props.mode, mode => { try { view?.dispatch({ effects: modeCompartment.reconfigure(displayExtension(mode)) }) } catch { useFallback() } })
 watch(() => props.readonly, value => { try { view?.dispatch({ effects: readonlyCompartment.reconfigure(editableExtension(!!value)) }) } catch { useFallback() } })
+watch(() => props.imageUrls, () => {
+  imageRevision++
+  try { view?.dispatch({ effects: refreshVisual.of(null) }) } catch { useFallback() }
+})
 
 function currentText() { return view?.state.doc.toString() ?? props.modelValue }
 function selectionRange() {

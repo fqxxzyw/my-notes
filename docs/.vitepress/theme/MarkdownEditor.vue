@@ -2,7 +2,7 @@
 import { onMounted, ref } from 'vue'
 import LiveMarkdown from './LiveMarkdown.vue'
 
-const props = defineProps<{ modelValue: string; readonly?: boolean }>()
+const props = defineProps<{ modelValue: string; readonly?: boolean; attachmentContext?: string; imageUrls?: Readonly<Record<string, string>>; savePastedImages?: (files: File[]) => Promise<string[]>; onPasteStatus?: (message: string) => void }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 const editor = ref<InstanceType<typeof LiveMarkdown> | null>(null)
 const mode = ref<'source' | 'visual'>('visual')
@@ -173,7 +173,7 @@ defineExpose({ focusHeading, applyOutlineChange })
     <div class="editor-panes">
       <div class="editor-pane">
         <span class="pane-heading">正文 <span v-if="mode === 'visual'">· 点击文字直接编辑</span></span>
-        <LiveMarkdown ref="editor" :model-value="modelValue" :mode="mode" :readonly="readonly"
+        <LiveMarkdown ref="editor" :model-value="modelValue" :mode="mode" :readonly="readonly" :attachment-context="attachmentContext" :image-urls="imageUrls" :save-pasted-images="savePastedImages" :on-paste-status="onPasteStatus"
           @update:model-value="emit('update:modelValue', $event)" @keydown="handleKeydown" @selection="selectionAnchor = $event" @failure="editorFallback = true; mode = 'source'" />
       </div>
     </div>

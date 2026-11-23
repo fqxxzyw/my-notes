@@ -3,6 +3,7 @@ import { defaultCatalog, parseCatalog, serializeCatalog, type CabinetCatalog, ty
 import { normalizeRepository } from './repository'
 import { readNotebookDescription, writeNotebookDescription } from './notebookDescription'
 import { readNotebookChapterOrder, writeNotebookChapterOrder } from './notebookChapterOrder'
+import { MAX_ATTACHMENT_BYTES, validateAttachment, validateAttachmentPath, type NoteAttachment } from './attachmentStore'
 export { normalizeRepository } from './repository'
 export type { CabinetCatalog, CatalogVersion } from './cabinetStore'
 export type Notebook = { id: string; title: string; sha: string; description?: string; indexContent?: string; chapterOrder?: string[] }
@@ -39,17 +40,35 @@ function catalogText(catalog: CabinetCatalog): string {
 }
 
 async function blobSha(content: string): Promise<string> {
+  return blobBytesSha(new TextEncoder().encode(content))
+}
+
+async function blobBytesSha(body: Uint8Array): Promise<string> {
   if (!globalThis.crypto?.subtle) {
     throw new NotebookStoreError('github', '浏览器无法计算文件版本号，请使用安全连接访问。')
   }
   const encoder = new TextEncoder()
-  const body = encoder.encode(content)
   const header = encoder.encode(`blob ${body.length}\0`)
   const data = new Uint8Array(header.length + body.length)
   data.set(header)
   data.set(body, header.length)
   const hash = await crypto.subtle.digest('SHA-1', data)
   return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function encodeBytes(bytes: Uint8Array): string {
+  let binary = ''
+  const chunk = 0x8000
+  for (let offset = 0; offset < bytes.length; offset += chunk) binary += String.fromCharCode(...bytes.subarray(offset, offset + chunk))
+  return btoa(binary)
+}
+
+function decodeBytes(file: GitHubFile): Uint8Array {
+  if (file.encoding !== 'base64' || typeof file.content !== 'string') throw new NotebookStoreError('github', '无法读取图片附件。')
+  const encoded = file.content.replace(/\s/g, '')
+  if (encoded.length > Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4) throw new NotebookStoreError('invalid', '图片超过 20 MiB，无法保存到本机。')
+  try { return Uint8Array.from(atob(encoded), char => char.charCodeAt(0)) }
+  catch { throw new NotebookStoreError('invalid', '图片附件格式无效。') }
 }
 
 function checkId(value: string): string {
@@ -189,12 +208,12 @@ export function createNotebookStore(repository?: string | null) {
     }
   }
 
-  async function syncBatch(newBooks: Notebook[], chapters: Chapter[], catalogChange?: CatalogVersion, pages: Page[] = []): Promise<BatchResult> {
+  async function syncBatch(newBooks: Notebook[], chapters: Chapter[], catalogChange?: CatalogVersion, pages: Page[] = [], attachments: NoteAttachment[] = []): Promise<BatchResult> {
     if (!token) throw new NotebookStoreError('auth', '请先输入具有仓库内容写入权限的 GitHub 令牌。')
     if (!newBooks.length && !chapters.length && !pages.length && !catalogChange) throw new NotebookStoreError('invalid', '请至少选择一本新笔记本、一篇章节、书页或书柜目录。')
 
     const paths = new Set<string>()
-    const changes: Array<{ path: string; content: string; baseline: string; desired: string; mode?: string }> = []
+    const changes: Array<{ path: string; content?: string; bytes?: Uint8Array; baseline: string; desired: string; mode?: string }> = []
     let catalog: CabinetCatalog | undefined
     if (catalogChange) {
       if (typeof catalogChange.sha !== 'string' || (catalogChange.sha !== '' && !/^[a-f0-9]{40}$/.test(catalogChange.sha))) throw new NotebookStoreError('invalid', '书柜目录版本号无效。')
@@ -235,6 +254,16 @@ export function createNotebookStore(repository?: string | null) {
       if (paths.has(path)) throw new NotebookStoreError('invalid', '同步列表包含重复的书页。')
       paths.add(path)
       changes.push({ path, content: page.content, baseline: page.sha, desired: await blobSha(page.content) })
+    }
+    const attachmentDirectories = new Set([...chapters.map(chapter => `docs/${ROOT}/${chapter.bookId}/assets/`), ...(pages.length ? ['docs/pages/assets/'] : [])])
+    for (const attachment of attachments) {
+      try { validateAttachment(attachment) } catch (error) { throw new NotebookStoreError('invalid', error instanceof Error ? error.message : '图片附件无效。') }
+      if (![...attachmentDirectories].some(dir => attachment.path.startsWith(dir))) throw new NotebookStoreError('invalid', '图片不属于本次同步的笔记。')
+      if (paths.has(attachment.path)) throw new NotebookStoreError('invalid', '同步列表包含重复的图片附件。')
+      paths.add(attachment.path)
+      // Images use immutable random names. Reusing a name for different bytes
+      // is always a conflict, even if a stale local cache carries a SHA.
+      changes.push({ path: attachment.path, bytes: attachment.bytes, baseline: '', desired: await blobBytesSha(attachment.bytes) })
     }
 
     const ref = await gitRequest('ref/heads/main') as { object?: { sha?: string } }
@@ -297,9 +326,18 @@ export function createNotebookStore(repository?: string | null) {
 
     let head = parent
     if (pending.length) {
+      const treeEntries: Array<{ path: string; mode?: string; type: 'blob'; content?: string; sha?: string }> = []
+      // Upload sequentially: base64 encoding many large images in parallel
+      // can otherwise exceed the renderer's memory before any commit exists.
+      for (const change of pending) {
+        if (!change.bytes) { treeEntries.push({ path: change.path, mode: change.mode, type: 'blob', content: change.content }); continue }
+        const blob = await gitRequest('blobs', 'POST', { content: encodeBytes(change.bytes), encoding: 'base64' }) as { sha?: string }
+        if (blob.sha !== change.desired) throw new NotebookStoreError('github', 'GitHub 返回的图片版本与本地不一致，请保留草稿。')
+        treeEntries.push({ path: change.path, mode: change.mode, type: 'blob', sha: blob.sha })
+      }
       const createdTree = await gitRequest('trees', 'POST', {
         base_tree: baseTree,
-        tree: pending.map(change => ({ path: change.path, mode: change.mode, type: 'blob', content: change.content }))
+        tree: treeEntries
       }) as { sha?: string }
       if (!createdTree?.sha) throw new NotebookStoreError('github', 'GitHub 未返回文件树版本，请保留草稿。')
       const summary = [
@@ -399,8 +437,20 @@ export function createNotebookStore(repository?: string | null) {
       const dir = await findPath(`docs/${ROOT}/${bookId}`)
       if (!dir || dir.type !== 'tree' || !dir.sha) throw new NotebookStoreError('conflict', `远端笔记本已发生变化：${bookId}。`)
       const entries = (await tree(dir.sha)).tree
-      // Never remove an unseen attachment, nested directory or newly added chapter.
-      if (entries.length !== files.size || entries.some(entry => !isRegularFile(entry) || !files.has(entry.path) || files.get(entry.path) !== entry.sha)) {
+      // Retain only the application's validated, immutable attachment folder;
+      // another note may reference an image even after this book is deleted.
+      const assetFolder = entries.find(entry => entry.path === 'assets')
+      if (assetFolder) {
+        if (assetFolder.type !== 'tree' || !assetFolder.sha) throw new NotebookStoreError('conflict', `图片目录无效：${bookId}。`)
+        const assets = (await tree(assetFolder.sha)).tree
+        for (const asset of assets) {
+          try { validateAttachmentPath(`docs/${ROOT}/${bookId}/assets/${asset.path}`) } catch { throw new NotebookStoreError('conflict', `图片目录含未识别文件：${bookId}。`) }
+          if (!isRegularFile(asset)) throw new NotebookStoreError('conflict', `图片目录含未识别文件：${bookId}。`)
+        }
+      }
+      const markdownEntries = entries.filter(entry => entry !== assetFolder)
+      // Never remove an unseen file, nested directory or newly added chapter.
+      if (markdownEntries.length !== files.size || markdownEntries.some(entry => !isRegularFile(entry) || !files.has(entry.path) || files.get(entry.path) !== entry.sha)) {
         throw new NotebookStoreError('conflict', `远端笔记本内容已变化或含有未识别文件：${bookId}。请刷新并检查后重试。`)
       }
     }
@@ -494,6 +544,17 @@ export function createNotebookStore(repository?: string | null) {
     return decode(await gitRequest(`blobs/${encodeURIComponent(data.sha)}`) as GitHubFile)
   }
 
+  async function readAttachment(path: string): Promise<NoteAttachment> {
+    try { validateAttachmentPath(path) } catch { throw new NotebookStoreError('invalid', '图片附件路径无效。') }
+    const data = await file(path.slice('docs/'.length))
+    if (!/^[a-f0-9]{40}$/.test(data.sha)) throw new NotebookStoreError('github', 'GitHub 返回的图片版本无效。')
+    const source = data.encoding === 'base64' && typeof data.content === 'string' ? data : await gitRequest(`blobs/${encodeURIComponent(data.sha)}`) as GitHubFile
+    const attachment = { path, bytes: decodeBytes(source), sha: data.sha }
+    try { validateAttachment(attachment) } catch (error) { throw new NotebookStoreError('invalid', error instanceof Error ? error.message : '图片附件无效。') }
+    if (await blobBytesSha(attachment.bytes) !== data.sha) throw new NotebookStoreError('github', '图片校验失败，请重试。')
+    return attachment
+  }
+
   return {
     setToken(value: string): void { token = value.trim() },
     clearToken(): void { token = '' },
@@ -518,6 +579,7 @@ export function createNotebookStore(repository?: string | null) {
       return ref.object.sha
     },
     syncBatch,
+    readAttachment,
     deleteBatch,
     async readCatalog(snapshot = true): Promise<CatalogVersion> {
       if (snapshot) {
@@ -531,11 +593,26 @@ export function createNotebookStore(repository?: string | null) {
     async listNotebooks(): Promise<Notebook[]> {
       const list = await entries(ROOT, true)
       const books = list.filter(item => item.type === 'dir' && ID.test(item.name))
-      return Promise.all(books.map(async item => {
-        const data = await file(`${ROOT}/${item.name}/index.md`)
+      const found = await Promise.all(books.map(async item => {
+        let data: GitHubFile
+        try { data = await file(`${ROOT}/${item.name}/index.md`) }
+        catch (error) {
+          if (!(error instanceof NotebookStoreError) || error.code !== 'not-found') throw error
+          // Deleting a book keeps its shared images; its assets-only directory
+          // is not a notebook and must not break the rest of the library.
+          const remaining = await entries(`${ROOT}/${item.name}`)
+          if (remaining.length !== 1 || remaining[0].type !== 'dir' || remaining[0].name !== 'assets') throw error
+          const assets = await entries(`${ROOT}/${item.name}/assets`)
+          if (!assets.length || assets.some(asset => {
+            if (asset.type !== 'file') return true
+            try { validateAttachmentPath(`docs/${ROOT}/${item.name}/assets/${asset.name}`); return false } catch { return true }
+          })) throw error
+          return null
+        }
         const content = decode(data)
         return { id: item.name, title: titleFrom(content, item.name), sha: data.sha, description: readNotebookDescription(content), indexContent: content, chapterOrder: readNotebookChapterOrder(content) }
       }))
+      return found.filter((book): book is Notebook => book !== null)
     },
     async listChapters(bookId: string): Promise<Chapter[]> {
       const ids = await listChapterIds(bookId)

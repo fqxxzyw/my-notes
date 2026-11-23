@@ -3,6 +3,14 @@ import MarkdownIt from 'markdown-it'
 /** A rendered block is only a view of these original source offsets. */
 export type MarkdownBlock = { from: number; to: number; source: string; html: string; type: string; direct: boolean }
 
+/** A boundary cursor is outside a marker; only reveal an actively edited mark. */
+export function revealInlineMarker(selections: readonly { from: number; to: number }[], from: number, to: number): boolean {
+  return selections.some(range => range.from === range.to
+    ? range.from > from && range.from < to
+    : range.from < to && range.to > from)
+}
+
+
 const markdown = new MarkdownIt({ html: false, linkify: false, typographer: false })
 
 // Markdown-it supports GFM tables and strikethrough. Render task markers as

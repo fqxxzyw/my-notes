@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Compartment, EditorSelection, EditorState, Prec, StateEffect, StateField, type Range } from '@codemirror/state'
-import { defaultKeymap, history, historyKeymap, indentLess, insertTab, isolateHistory } from '@codemirror/commands'
+import { Compartment, EditorSelection, EditorState, Prec, StateEffect, StateField, findClusterBreak, type Range } from '@codemirror/state'
+import { defaultKeymap, deleteCharBackward, deleteCharForward, history, historyKeymap, indentLess, insertTab, isolateHistory } from '@codemirror/commands'
 import { syntaxHighlighting, syntaxTree } from '@codemirror/language'
 import { Decoration, EditorView, keymap, WidgetType, type DecorationSet } from '@codemirror/view'
-import { applyTextareaChange, markdownBlocks, markdownEnvironment, rawOffsetForTextarea, renderInlineMarkdown, replaceInlineImage, sourceOffsetForText, tableCellRange, textareaOffsetForRaw, type MarkdownBlock } from './liveMarkdown'
+import { applyTextareaChange, markdownBlocks, markdownEnvironment, rawOffsetForTextarea, renderInlineMarkdown, replaceInlineImage, revealInlineMarker, sourceOffsetForText, tableCellRange, textareaOffsetForRaw, type MarkdownBlock } from './liveMarkdown'
+import { emptyInlineDeletion, visibleInlineEditPosition } from './inlineDeletion.js'
 import { markdownEditorLanguage, sourceMarkdownHighlight, visualCodeHighlight } from './editorHighlight.js'
 import { applyImageUrls, originalImageSource } from './imageUrls'
 
@@ -360,7 +361,7 @@ function renderedDecorations(state: EditorState): DecorationSet {
           if (open && labelEnd && open.to < labelEnd.from) {
             ranges.push(Decoration.mark({ class: 'cm-paper-link' }).range(open.to, labelEnd.from))
             for (const [from, to] of [[open.from, open.to], [labelEnd.from, node.to]]) {
-              if (!selection.some(range => range.from <= to && range.to >= from)) ranges.push(Decoration.replace({}).range(from, to))
+              if (!revealInlineMarker(selection, from, to)) ranges.push(Decoration.replace({}).range(from, to))
             }
           }
           return
@@ -378,10 +379,7 @@ function renderedDecorations(state: EditorState): DecorationSet {
         if (!first || !last || first === last || first.to >= last.from) return
         ranges.push(Decoration.mark({ class: inlineClass }).range(first.to, last.from))
         for (const mark of [first, last]) {
-          const intersects = selection.some(range => range.from === range.to
-            ? range.from >= mark.from && range.from <= mark.to
-            : range.from < mark.to && range.to > mark.from)
-          if (!intersects) ranges.push(Decoration.replace({}).range(mark.from, mark.to))
+          if (!revealInlineMarker(selection, mark.from, mark.to)) ranges.push(Decoration.replace({}).range(mark.from, mark.to))
         }
       } })
     }
@@ -407,6 +405,29 @@ function displayExtension(mode: 'source' | 'visual') {
   return mode === 'visual' ? [renderedField, syntaxHighlighting(visualCodeHighlight)] : [syntaxHighlighting(sourceMarkdownHighlight)]
 }
 function editableExtension(readonly: boolean) { return [EditorState.readOnly.of(readonly), EditorView.editable.of(!readonly)] }
+function deleteVisibleInline(target: EditorView, direction: -1 | 1): boolean {
+  if (props.mode !== 'visual' || composing || target.state.readOnly || target.state.selection.ranges.length !== 1) return false
+  const selection = target.state.selection.main
+  if (!selection.empty) return false
+  const empty = emptyInlineDeletion(target.state, selection.head, direction)
+  if (empty) {
+    const insert = empty.text || ''
+    target.dispatch({ changes: { from: empty.from, to: empty.to, insert }, selection: EditorSelection.cursor(empty.from + insert.length), annotations: isolateHistory.of('full') })
+    return true
+  }
+  const position = visibleInlineEditPosition(target.state, selection.head, direction)
+  if (position === null) return false
+  const line = target.state.doc.lineAt(position)
+  const offset = position - line.from
+  if (direction === -1 && offset === 0 || direction === 1 && offset === line.text.length) {
+    target.dispatch({ selection: EditorSelection.cursor(position) })
+    return (direction === -1 ? deleteCharBackward(target) : deleteCharForward(target)) || true
+  }
+  const boundary = line.from + findClusterBreak(line.text, offset, direction === 1)
+  const from = Math.min(position, boundary), to = Math.max(position, boundary)
+  target.dispatch({ changes: { from, to, insert: '' }, selection: EditorSelection.cursor(from), userEvent: direction === -1 ? 'delete.backward' : 'delete.forward' })
+  return true
+}
 function stateFor(value: string) {
   return EditorState.create({
     doc: value,
@@ -414,7 +435,7 @@ function stateFor(value: string) {
       // Splitting on LF only keeps CR characters intact, including mixed line endings.
       EditorState.lineSeparator.of('\n'), history(), markdownEditorLanguage,
       // Escape then Tab remains available for leaving the editor by keyboard.
-      keymap.of([{ key: 'Tab', run: target => !target.state.readOnly && insertTab(target), shift: indentLess }, ...defaultKeymap, ...historyKeymap]), EditorView.lineWrapping,
+      keymap.of([{ key: 'Backspace', run: target => deleteVisibleInline(target, -1) }, { key: 'Delete', run: target => deleteVisibleInline(target, 1) }, { key: 'Tab', run: target => !target.state.readOnly && insertTab(target), shift: indentLess }, ...defaultKeymap, ...historyKeymap]), EditorView.lineWrapping,
       EditorView.contentAttributes.of({ 'aria-label': '正文', 'aria-multiline': 'true', spellcheck: 'false' }),
       Prec.high(EditorView.domEventHandlers({
         keydown(event) { selectionKeydown(event); emit('keydown', event); return event.defaultPrevented },

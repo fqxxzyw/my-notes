@@ -2,9 +2,56 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
 import { EditorState } from '@codemirror/state'
+import { syntaxTree } from '@codemirror/language'
+import { markdownEditorLanguage } from '../docs/.vitepress/theme/editorHighlight.js'
+import { emptyInlineDeletion, visibleInlineEditPosition } from '../docs/.vitepress/theme/inlineDeletion.js'
 
 const bundled = await build({ entryPoints: ['docs/.vitepress/theme/liveMarkdown.ts'], bundle: true, platform: 'node', format: 'esm', write: false })
-const { markdownBlocks, markdownEnvironment, sourceOffsetForText, rawOffsetForTextarea, textareaOffsetForRaw, applyTextareaChange, tableCellRange, replaceInlineImage, renderInlineMarkdown } = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString('base64')}`)
+const { markdownBlocks, markdownEnvironment, sourceOffsetForText, rawOffsetForTextarea, textareaOffsetForRaw, applyTextareaChange, tableCellRange, replaceInlineImage, renderInlineMarkdown, revealInlineMarker } = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString('base64')}`)
+
+test('inline closing marks hide immediately at the end without changing the source', () => {
+  for (const [source, name] of [['`repr`', 'InlineCode'], ['**粗体**', 'StrongEmphasis'], ['*斜体*', 'Emphasis'], ['~~删除~~', 'Strikethrough']]) {
+    const state = EditorState.create({ doc: source, extensions: [markdownEditorLanguage] })
+    let marker
+    syntaxTree(state).iterate({ enter(node) { if (node.name === name) marker = node.node.lastChild } })
+    assert.ok(marker, `${name} must parse`)
+    assert.equal(revealInlineMarker([{ from: marker.to, to: marker.to }], marker.from, marker.to), false, `${name} closed at caret`)
+    assert.equal(revealInlineMarker([{ from: marker.from, to: marker.from }], marker.from, marker.to), false, `${name} caret before closing`)
+    assert.equal(revealInlineMarker([{ from: marker.from, to: marker.to }], marker.from, marker.to), true, `${name} selected mark`)
+    if (marker.to - marker.from > 1) assert.equal(revealInlineMarker([{ from: marker.from + 1, to: marker.from + 1 }], marker.from, marker.to), true, `${name} cursor inside mark`)
+    assert.equal(state.doc.toString(), source)
+  }
+  assert.equal(revealInlineMarker([{ from: 0, to: 1 }, { from: 4, to: 6 }], 5, 7), true)
+})
+
+test('backspace and delete target visible text across hidden nested and link marks', () => {
+  for (const [source, before, after] of [['`repr`', 1, 5], ['**粗体**', 2, 4], ['***文本***', 3, 5], ['~~删除~~', 2, 4], ['[链接](https://example.com)', 1, 3]]) {
+    const state = EditorState.create({ doc: source, extensions: [markdownEditorLanguage] })
+    assert.equal(visibleInlineEditPosition(state, source.length, -1), after, `${source} backspace`)
+    assert.equal(visibleInlineEditPosition(state, 0, 1), before, `${source} delete`)
+    assert.equal(visibleInlineEditPosition(state, before, -1), 0, `${source} skips opening on backspace`)
+    assert.equal(visibleInlineEditPosition(state, after, 1), source.length, `${source} skips closing on delete`)
+  }
+  const state = EditorState.create({ doc: '`前😀后`!', extensions: [markdownEditorLanguage] })
+  assert.equal(visibleInlineEditPosition(state, state.doc.length, -1), null, 'normal text after markup remains normal')
+})
+
+test('removing the last visible grapheme removes only empty formatting wrappers', () => {
+  for (const source of ['`a`', '**a**', '*a*', '~~a~~', '***a***', '**`a`**', '**e\u0301**', '**😀**']) {
+    const state = EditorState.create({ doc: source, extensions: [markdownEditorLanguage] })
+    assert.deepEqual(emptyInlineDeletion(state, source.length, -1), { from: 0, to: source.length }, `${source} backspace`)
+    assert.deepEqual(emptyInlineDeletion(state, 0, 1), { from: 0, to: source.length }, `${source} delete`)
+  }
+  const mixed = '开始 **长 *a*** 后'
+  const state = EditorState.create({ doc: mixed, extensions: [markdownEditorLanguage] })
+  const end = mixed.indexOf(' 后')
+  const edit = emptyInlineDeletion(state, end, -1)
+  assert.equal(mixed.slice(0, edit.from) + (edit.text || '') + mixed.slice(edit.to), '开始 **长**  后')
+  const link = '[a](https://example.com)'
+  assert.equal(emptyInlineDeletion(EditorState.create({ doc: link, extensions: [markdownEditorLanguage] }), link.length, -1), null)
+  const multi = '**ab**'
+  assert.equal(emptyInlineDeletion(EditorState.create({ doc: multi, extensions: [markdownEditorLanguage] }), multi.length, -1), null)
+})
 
 test('the editor document retains mixed newlines and unknown Markdown exactly', () => {
   const source = '# 标题\r\n\r\n文字 **粗体**\n\n::: custom\r\n<raw> & text\r\n:::\n'

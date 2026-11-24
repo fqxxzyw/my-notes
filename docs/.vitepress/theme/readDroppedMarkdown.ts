@@ -1,14 +1,16 @@
 import MarkdownIt from 'markdown-it'
 import { htmlImageReferences } from './htmlImageRefs'
 import { markdownEditorLanguage } from './editorHighlight.js'
+import { BINARY_DOCUMENT_EXTENSIONS, extractFileExtension, MAX_DOCUMENT_BYTES } from './documentFiles'
 
 /** sourcePath is a transient native file-picker result; never persist it in notes. */
-export interface DroppedMarkdownFile { path: string; name: string; content: string; sourcePath?: string }
+export interface DroppedMarkdownFile { path: string; name: string; content: string; sourcePath?: string; ext?: 'md' | 'txt' }
+export interface DroppedDocumentFile { path: string; name: string; ext: string; bytes: Uint8Array }
 export interface DroppedSkip { path: string; reason: 'not-markdown' | 'too-large' | 'too-many' | 'invalid-utf8' | 'read-error' | 'unsupported' | 'invalid-path' | 'invalid-image' | 'ambiguous' }
 export interface DroppedLocalResource { markdownPath: string; target: string }
 export interface DroppedImage { path: string; bytes: Uint8Array; references: DroppedLocalResource[] }
-export interface DroppedMarkdownResult { files: DroppedMarkdownFile[]; folders: string[]; skipped: DroppedSkip[]; localResources: DroppedLocalResource[]; images: DroppedImage[] }
-export interface DropReadLimits { maxFiles?: number; maxFileBytes?: number; maxTotalBytes?: number; maxEntries?: number; maxDepth?: number; maxImages?: number; maxImageBytes?: number; maxTotalImageBytes?: number; referenceFiles?: DroppedMarkdownFile[]; selectedImageFolder?: boolean }
+export interface DroppedMarkdownResult { files: DroppedMarkdownFile[]; documents?: DroppedDocumentFile[]; folders: string[]; skipped: DroppedSkip[]; localResources: DroppedLocalResource[]; images: DroppedImage[] }
+export interface DropReadLimits { maxFiles?: number; maxFileBytes?: number; maxTotalBytes?: number; maxEntries?: number; maxDepth?: number; maxImages?: number; maxImageBytes?: number; maxTotalImageBytes?: number; maxDocuments?: number; maxDocumentBytes?: number; maxTotalDocumentBytes?: number; allowOtherFiles?: boolean; referenceFiles?: DroppedMarkdownFile[]; selectedImageFolder?: boolean }
 
 interface Entry {
   name: string
@@ -192,17 +194,21 @@ export async function readDroppedMarkdown(transfer: DataTransfer, options: DropR
   const maxEntries = limit(options.maxEntries, 2000), maxDepth = limit(options.maxDepth, 32)
   const maxImages = limit(options.maxImages, 300), maxImageBytes = limit(options.maxImageBytes, 20 * 1024 * 1024)
   const maxTotalImageBytes = limit(options.maxTotalImageBytes, 100 * 1024 * 1024)
-  const result: DroppedMarkdownResult = { files: [], folders: [], skipped: [], localResources: [], images: [] }
+  const maxDocuments = limit(options.maxDocuments, 100), maxDocumentBytes = limit(options.maxDocumentBytes, MAX_DOCUMENT_BYTES)
+  const maxTotalDocumentBytes = limit(options.maxTotalDocumentBytes, 200 * 1024 * 1024)
+  const allowOtherFiles = !!options.allowOtherFiles
+  const result: DroppedMarkdownResult = { files: [], ...(allowOtherFiles ? { documents: [] } : {}), folders: [], skipped: [], localResources: [], images: [] }
   const imageFiles = new Map<string, File | null>()
   const imageReferences: DroppedLocalResource[] = []
   const nonImageReferences = new Set<string>()
-  let entriesSeen = 0, totalBytes = 0, exhausted = false
+  let entriesSeen = 0, totalBytes = 0, totalDocumentBytes = 0, exhausted = false
   const addFolder = (name: string) => { if (validInputPath(name) && !name.includes('/') && !result.folders.includes(name)) result.folders.push(name) }
   const addRelativeRoot = (path: string) => { if (validInputPath(path) && path.includes('/')) addFolder(path.split('/')[0]) }
   const skip = (path: string, reason: DroppedSkip['reason']) => result.skipped.push({ path, reason })
   const addMarkdown = (file: DroppedMarkdownFile) => {
     if (!validInputPath(file.path)) throw new Error('笔记的源路径无效。')
     result.files.push(file)
+    if (file.ext === 'txt') return
     const resources = localTargets(file.content)
     for (const target of resources.targets) result.localResources.push({ markdownPath: file.path, target })
     for (const target of resources.images) imageReferences.push({ markdownPath: file.path, target })
@@ -222,10 +228,25 @@ export async function readDroppedMarkdown(transfer: DataTransfer, options: DropR
       imageFiles.set(path, imageFiles.has(path) ? null : file)
       return
     }
-    if (!/\.md$/i.test(file.name)) { skip(path, 'not-markdown'); return }
+    const ext = extractFileExtension(file.name)
+    const isMd = ext === 'md'
+    const isTxt = allowOtherFiles && ext === 'txt'
+    const isBinaryDoc = allowOtherFiles && BINARY_DOCUMENT_EXTENSIONS.has(ext)
+    if (!isMd && !isTxt && !isBinaryDoc) { skip(path, 'not-markdown'); return }
     // When locating an already-open note's images, Markdown files inside the
     // selected image folder are not imported or treated as additional notes.
     if (options.selectedImageFolder && options.referenceFiles?.length) return
+    if (isBinaryDoc) {
+      if ((result.documents?.length || 0) >= maxDocuments) { skip(path, 'too-many'); return }
+      if (!file.size || file.size > maxDocumentBytes || totalDocumentBytes + file.size > maxTotalDocumentBytes) { skip(path, 'too-large'); return }
+      totalDocumentBytes += file.size
+      let buffer: ArrayBuffer
+      try { buffer = await fileBytes(file) } catch { skip(path, 'read-error'); return }
+      const bytes = new Uint8Array(buffer)
+      if (!bytes.length || bytes.length > maxDocumentBytes) { skip(path, 'too-large'); return }
+      result.documents!.push({ path, name: file.name, ext, bytes })
+      return
+    }
     if (result.files.length >= maxFiles) { skip(path, 'too-many'); return }
     if (file.size > maxFileBytes || totalBytes + file.size > maxTotalBytes) { skip(path, 'too-large'); return }
     // Count attempted reads against the budget, including invalid files.
@@ -233,12 +254,20 @@ export async function readDroppedMarkdown(transfer: DataTransfer, options: DropR
     let bytes: ArrayBuffer
     try { bytes = await fileBytes(file) } catch { skip(path, 'read-error'); return }
     let content: string
-    try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) } catch { skip(path, 'invalid-utf8'); return }
+    try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) }
+    catch {
+      if (isTxt) {
+        try { content = new TextDecoder('gb18030').decode(bytes) }
+        catch { skip(path, 'invalid-utf8'); return }
+      } else {
+        skip(path, 'invalid-utf8'); return
+      }
+    }
     const sourcePath = (file as File & { paperSourcePath?: unknown }).paperSourcePath
     // Only a desktop-origin picker supplies this temporary field. Arbitrary or
     // malformed properties cannot create an absolute native path request.
-    const nativeSource = typeof sourcePath === 'string' && sourcePath.length <= 32767 && /^[A-Za-z]:[\\/]/.test(sourcePath) && !/[\u0000-\u001f\u007f]/.test(sourcePath) ? sourcePath : undefined
-    addMarkdown({ path, name: file.name, content, ...(nativeSource ? { sourcePath: nativeSource } : {}) })
+    const nativeSource = isMd && typeof sourcePath === 'string' && sourcePath.length <= 32767 && /^[A-Za-z]:[\\/]/.test(sourcePath) && !/[\u0000-\u001f\u007f]/.test(sourcePath) ? sourcePath : undefined
+    addMarkdown({ path, name: file.name, content, ...(isTxt ? { ext: 'txt' } : {}), ...(nativeSource ? { sourcePath: nativeSource } : {}) })
   }
   const walk = async (entry: Entry, parent: string, depth: number): Promise<void> => {
     if (exhausted || !consume()) return

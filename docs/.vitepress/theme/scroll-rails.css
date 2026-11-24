@@ -1,0 +1,80 @@
+/* The document and chapter-list scrollbars remain native controls: their
+   hit targets stay generous while the visible rail echoes the outline rail. */
+html, body, html.paper-night, html.paper-night body, .chapter-directory-scroll, .reference-book-card {
+  scrollbar-width: thin;
+  scrollbar-color: var(--theme-ink, #111) transparent;
+}
+
+/* Chromium/WebView2 support the detailed native scrollbar pseudo-elements.
+   Override the standards properties there so they do not mask these styles. */
+@supports selector(::-webkit-scrollbar) {
+  html, body, html.paper-night, html.paper-night body, .chapter-directory-scroll, .reference-book-card {
+    scrollbar-width: auto;
+    scrollbar-color: auto;
+  }
+
+  /* Chromium requires a base pseudo-element on nested scrollers before it
+     applies the directional track and thumb rules below. */
+  .chapter-directory-scroll::-webkit-scrollbar,
+  .reference-book-card::-webkit-scrollbar { width: 14px; height: 14px; }
+
+  html::-webkit-scrollbar:vertical,
+  body::-webkit-scrollbar:vertical,
+  .chapter-directory-scroll::-webkit-scrollbar:vertical,
+  .reference-book-card::-webkit-scrollbar:vertical { width: 14px; }
+
+  html::-webkit-scrollbar-track:vertical,
+  body::-webkit-scrollbar-track:vertical,
+  .chapter-directory-scroll::-webkit-scrollbar-track:vertical,
+  .reference-book-card::-webkit-scrollbar-track:vertical {
+    background: linear-gradient(var(--theme-ink, #111), var(--theme-ink, #111)) center / 2px 100% no-repeat;
+  }
+
+  html::-webkit-scrollbar-thumb:vertical,
+  body::-webkit-scrollbar-thumb:vertical,
+  .chapter-directory-scroll::-webkit-scrollbar-thumb:vertical,
+  .reference-book-card::-webkit-scrollbar-thumb:vertical {
+    min-height: 32px;
+    border: 4px solid transparent;
+    border-radius: 7px;
+    background: var(--theme-ink, #111);
+    background-clip: padding-box;
+  }
+
+  html::-webkit-scrollbar-thumb:vertical:hover,
+  html::-webkit-scrollbar-thumb:vertical:active,
+  body::-webkit-scrollbar-thumb:vertical:hover,
+  body::-webkit-scrollbar-thumb:vertical:active,
+  .chapter-directory-scroll::-webkit-scrollbar-thumb:vertical:hover,
+  .chapter-directory-scroll::-webkit-scrollbar-thumb:vertical:active,
+  .reference-book-card::-webkit-scrollbar-thumb:vertical:hover,
+  .reference-book-card::-webkit-scrollbar-thumb:vertical:active { border-width: 2px; }
+
+  html::-webkit-scrollbar-button:vertical,
+  body::-webkit-scrollbar-button:vertical,
+  .chapter-directory-scroll::-webkit-scrollbar-button:vertical,
+  .reference-book-card::-webkit-scrollbar-button:vertical { display: none; }
+}
+
+/* Respect system contrast and pointer conventions instead of forcing a theme. */
+@media (forced-colors: active) {
+  html, body, html.paper-night, html.paper-night body, .chapter-directory-scroll, .reference-book-card { scrollbar-width: auto; scrollbar-color: auto; }
+  .chapter-directory-scroll::-webkit-scrollbar,
+  .reference-book-card::-webkit-scrollbar { width: auto; height: auto; }
+  html::-webkit-scrollbar:vertical,
+  body::-webkit-scrollbar:vertical,
+  .chapter-directory-scroll::-webkit-scrollbar:vertical,
+  .reference-book-card::-webkit-scrollbar:vertical { width: auto; }
+  html::-webkit-scrollbar-track:vertical,
+  body::-webkit-scrollbar-track:vertical,
+  .chapter-directory-scroll::-webkit-scrollbar-track:vertical,
+  .reference-book-card::-webkit-scrollbar-track:vertical { background: revert; }
+  html::-webkit-scrollbar-thumb:vertical,
+  body::-webkit-scrollbar-thumb:vertical,
+  .chapter-directory-scroll::-webkit-scrollbar-thumb:vertical,
+  .reference-book-card::-webkit-scrollbar-thumb:vertical { background: revert; border: revert; }
+  html::-webkit-scrollbar-button:vertical,
+  body::-webkit-scrollbar-button:vertical,
+  .chapter-directory-scroll::-webkit-scrollbar-button:vertical,
+  .reference-book-card::-webkit-scrollbar-button:vertical { display: revert; }
+}

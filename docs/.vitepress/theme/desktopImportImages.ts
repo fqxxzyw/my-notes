@@ -1,5 +1,6 @@
 import { localImageReferences } from './readDroppedMarkdown'
 import type { DroppedImage, DroppedMarkdownResult, DroppedSkip } from './readDroppedMarkdown'
+import { ALL_SUPPORTED_IMPORT_EXTENSIONS, BINARY_DOCUMENT_EXTENSIONS, documentMimeType, extractFileExtension, MAX_DOCUMENT_BYTES } from './documentFiles'
 
 type NativeBridge = {
   postMessage: (message: object) => void
@@ -9,6 +10,7 @@ type NativeBridge = {
 const maxImageBytes = 20 * 1024 * 1024
 const maxTotalBytes = 100 * 1024 * 1024
 const maxImages = 300
+const maxTotalDocumentBytes = 200 * 1024 * 1024
 
 function bridgeForDesktop(): NativeBridge | null {
   if (typeof location === 'undefined' || typeof window === 'undefined' || location.protocol !== 'https:' || location.hostname !== 'paper.local' || !(location.pathname === '/my-notes' || location.pathname.startsWith('/my-notes/'))) return null
@@ -91,6 +93,82 @@ export async function pickDesktopMarkdownFolder(): Promise<File[] | null> {
         const limit = entry.markdown ? 5 * 1024 * 1024 : maxImageBytes
         const responseFile = await nativeRequest(bridge, entry.markdown ? 'import.readMarkdown' : 'import.readSelectedImage', { path: entry.path, maxBytes: String(limit) })
         const bytes = decodeNativeBytes(responseFile.data, limit, entry.markdown)
+        if (!bytes) throw new Error('读取文件失败。')
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+      }
+    }
+    return file as unknown as File
+  })
+}
+
+/** Multi-format desktop file picker supporting .md, .txt, and read-only documents (.pdf, .doc, .docx, .ppt, .pptx, etc.). */
+export async function pickDesktopImportFiles(): Promise<File[] | null> {
+  const bridge = bridgeForDesktop()
+  if (!bridge) return null
+  const response = await nativeRequest(bridge, 'import.pickFiles', {}, 10 * 60 * 1000)
+  if (!Array.isArray(response.paths) || response.paths.length > maxImages) throw new Error('选择的文件列表无效。')
+  const files: File[] = []
+  const names = new Set<string>()
+  let totalText = 0
+  let totalDoc = 0
+  for (const path of response.paths as unknown[]) {
+    if (typeof path !== 'string' || !/^[a-z]:[\\/]/i.test(path)) throw new Error('选择的文件路径无效。')
+    const name = path.split(/[\\/]/).pop()!
+    const ext = extractFileExtension(name)
+    if (!ALL_SUPPORTED_IMPORT_EXTENSIONS.has(ext)) throw new Error(`暂不支持导入此文件类型：${name}`)
+    if (names.has(name.toLocaleLowerCase())) throw new Error('选中的文件存在相同名称，请分批导入。')
+    names.add(name.toLocaleLowerCase())
+    if (ext === 'md' || ext === 'txt') {
+      const limit = Math.min(5 * 1024 * 1024, 30 * 1024 * 1024 - totalText)
+      if (limit <= 0) throw new Error('文本文件总大小超过 30 MiB。')
+      const action = ext === 'md' ? 'import.readMarkdown' : 'import.readTextFile'
+      const responseFile = await nativeRequest(bridge, action, { path, maxBytes: String(limit) })
+      const bytes = decodeNativeBytes(responseFile.data, limit, true)
+      if (!bytes) throw new Error(`无法读取文件：${name}`)
+      totalText += bytes.length
+      const file = new File([bytes], name, { type: documentMimeType(ext) })
+      if (ext === 'md') Object.defineProperty(file, 'paperSourcePath', { value: path, enumerable: false })
+      files.push(file)
+    } else if (BINARY_DOCUMENT_EXTENSIONS.has(ext)) {
+      const limit = Math.min(MAX_DOCUMENT_BYTES, maxTotalDocumentBytes - totalDoc)
+      if (limit <= 0) throw new Error('导入的外部文档总大小超过 200 MiB。')
+      const responseFile = await nativeRequest(bridge, 'import.readDocumentFile', { path, maxBytes: String(limit) }, 120000)
+      const bytes = decodeNativeBytes(responseFile.data, limit, false)
+      if (!bytes) throw new Error(`无法读取文档文件：${name}`)
+      totalDoc += bytes.length
+      files.push(new File([bytes], name, { type: documentMimeType(ext) }))
+    }
+  }
+  return files
+}
+
+/** Multi-format desktop folder picker preserving relative paths for .md, .txt, images, and read-only documents. */
+export async function pickDesktopImportFolder(): Promise<File[] | null> {
+  const bridge = bridgeForDesktop()
+  if (!bridge) return null
+  const response = await nativeRequest(bridge, 'import.pickFolder', {}, 10 * 60 * 1000)
+  if (!Array.isArray(response.files) || response.files.length > 2000) throw new Error('选择的文件夹内容无效。')
+  return response.files.map((entry: any) => {
+    if (!entry || typeof entry.path !== 'string' || !/^[a-z]:[\\/]/i.test(entry.path) || typeof entry.relative !== 'string' || !entry.relative.includes('/') || entry.relative.startsWith('/') || /[\\\0]/.test(entry.relative) || entry.relative.split('/').some((part: string) => !part || part === '.' || part === '..') || !Number.isSafeInteger(entry.size) || entry.size < 0) throw new Error('选择的文件夹内容无效。')
+    const name = entry.relative.split('/').pop()!
+    const kind = typeof entry.kind === 'string' ? entry.kind : (entry.markdown ? 'markdown' : 'image')
+    const ext = extractFileExtension(name)
+    if (kind === 'markdown' && ext !== 'md') throw new Error('选择的文件类型无效。')
+    if (kind === 'text' && ext !== 'txt') throw new Error('选择的文件类型无效。')
+    if (kind === 'document' && !BINARY_DOCUMENT_EXTENSIONS.has(ext)) throw new Error('选择的文件类型无效。')
+    if (kind === 'image' && !/^(?:png|jpe?g|gif|webp)$/.test(ext)) throw new Error('选择的文件类型无效。')
+    const file = {
+      name,
+      size: entry.size,
+      webkitRelativePath: entry.relative,
+      ...(kind === 'markdown' ? { paperSourcePath: entry.path } : {}),
+      async arrayBuffer(): Promise<ArrayBuffer> {
+        const isDoc = kind === 'document'
+        const isText = kind === 'markdown' || kind === 'text'
+        const limit = isDoc ? MAX_DOCUMENT_BYTES : isText ? 5 * 1024 * 1024 : maxImageBytes
+        const action = kind === 'markdown' ? 'import.readMarkdown' : kind === 'text' ? 'import.readTextFile' : isDoc ? 'import.readDocumentFile' : 'import.readSelectedImage'
+        const responseFile = await nativeRequest(bridge, action, { path: entry.path, maxBytes: String(limit) }, isDoc ? 120000 : 60000)
+        const bytes = decodeNativeBytes(responseFile.data, limit, isText)
         if (!bytes) throw new Error('读取文件失败。')
         return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
       }

@@ -252,6 +252,112 @@ namespace PaperNotesDesktop
         }
     }
 
+    // Immutable read-only imported documents (.pdf, .doc, .docx, .ppt, .pptx, etc.)
+    // live under 纸间数据\文件\, scoped by repository and validated against traversal.
+    internal static class DocumentFiles
+    {
+        private const int MaximumBytes = 50 * 1024 * 1024;
+        private static readonly Regex AllowedPath = new Regex(@"^docs/(?:notebooks/[A-Za-z0-9_-]+|pages)/files/[a-f0-9]{32}\.(?:pdf|doc|docx|ppt|pptx|xls|xlsx|csv|rtf)$", RegexOptions.CultureInvariant);
+
+        private static string RepositoryScope(string repository)
+        {
+            string value = (repository ?? "").Trim().ToLowerInvariant();
+            if (value.Length == 0) return "local";
+            string[] parts = value.Split('/');
+            if (parts.Length != 2 || !Regex.IsMatch(parts[0], @"^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$") ||
+                parts[0].Contains("--") || !Regex.IsMatch(parts[1], @"^[a-z0-9._-]{1,100}$") || parts[1] == "." || parts[1] == "..")
+                throw new InvalidOperationException("仓库标识无效。");
+            byte[] digest;
+            using (SHA256 hash = SHA256.Create()) digest = hash.ComputeHash(Encoding.UTF8.GetBytes(value));
+            return "repo-" + BitConverter.ToString(digest).Replace("-", "").ToLowerInvariant();
+        }
+
+        private static string Resolve(string baseDirectory, string repository, string path)
+        {
+            if (String.IsNullOrEmpty(path) || !AllowedPath.IsMatch(path)) throw new InvalidOperationException("文档存储路径无效。");
+            string root = Path.GetFullPath(baseDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            string file = Path.GetFullPath(Path.Combine(root, RepositoryScope(repository), path.Replace('/', Path.DirectorySeparatorChar)));
+            if (!file.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("文档存储路径无效。");
+            return file;
+        }
+
+        private static void CheckDirectory(string directory)
+        {
+            if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidOperationException("文档目录不能是链接或重解析点。");
+        }
+
+        private static void CheckParents(string baseDirectory, string file, bool create)
+        {
+            string root = Path.GetFullPath(baseDirectory).TrimEnd(Path.DirectorySeparatorChar);
+            if (!Directory.Exists(root)) { if (!create) return; Directory.CreateDirectory(root); }
+            CheckDirectory(root);
+            string relative = Path.GetDirectoryName(file).Substring(root.Length).TrimStart(Path.DirectorySeparatorChar);
+            string current = root;
+            foreach (string component in relative.Split(Path.DirectorySeparatorChar))
+            {
+                if (component.Length == 0) continue;
+                current = Path.Combine(current, component);
+                if (!Directory.Exists(current)) { if (!create) return; Directory.CreateDirectory(current); }
+                CheckDirectory(current);
+            }
+        }
+
+        internal static byte[] Read(string baseDirectory, string repository, string path)
+        {
+            string file = Resolve(baseDirectory, repository, path);
+            CheckParents(baseDirectory, file, false);
+            if (!File.Exists(file)) return null;
+            if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0) throw new InvalidOperationException("文档文件不能是链接。");
+            long length = new FileInfo(file).Length;
+            if (length <= 0 || length > MaximumBytes) throw new InvalidOperationException("文档为空或超过 50 MiB。");
+            return File.ReadAllBytes(file);
+        }
+
+        internal static void Write(string baseDirectory, string repository, string path, byte[] bytes)
+        {
+            string file = Resolve(baseDirectory, repository, path);
+            if (bytes == null || bytes.Length == 0 || bytes.Length > MaximumBytes) throw new InvalidOperationException("文档为空或超过 50 MiB。");
+            CheckParents(baseDirectory, file, true);
+            if (File.Exists(file))
+            {
+                byte[] existing = Read(baseDirectory, repository, path);
+                if (existing == null || existing.Length != bytes.Length) throw new InvalidOperationException("文档路径已存在不同内容，已保留原文件。");
+                for (int i = 0; i < existing.Length; i++) if (existing[i] != bytes[i]) throw new InvalidOperationException("文档路径已存在不同内容，已保留原文件。");
+                return;
+            }
+            string temporary = Path.Combine(Path.GetDirectoryName(file), ".doc-" + Guid.NewGuid().ToString("N") + ".tmp");
+            try
+            {
+                using (FileStream stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                { stream.Write(bytes, 0, bytes.Length); stream.Flush(true); }
+                try { File.Move(temporary, file); }
+                catch (IOException) { if (!File.Exists(file)) throw; }
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        }
+
+        internal static void OpenExternal(string baseDirectory, string repository, string path, string displayName)
+        {
+            byte[] bytes = Read(baseDirectory, repository, path);
+            if (bytes == null) throw new InvalidOperationException("本机未找到该文档，无法打开。");
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+            string cleanName = Path.GetFileNameWithoutExtension((displayName ?? "").Trim());
+            if (String.IsNullOrWhiteSpace(cleanName)) cleanName = "文档";
+            foreach (char invalid in Path.GetInvalidFileNameChars()) cleanName = cleanName.Replace(invalid, '_');
+            cleanName = cleanName.Trim().TrimEnd('.');
+            if (cleanName.Length > 80) cleanName = cleanName.Substring(0, 80);
+            if (String.IsNullOrEmpty(cleanName) || Regex.IsMatch(cleanName, @"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                cleanName = "文档";
+            string openDir = Path.Combine(Path.GetFullPath(baseDirectory), "_open", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(openDir);
+            string target = Path.Combine(openDir, cleanName + ext);
+            File.WriteAllBytes(target, bytes);
+            try { File.SetAttributes(target, FileAttributes.ReadOnly); } catch { }
+            Process.Start(new ProcessStartInfo(target) { UseShellExecute = true });
+        }
+    }
+
     // Import only exact local image paths referenced by the selected Markdown.
     // Never enumerate directories, follow reparse points, or access network/ADS paths.
     internal static class ReferencedImageFiles
@@ -545,7 +651,7 @@ namespace PaperNotesDesktop
             try { path = Uri.UnescapeDataString(target.Trim()); }
             catch { throw new InvalidOperationException("图片路径无效。"); }
             if (path.StartsWith("file:///", StringComparison.OrdinalIgnoreCase)) path = path.Substring(8);
-            return ReadPath(path, maximumBytes, false);
+            return ReadPath(path, maximumBytes, 0);
         }
 
         internal static byte[] ReadRelative(string markdownPath, string target, long maximumBytes)
@@ -557,61 +663,84 @@ namespace PaperNotesDesktop
             if (String.IsNullOrWhiteSpace(relative) || Path.IsPathRooted(relative) || relative.IndexOf(':') >= 0 || relative.StartsWith("\\", StringComparison.Ordinal) || relative.StartsWith("/", StringComparison.Ordinal))
                 throw new InvalidOperationException("图片相对路径无效。");
             string path = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(markdownPath), relative.Replace('/', '\\')));
-            return ReadPath(path, maximumBytes, false);
+            return ReadPath(path, maximumBytes, 0);
         }
 
         internal static byte[] ReadMarkdown(string path, long maximumBytes)
         {
-            return ReadPath(path, maximumBytes, true);
+            return ReadPath(path, maximumBytes, 1);
         }
 
         internal static byte[] ReadLiteralImage(string path, long maximumBytes)
         {
-            return ReadPath(path, maximumBytes, false);
+            return ReadPath(path, maximumBytes, 0);
         }
 
-        private static byte[] ReadPath(string path, long maximumBytes, bool markdown)
+        internal static byte[] ReadTextFile(string path, long maximumBytes)
         {
-            if (maximumBytes <= 0 || maximumBytes > (markdown ? 5L * 1024 * 1024 : MaximumBytes)) throw new InvalidOperationException("导入文件容量限制无效。");
+            return ReadPath(path, maximumBytes, 2);
+        }
+
+        internal static byte[] ReadDocumentFile(string path, long maximumBytes)
+        {
+            return ReadPath(path, maximumBytes, 3);
+        }
+
+        internal static bool IsSupportedDocumentExtension(string extension)
+        {
+            return extension == ".pdf" || extension == ".doc" || extension == ".docx" ||
+                extension == ".ppt" || extension == ".pptx" || extension == ".xls" ||
+                extension == ".xlsx" || extension == ".csv" || extension == ".rtf";
+        }
+
+        // kind: 0 = image, 1 = markdown (.md), 2 = plain text (.txt), 3 = binary read-only document
+        private static byte[] ReadPath(string path, long maximumBytes, int kind)
+        {
+            long cap = kind == 3 ? 50L * 1024 * 1024 : (kind == 1 || kind == 2) ? 5L * 1024 * 1024 : MaximumBytes;
+            if (maximumBytes <= 0 || maximumBytes > cap) throw new InvalidOperationException("导入文件容量限制无效。");
             if (!Regex.IsMatch(path, @"^[A-Za-z]:[\\/]") || Regex.IsMatch(path, @"[\x00-\x1f\x7f]") || path.IndexOfAny(new char[] { '?', '*', '"', '<', '>', '|' }) >= 0)
-                throw new InvalidOperationException("只支持本机磁盘上的图片路径。");
+                throw new InvalidOperationException("只支持本机磁盘上的文件路径。");
             path = path.Replace('/', '\\');
             string[] parts = path.Substring(3).Split('\\');
             foreach (string part in parts)
                 if (String.IsNullOrEmpty(part) || part == "." || part == ".." || part.IndexOf(':') >= 0 || part.EndsWith(" ", StringComparison.Ordinal) || part.EndsWith(".", StringComparison.Ordinal) || Regex.IsMatch(part, @"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-                    throw new InvalidOperationException("图片路径无效。");
+                    throw new InvalidOperationException("文件路径无效。");
             string extension = Path.GetExtension(path).ToLowerInvariant();
-            if (markdown ? extension != ".md" : extension != ".png" && extension != ".jpg" && extension != ".jpeg" && extension != ".gif" && extension != ".webp")
+            if (kind == 1 && extension != ".md") throw new InvalidOperationException("仅支持 Markdown (.md) 文件。");
+            if (kind == 2 && extension != ".txt") throw new InvalidOperationException("仅支持纯文本 (.txt) 文件。");
+            if (kind == 3 && !IsSupportedDocumentExtension(extension)) throw new InvalidOperationException("暂不支持导入此文件格式。");
+            if (kind == 0 && extension != ".png" && extension != ".jpg" && extension != ".jpeg" && extension != ".gif" && extension != ".webp")
                 throw new InvalidOperationException("仅支持 PNG、JPEG、GIF 或 WebP 图片。");
             string root = Path.GetPathRoot(path);
             DriveInfo drive = new DriveInfo(root);
             if (drive.DriveType != DriveType.Fixed && drive.DriveType != DriveType.Removable)
-                throw new InvalidOperationException("不支持网络或设备图片路径。");
+                throw new InvalidOperationException("不支持网络或设备文件路径。");
             string directory = root;
             for (int i = 0; i < parts.Length - 1; i++)
             {
                 directory = Path.Combine(directory, parts[i]);
                 if (!Directory.Exists(directory)) return null;
-                if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0) throw new InvalidOperationException("图片目录不能是链接。");
+                if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0) throw new InvalidOperationException("目录不能是链接。");
             }
             if (!File.Exists(path)) return null;
             FileAttributes attributes = File.GetAttributes(path);
-            if ((attributes & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0) throw new InvalidOperationException("图片文件不能是链接。");
+            if ((attributes & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0) throw new InvalidOperationException("文件不能是链接。");
             byte[] bytes;
+            bool allowEmpty = kind == 1 || kind == 2;
             using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
             {
-                if ((!markdown && stream.Length <= 0) || stream.Length > maximumBytes) throw new InvalidOperationException("文件为空或超过本次导入的大小限制。");
+                if ((!allowEmpty && stream.Length <= 0) || stream.Length > maximumBytes) throw new InvalidOperationException("文件为空或超过本次导入的大小限制。");
                 bytes = new byte[(int)stream.Length];
                 int offset = 0;
                 while (offset < bytes.Length)
                 {
                     int count = stream.Read(bytes, offset, bytes.Length - offset);
-                    if (count == 0) throw new InvalidOperationException("读取图片时文件发生变化。");
+                    if (count == 0) throw new InvalidOperationException("读取文件时内容发生变化。");
                     offset += count;
                 }
-                if (stream.ReadByte() != -1) throw new InvalidOperationException("读取图片时文件发生变化。");
+                if (stream.ReadByte() != -1) throw new InvalidOperationException("读取文件时内容发生变化。");
             }
-            if (!markdown) AttachmentFiles.ValidateImage(path.ToLowerInvariant(), bytes);
+            if (kind == 0) AttachmentFiles.ValidateImage(path.ToLowerInvariant(), bytes);
             return bytes;
         }
     }
@@ -621,6 +750,11 @@ namespace PaperNotesDesktop
         // Enumerate only the explicitly selected tree, never follow junctions.
         // Bytes are read later, on demand, only for Markdown and referenced images.
         internal static List<Dictionary<string, object>> Enumerate(string selected, HashSet<string> markdownPaths, HashSet<string> imagePaths)
+        {
+            return EnumerateAll(selected, markdownPaths, imagePaths, null, null);
+        }
+
+        internal static List<Dictionary<string, object>> EnumerateAll(string selected, HashSet<string> markdownPaths, HashSet<string> imagePaths, HashSet<string> textPaths, HashSet<string> documentPaths)
         {
             string root = Path.GetFullPath(selected).TrimEnd(Path.DirectorySeparatorChar);
             string driveRoot = Path.GetPathRoot(root);
@@ -656,13 +790,19 @@ namespace PaperNotesDesktop
                     }
                     string extension = Path.GetExtension(path).ToLowerInvariant();
                     bool markdown = extension == ".md";
+                    bool text = textPaths != null && extension == ".txt";
+                    bool document = documentPaths != null && ReferencedImageFiles.IsSupportedDocumentExtension(extension);
                     bool image = extension == ".png" || extension == ".jpg" || extension == ".jpeg" || extension == ".gif" || extension == ".webp";
-                    if (!markdown && !image) continue;
+                    if (!markdown && !text && !document && !image) continue;
                     string relative = rootName + "/" + path.Substring(prefix.Length).Replace('\\', '/');
                     metadataLength += path.Length + relative.Length;
                     if (metadataLength > 2 * 1024 * 1024) throw new InvalidOperationException("文件夹路径信息过大，请选择更具体的笔记文件夹。");
-                    files.Add(new Dictionary<string, object> { { "path", path }, { "relative", relative }, { "size", new FileInfo(path).Length }, { "markdown", markdown } });
-                    if (markdown) markdownPaths.Add(path); else imagePaths.Add(path);
+                    string kind = markdown ? "markdown" : text ? "text" : document ? "document" : "image";
+                    files.Add(new Dictionary<string, object> { { "path", path }, { "relative", relative }, { "size", new FileInfo(path).Length }, { "markdown", markdown }, { "kind", kind } });
+                    if (markdown) markdownPaths.Add(path);
+                    else if (text) textPaths.Add(path);
+                    else if (document) documentPaths.Add(path);
+                    else imagePaths.Add(path);
                 }
             }
             return files;
@@ -676,13 +816,15 @@ namespace PaperNotesDesktop
         private readonly string root;
         private readonly string profile;
         private readonly string credentialDirectory;
-        // A 20 MiB binary image is about 28 MiB after base64 encoding.
-        private readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 32 * 1024 * 1024 };
+        // A 50 MiB binary document is about 67 MiB after base64 encoding.
+        private readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 80 * 1024 * 1024 };
         private Microsoft.Web.WebView2.WinForms.WebView2 webView;
         private readonly StartupScreen startupScreen;
         private readonly List<ResizeGrip> resizeGrips = new List<ResizeGrip>();
         private readonly HashSet<string> selectedMarkdownPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> selectedImagePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> selectedTextPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> selectedDocumentPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> selectedMarkdownNormalized = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private readonly Stopwatch startupClock = Stopwatch.StartNew();
         private bool startupRevealed;
@@ -939,6 +1081,121 @@ namespace PaperNotesDesktop
             var response = new Dictionary<string, object> { { "channel", "paper-notes" }, { "id", id } };
             try
             {
+                if (action == "import.pickFiles")
+                {
+                    selectedMarkdownPaths.Clear();
+                    selectedImagePaths.Clear();
+                    selectedTextPaths.Clear();
+                    selectedDocumentPaths.Clear();
+                    selectedMarkdownNormalized.Clear();
+                    var picked = new List<string>();
+                    using (var picker = new OpenFileDialog())
+                    {
+                        picker.Title = "选择笔记或外部文档";
+                        picker.Filter = "所有支持的文件 (*.md;*.txt;*.pdf;*.doc;*.docx;*.ppt;*.pptx;*.xls;*.xlsx;*.csv;*.rtf)|*.md;*.txt;*.pdf;*.doc;*.docx;*.ppt;*.pptx;*.xls;*.xlsx;*.csv;*.rtf|Markdown (*.md)|*.md|纯文本 (*.txt)|*.txt|PDF 文档 (*.pdf)|*.pdf|Word / PPT / Excel (*.doc;*.docx;*.ppt;*.pptx;*.xls;*.xlsx)|*.doc;*.docx;*.ppt;*.pptx;*.xls;*.xlsx";
+                        picker.Multiselect = true;
+                        picker.CheckFileExists = true;
+                        if (picker.ShowDialog(this) == DialogResult.OK)
+                        {
+                            if (picker.FileNames.Length > 300) throw new InvalidOperationException("一次最多导入 300 个文件。");
+                            foreach (string rawPath in picker.FileNames)
+                            {
+                                string full = Path.GetFullPath(rawPath);
+                                string ext = Path.GetExtension(full).ToLowerInvariant();
+                                if (ext == ".md") { selectedMarkdownPaths.Add(full); picked.Add(full); }
+                                else if (ext == ".txt") { selectedTextPaths.Add(full); picked.Add(full); }
+                                else if (ReferencedImageFiles.IsSupportedDocumentExtension(ext)) { selectedDocumentPaths.Add(full); picked.Add(full); }
+                            }
+                        }
+                    }
+                    response["paths"] = picked.ToArray();
+                    response["ok"] = true;
+                    webView.CoreWebView2.PostWebMessageAsJson(json.Serialize(response));
+                    return;
+                }
+                if (action == "import.pickFolder")
+                {
+                    selectedMarkdownPaths.Clear();
+                    selectedImagePaths.Clear();
+                    selectedTextPaths.Clear();
+                    selectedDocumentPaths.Clear();
+                    selectedMarkdownNormalized.Clear();
+                    var files = new List<Dictionary<string, object>>();
+                    using (var picker = new FolderBrowserDialog())
+                    {
+                        picker.Description = "选择包含笔记、图片或文档的文件夹";
+                        picker.ShowNewFolderButton = false;
+                        if (picker.ShowDialog(this) == DialogResult.OK)
+                        {
+                            var markdown = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            var images = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            var texts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            var docs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            files = SelectedImportFolder.EnumerateAll(picker.SelectedPath, markdown, images, texts, docs);
+                            selectedMarkdownPaths.UnionWith(markdown);
+                            selectedImagePaths.UnionWith(images);
+                            selectedTextPaths.UnionWith(texts);
+                            selectedDocumentPaths.UnionWith(docs);
+                        }
+                    }
+                    response["files"] = files;
+                    response["ok"] = true;
+                    webView.CoreWebView2.PostWebMessageAsJson(json.Serialize(response));
+                    return;
+                }
+                if (action == "import.readTextFile")
+                {
+                    string path = GetString(request, "path");
+                    long maximumBytes;
+                    if (!selectedTextPaths.Contains(path) || !Int64.TryParse(GetString(request, "maxBytes"), out maximumBytes)) throw new InvalidOperationException("只能读取刚才选择的纯文本文件。");
+                    byte[] bytes = ReferencedImageFiles.ReadTextFile(path, maximumBytes);
+                    if (bytes == null) throw new InvalidOperationException("选择的纯文本文件不存在。");
+                    response["data"] = Convert.ToBase64String(bytes);
+                    response["ok"] = true;
+                    webView.CoreWebView2.PostWebMessageAsJson(json.Serialize(response));
+                    return;
+                }
+                if (action == "import.readDocumentFile")
+                {
+                    string path = GetString(request, "path");
+                    long maximumBytes;
+                    if (!selectedDocumentPaths.Contains(path) || !Int64.TryParse(GetString(request, "maxBytes"), out maximumBytes)) throw new InvalidOperationException("只能读取刚才选择的文档文件。");
+                    byte[] bytes = ReferencedImageFiles.ReadDocumentFile(path, maximumBytes);
+                    if (bytes == null) throw new InvalidOperationException("选择的文档文件不存在。");
+                    response["data"] = Convert.ToBase64String(bytes);
+                    response["ok"] = true;
+                    webView.CoreWebView2.PostWebMessageAsJson(json.Serialize(response));
+                    return;
+                }
+                if (action == "document.get" || action == "document.put" || action == "document.openExternal")
+                {
+                    string baseDirectory = Path.Combine(Path.GetDirectoryName(profile), "文件");
+                    string repository = GetString(request, "repository");
+                    string path = GetString(request, "path");
+                    if (action == "document.get")
+                    {
+                        byte[] bytes = DocumentFiles.Read(baseDirectory, repository, path);
+                        response["data"] = bytes == null ? null : Convert.ToBase64String(bytes);
+                    }
+                    else if (action == "document.put")
+                    {
+                        string encoded = GetString(request, "data");
+                        if (String.IsNullOrEmpty(encoded) || encoded.Length > 70 * 1024 * 1024)
+                            throw new InvalidOperationException("文档为空或超过 50 MiB。");
+                        byte[] bytes;
+                        try { bytes = Convert.FromBase64String(encoded); }
+                        catch (FormatException) { throw new InvalidOperationException("文档数据无效。"); }
+                        DocumentFiles.Write(baseDirectory, repository, path, bytes);
+                    }
+                    else
+                    {
+                        string displayName = GetString(request, "displayName");
+                        DocumentFiles.OpenExternal(baseDirectory, repository, path, displayName);
+                    }
+                    response["ok"] = true;
+                    webView.CoreWebView2.PostWebMessageAsJson(json.Serialize(response));
+                    return;
+                }
                 if (action == "import.pickMarkdownFiles")
                 {
                     selectedMarkdownPaths.Clear();
@@ -1096,7 +1353,7 @@ namespace PaperNotesDesktop
             catch
             {
                 response["ok"] = false;
-                response["error"] = action.StartsWith("import.", StringComparison.Ordinal) ? "无法读取选择的文件，请检查文件是否存在及权限。" : action.StartsWith("attachment.", StringComparison.Ordinal) ? "无法访问本机图片附件，请检查磁盘空间或权限。" : "无法访问 Windows 加密存储。";
+                response["error"] = action.StartsWith("import.", StringComparison.Ordinal) ? "无法读取选择的文件，请检查文件是否存在及权限。" : action.StartsWith("document.", StringComparison.Ordinal) ? "无法访问本机文档文件，请检查磁盘空间或权限。" : action.StartsWith("attachment.", StringComparison.Ordinal) ? "无法访问本机图片附件，请检查磁盘空间或权限。" : "无法访问 Windows 加密存储。";
             }
             webView.CoreWebView2.PostWebMessageAsJson(json.Serialize(response));
         }

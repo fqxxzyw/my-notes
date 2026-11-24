@@ -1,10 +1,13 @@
 import DefaultTheme from 'vitepress/theme'
 import { defineComponent, h, nextTick, onBeforeUnmount, onMounted } from 'vue'
 import { beginDesktopReveal } from './startupReveal'
+import 'katex/dist/katex.min.css'
 import './paper.css'
 import './theme-dark.css'
 import './theme-picker.css'
+import './scroll-rails.css'
 import './startup-reveal.css'
+import './markdown-rich.css'
 
 const Layout = defineComponent({
   setup() {

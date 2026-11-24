@@ -9,7 +9,8 @@ export function restoreBookMetadataDrafts(input: unknown): { drafts: Record<stri
   for (const [id, value] of Object.entries(input) as [string, any][]) {
     try {
       if (!value || typeof value.description !== 'string' || value.description.length > 500 || value.base?.id !== id || typeof value.base?.sha !== 'string' || typeof value.base?.indexContent !== 'string') throw new Error('invalid draft')
-      drafts[id] = { base: value.base, description: value.description, ...(value.chapterOrder === undefined ? {} : { chapterOrder: validateChapterOrder(value.chapterOrder) }) }
+      if (value.title !== undefined && (typeof value.title !== 'string' || !value.title.trim() || value.title.trim().length > 120 || /[\r\n]/.test(value.title))) throw new Error('invalid draft title')
+      drafts[id] = { base: value.base, description: value.description, ...(value.title === undefined ? {} : { title: value.title.trim() }), ...(value.chapterOrder === undefined ? {} : { chapterOrder: validateChapterOrder(value.chapterOrder) }) }
     } catch { damaged = true }
   }
   return { drafts, damaged }

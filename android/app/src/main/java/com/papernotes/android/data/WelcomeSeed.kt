@@ -1,0 +1,151 @@
+package com.papernotes.android.data
+
+/**
+ * Built-in editable welcome notebook ("使用说明与教程") matching docs/.vitepress/theme/builtin templates
+ * and welcomeStore.ts / welcomeDuplicate.ts deduplication rules.
+ */
+object WelcomeSeed {
+    const val WELCOME_BOOK_TITLE = "使用说明与教程"
+
+    val templates: Map<String, String> = linkedMapOf(
+        "00-welcome" to """
+# 欢迎使用纸间
+
+纸间按「书柜 → 笔记本 → 章节」整理 Markdown 笔记；不需要笔记本的单篇笔记，也可以作为「书页」直接放进书柜。你可以先在本机写作，再选择是否连接自己的 GitHub 仓库。
+
+点击顶部「新建笔记」，选择笔记本或书页、输入名称，选择已有书柜或新建书柜；不选时放入默认书柜。打开笔记本后可以创建章节，使用编辑器工具栏快速插入标题、代码块、列表和链接。
+
+在书柜的「管理笔记本」中可以勾选多本移动或删除。在首页的「管理书柜」中删除非默认书柜时，里面的笔记会移动到默认书柜，正文不会随书柜一起删除。
+
+在首页展开「管理书柜」，点击书柜旁的「重命名」即可修改名称。桌面版修改后可通过「同步书柜整理」提交到 GitHub。
+
+这本使用说明是普通的本机笔记，可以编辑、移动或删除。连接仓库后，可以选择将它同步到 GitHub。
+        """.trimIndent(),
+        "01-writing" to """
+# 写作与整理
+
+进入书柜，点击书脊打开笔记本，在章节目录中创建章节。书本较多时，可以按住书架横向拖动，触屏设备可以左右滑动。
+
+点击顶部「导入」或直接拖入 Markdown 文件：在笔记本中会新增章节，在书柜中会创建独立书页。导入文件夹会创建一本笔记本，并一起导入文件夹内可匹配的相对路径图片。图片缺失时会提醒检查。
+
+章节编辑器自动保存当前设备上的草稿。桌面版和网页版分别保存草稿；清理浏览器网站数据或桌面应用用户数据前，请先同步或备份需要的内容。
+
+在编辑器中可直接粘贴 PNG、JPEG、GIF、WebP 图片，每张最多 20 MiB。图片会作为独立附件保存，正文使用 `assets/图片文件名.png` 这样的相对路径；同步笔记时图片会一起上传，恢复后可离线查看。导入 Markdown 时请同时选择图片所在的原始文件夹；无法匹配的图片和其他附件不会自动导入。已导入的笔记可在「导入」中选择「补齐当前笔记图片」，并选择原始文件夹。
+
+编辑时可在侧栏切换「章节」与「目录」；目录会列出当前章节的标题，点击可跳转。也可以收起侧栏扩大写作空间，再点击「显示目录」展开。
+
+Windows 便携版把本机数据放在解压目录下的「纸间数据」文件夹；移动或备份程序时，请一并保留它。
+
+桌面版图片位于数据目录的「附件」文件夹（单文件版为 `%LOCALAPPDATA%\PaperNotes\附件`，便携版为解压目录下的 `纸间数据\附件`），并按仓库隔离。网页版图片存放在当前浏览器的 IndexedDB，清除网站数据前请先同步或备份。
+
+在「管理笔记本」中选择多个笔记本，可一起移动到其他书柜。删除非默认书柜会把其中笔记本移入默认书柜。默认书柜始终保留。
+        """.trimIndent(),
+        "02-github" to """
+# 创建仓库与连接 GitHub
+
+## 一、创建仓库
+
+1. 登录 GitHub，点击右上角 **+ → New repository**，填写仓库名称。
+2. 需要私密笔记时选择私有仓库。公开仓库中的笔记任何人都可以查看。
+3. 勾选 **Add README**，确保仓库有初始提交和名为 `main` 的分支。
+4. 记下仓库地址或 `用户名/仓库名`。不必预先建笔记目录；纸间同步时会写入 `docs/notebooks/`。
+
+仅使用仓库存储笔记不需要启用 GitHub Pages。连接仓库不会自动公开展示或部署网站。
+
+## 二、创建精细访问令牌
+
+1. 打开 [GitHub 令牌设置](https://github.com/settings/personal-access-tokens/new)，选择 **Fine-grained personal access token**，填写名称并选择适合的有效期及仓库所属账号。
+2. 在 **Repository access** 选择 **Only select repositories**，只勾选自己的笔记仓库。
+3. 在 **Permissions → Repositories** 添加 **Contents** 权限，并设为 **Read and write**。如未看到此项，选择 Repositories 标签并点右侧加号。
+4. 点击 **Generate token** 后立即复制。离开后无法再次查看完整令牌；没有保存时可重新生成。
+
+令牌相当于仓库钥匙，不要分享，也不要写进笔记或提交到仓库。网页版将令牌保存在当前浏览器本地存储中，未加密；Windows 桌面版使用当前 Windows 账户加密保存。网页和桌面需要分别连接。
+
+## 三、连接、同步与恢复
+
+展开「GitHub 同步设置」，填写仓库的 `用户名/仓库名` 或 GitHub HTTPS 地址，粘贴令牌并点击「连接 GitHub」。纸间会检查仓库和 `main` 分支；写入权限在首次同步时验证。
+
+展开「批量同步」，勾选本机改动后点「同步所选」；顶部「同步」也可以提交选中项目。点击「恢复」可下载当前仓库的书柜和章节作为本机离线副本，未同步草稿会保留。两台设备之间先在一端同步，再在另一端恢复。
+
+切换仓库后本机草稿按仓库隔离。旧版数据或令牌没有仓库归属记录，只能由你确认后手动导入，避免提交到错误仓库。
+
+旧版用户可先填写原仓库地址，再选择「使用旧版已保存令牌」并确认仓库；连接后可选择「导入旧版本地数据」。原始数据会保留，导入后仍需选择同步。若目标仓库已有本机数据，可先导出旧版备份，避免覆盖。
+        """.trimIndent()
+    )
+
+    fun seedIfNeeded(
+        collection: LocalCollection,
+        repository: String,
+        explicit: Boolean = false,
+        idProvider: () -> String = { CompatibilityCodecs.newRandomId() }
+    ): LocalCollection {
+        if (repository.isNotBlank() && !explicit) return collection
+        if (!explicit && collection.welcomeInitialized) return collection
+        val id = idProvider()
+        val book = Notebook(id = id, title = WELCOME_BOOK_TITLE, sha = "")
+        val chapters = templates.entries.map { (chapterId, content) ->
+            Chapter(
+                bookId = id,
+                id = chapterId,
+                title = CompatibilityCodecs.titleFromMarkdown(content, "使用教程"),
+                content = content,
+                sha = ""
+            )
+        }
+        return collection.copy(
+            books = collection.books + book,
+            chapters = collection.chapters + chapters,
+            welcomeInitialized = true,
+            welcomeBookId = id
+        )
+    }
+
+    /**
+     * Detect whether the local untouched welcome notebook already exists verbatim on remote
+     * so connecting a repository does not duplicate "使用说明与教程".
+     */
+    fun findPristineDuplicate(
+        local: LocalCollection,
+        drafts: Map<String, ChapterDraft>,
+        cabinetJournal: CabinetJournalState,
+        remoteBooks: List<Notebook>,
+        remoteChapters: Map<String, List<Chapter>>
+    ): Pair<String, String>? {
+        if (!local.welcomeInitialized || local.welcomeBookId.isBlank()) return null
+        val localId = local.welcomeBookId
+        val localBook = local.books.singleOrNull { it.id == localId } ?: return null
+        if (localBook.title != WELCOME_BOOK_TITLE || localBook.sha.isNotEmpty() ||
+            !localBook.description.isNullOrEmpty() || localBook.chapterOrder != null
+        ) return null
+        if (drafts.keys.any { it.startsWith("$localId/") }) return null
+        if (localId in cabinetJournal.moves) return null
+
+        val localChaps = local.chapters.filter { it.bookId == localId }
+        if (!matchesTemplateChapters(localChaps, localId, localOnly = true)) return null
+
+        for (remote in remoteBooks) {
+            if (remote.id == localId || remote.title != WELCOME_BOOK_TITLE) continue
+            if (!CompatibilityCodecs.SHA_REGEX.matches(remote.sha)) continue
+            if (!remote.description.isNullOrEmpty() || remote.chapterOrder != null) continue
+            val idx = remote.indexContent ?: continue
+            if (!Regex("^# 使用说明与教程\\r?\\n?$").matches(idx)) continue
+            val rChaps = remoteChapters[remote.id].orEmpty()
+            if (matchesTemplateChapters(rChaps, remote.id, localOnly = false)) {
+                return localId to remote.id
+            }
+        }
+        return null
+    }
+
+    private fun matchesTemplateChapters(chapters: List<Chapter>, bookId: String, localOnly: Boolean): Boolean {
+        if (chapters.size != templates.size) return false
+        return templates.all { (expectedId, expectedContent) ->
+            val found = chapters.singleOrNull { it.id == expectedId } ?: return@all false
+            val expectedTitle = CompatibilityCodecs.titleFromMarkdown(expectedContent, "使用教程")
+            found.bookId == bookId &&
+                found.title == expectedTitle &&
+                found.content.replace("\r\n", "\n").trimEnd('\n') == expectedContent.replace("\r\n", "\n").trimEnd('\n') &&
+                if (localOnly) found.sha.isEmpty() else CompatibilityCodecs.SHA_REGEX.matches(found.sha)
+        }
+    }
+}

@@ -4,12 +4,13 @@ import { normalizeRepository } from './repository'
 import { readNotebookDescription, writeNotebookDescription } from './notebookDescription'
 import { readNotebookChapterOrder, writeNotebookChapterOrder } from './notebookChapterOrder'
 import { MAX_ATTACHMENT_BYTES, validateAttachment, validateAttachmentPath, type NoteAttachment } from './attachmentStore'
+import { ALL_SUPPORTED_IMPORT_EXTENSIONS, BINARY_DOCUMENT_EXTENSIONS, MAX_GITHUB_DOCUMENT_BYTES, normalizeFileExt, type StoredDocumentFile } from './documentFiles'
 export { normalizeRepository } from './repository'
 export type { CabinetCatalog, CatalogVersion } from './cabinetStore'
 export type Notebook = { id: string; title: string; sha: string; description?: string; indexContent?: string; chapterOrder?: string[] }
-export type Chapter = { bookId: string; id: string; title: string; content: string; sha: string }
-/** A standalone Markdown file in docs/pages, independent of notebooks. */
-export type Page = { id: string; title: string; content: string; sha: string }
+export type Chapter = { bookId: string; id: string; title: string; content: string; sha: string; ext?: string; filePath?: string; fileName?: string; fileSize?: number; binaryBytes?: Uint8Array }
+/** A standalone document file in docs/pages, independent of notebooks. */
+export type Page = { id: string; title: string; content: string; sha: string; ext?: string; filePath?: string; fileName?: string; fileSize?: number; binaryBytes?: Uint8Array }
 export type NotebookStoreErrorCode = 'auth' | 'not-found' | 'conflict' | 'network' | 'invalid' | 'github'
 
 export class NotebookStoreError extends Error {
@@ -126,6 +127,27 @@ function titleFrom(content: string, fallback: string): string {
   return match?.[1] || fallback
 }
 
+function itemExt(item?: { ext?: string }): string {
+  return normalizeFileExt(item?.ext)
+}
+
+function splitDocumentFileName(name: string): { id: string; ext: string } | null {
+  const dot = name.lastIndexOf('.')
+  if (dot <= 0 || dot === name.length - 1) return null
+  const id = name.slice(0, dot)
+  const ext = name.slice(dot + 1).toLowerCase()
+  if (!ID.test(id) || !ALL_SUPPORTED_IMPORT_EXTENSIONS.has(ext)) return null
+  return { id, ext }
+}
+
+function decodeBinaryBlob(file: GitHubFile): Uint8Array {
+  if (file.encoding !== 'base64' || typeof file.content !== 'string') throw new NotebookStoreError('github', '无法读取文档内容。')
+  const encoded = file.content.replace(/\s/g, '')
+  if (encoded.length > Math.ceil(MAX_GITHUB_DOCUMENT_BYTES / 3) * 4 + 16) throw new NotebookStoreError('invalid', '文档超过 25 MiB，无法通过 GitHub 接口读取。')
+  try { return Uint8Array.from(atob(encoded), char => char.charCodeAt(0)) }
+  catch { throw new NotebookStoreError('invalid', '文档数据格式无效。') }
+}
+
 function decode(file: GitHubFile): string {
   if (file.encoding !== 'base64' || typeof file.content !== 'string') {
     throw new NotebookStoreError('github', '无法读取文件内容（文件可能超过 GitHub 接口的大小限制）。')
@@ -208,10 +230,11 @@ export function createNotebookStore(repository?: string | null) {
     }
   }
 
-  async function syncBatch(newBooks: Notebook[], chapters: Chapter[], catalogChange?: CatalogVersion, pages: Page[] = [], attachments: NoteAttachment[] = []): Promise<BatchResult> {
+  async function syncBatch(newBooks: Notebook[], chapters: Chapter[], catalogChange?: CatalogVersion, pages: Page[] = [], attachments: NoteAttachment[] = [], documents: StoredDocumentFile[] = []): Promise<BatchResult> {
     if (!token) throw new NotebookStoreError('auth', '请先输入具有仓库内容写入权限的 GitHub 令牌。')
     if (!newBooks.length && !chapters.length && !pages.length && !catalogChange) throw new NotebookStoreError('invalid', '请至少选择一本新笔记本、一篇章节、书页或书柜目录。')
 
+    const docsByPath = new Map(documents.map(doc => [doc.path, doc.bytes]))
     const paths = new Set<string>()
     const changes: Array<{ path: string; content?: string; bytes?: Uint8Array; baseline: string; desired: string; mode?: string }> = []
     let catalog: CabinetCatalog | undefined
@@ -242,18 +265,34 @@ export function createNotebookStore(repository?: string | null) {
       if (typeof chapter.content !== 'string' || typeof chapter.sha !== 'string') {
         throw new NotebookStoreError('invalid', '章节内容或版本号无效。')
       }
-      const path = `docs/${ROOT}/${chapter.bookId}/${chapter.id}.md`
+      const ext = itemExt(chapter)
+      const path = `docs/${ROOT}/${chapter.bookId}/${chapter.id}.${ext}`
       if (paths.has(path)) throw new NotebookStoreError('invalid', '同步列表包含重复的章节。')
       paths.add(path)
-      changes.push({ path, content: chapter.content, baseline: chapter.sha, desired: await blobSha(chapter.content) })
+      if (BINARY_DOCUMENT_EXTENSIONS.has(ext)) {
+        const bytes = chapter.filePath ? docsByPath.get(chapter.filePath) : undefined
+        if (!bytes || !bytes.length) throw new NotebookStoreError('invalid', `缺少文档文件数据，无法同步：${chapter.title}`)
+        if (bytes.length > MAX_GITHUB_DOCUMENT_BYTES) throw new NotebookStoreError('invalid', `文档超过 GitHub 单文件同步限制（25 MiB）：${chapter.title}`)
+        changes.push({ path, bytes, baseline: chapter.sha, desired: await blobBytesSha(bytes) })
+      } else {
+        changes.push({ path, content: chapter.content, baseline: chapter.sha, desired: await blobSha(chapter.content) })
+      }
     }
     for (const page of pages) {
       checkPageId(page.id)
       if (typeof page.content !== 'string' || typeof page.sha !== 'string') throw new NotebookStoreError('invalid', '书页内容或版本号无效。')
-      const path = `docs/pages/${page.id}.md`
+      const ext = itemExt(page)
+      const path = `docs/pages/${page.id}.${ext}`
       if (paths.has(path)) throw new NotebookStoreError('invalid', '同步列表包含重复的书页。')
       paths.add(path)
-      changes.push({ path, content: page.content, baseline: page.sha, desired: await blobSha(page.content) })
+      if (BINARY_DOCUMENT_EXTENSIONS.has(ext)) {
+        const bytes = page.filePath ? docsByPath.get(page.filePath) : undefined
+        if (!bytes || !bytes.length) throw new NotebookStoreError('invalid', `缺少文档文件数据，无法同步：${page.title}`)
+        if (bytes.length > MAX_GITHUB_DOCUMENT_BYTES) throw new NotebookStoreError('invalid', `文档超过 GitHub 单文件同步限制（25 MiB）：${page.title}`)
+        changes.push({ path, bytes, baseline: page.sha, desired: await blobBytesSha(bytes) })
+      } else {
+        changes.push({ path, content: page.content, baseline: page.sha, desired: await blobSha(page.content) })
+      }
     }
     const attachmentDirectories = new Set([...chapters.map(chapter => `docs/${ROOT}/${chapter.bookId}/assets/`), ...(pages.length ? ['docs/pages/assets/'] : [])])
     for (const attachment of attachments) {
@@ -363,8 +402,16 @@ export function createNotebookStore(repository?: string | null) {
         const indexContent = writeNotebookChapterOrder(writeNotebookDescription(original, book.description ?? readNotebookDescription(original)), book.chapterOrder)
         return { ...book, title: checkTitle(book.title), indexContent, chapterOrder: readNotebookChapterOrder(indexContent), sha: desiredByPath.get(`docs/${ROOT}/${book.id}/index.md`)! }
       }),
-      chapters: chapters.map(chapter => ({ ...chapter, title: titleFrom(chapter.content, titleFromEncodedId(chapter.id, 'c')), sha: desiredByPath.get(`docs/${ROOT}/${chapter.bookId}/${chapter.id}.md`)! })),
-      pages: pages.map(page => ({ ...page, title: titleFrom(page.content, page.title || page.id), sha: desiredByPath.get(`docs/pages/${page.id}.md`)! })),
+      chapters: chapters.map(chapter => {
+        const ext = itemExt(chapter)
+        const title = ext === 'md' ? titleFrom(chapter.content, titleFromEncodedId(chapter.id, 'c')) : (chapter.title || titleFromEncodedId(chapter.id, 'c'))
+        return { ...chapter, title, sha: desiredByPath.get(`docs/${ROOT}/${chapter.bookId}/${chapter.id}.${ext}`)! }
+      }),
+      pages: pages.map(page => {
+        const ext = itemExt(page)
+        const title = ext === 'md' ? titleFrom(page.content, page.title || page.id) : (page.title || titleFromEncodedId(page.id, 'p'))
+        return { ...page, title, sha: desiredByPath.get(`docs/pages/${page.id}.${ext}`)! }
+      }),
       ...(catalog ? { catalog: { catalog, sha: desiredByPath.get('docs/cabinets.json')! } } : {})
     }
   }
@@ -392,7 +439,7 @@ export function createNotebookStore(repository?: string | null) {
       files.set('index.md', requireSha(item.book.sha))
       for (const chapter of item.chapters) {
         if (chapter.bookId !== bookId) throw new NotebookStoreError('invalid', '章节不属于所选笔记本。')
-        const name = `${checkChapterId(chapter.id)}.md`
+        const name = `${checkChapterId(chapter.id)}.${itemExt(chapter)}`
         if (files.has(name)) throw new NotebookStoreError('invalid', '删除列表包含重复章节。')
         files.set(name, requireSha(chapter.sha))
       }
@@ -403,9 +450,9 @@ export function createNotebookStore(repository?: string | null) {
       const bookId = checkId(chapter.bookId)
       const chapterId = checkChapterId(chapter.id)
       if (selectedBooks.has(bookId)) throw new NotebookStoreError('invalid', '整本笔记和其中章节不能重复选择。')
-      addExpected(`docs/${ROOT}/${bookId}/${chapterId}.md`, chapter.sha)
+      addExpected(`docs/${ROOT}/${bookId}/${chapterId}.${itemExt(chapter)}`, chapter.sha)
     }
-    for (const page of pages) addExpected(`docs/pages/${checkPageId(page.id)}.md`, page.sha)
+    for (const page of pages) addExpected(`docs/pages/${checkPageId(page.id)}.${itemExt(page)}`, page.sha)
 
     const ref = await gitRequest('ref/heads/main') as { object?: { sha?: string } }
     const parent = requireSha(ref?.object?.sha || '')
@@ -515,11 +562,19 @@ export function createNotebookStore(repository?: string | null) {
     return result as GitHubEntry[]
   }
 
-  async function readChapter(bookId: string, chapterId: string): Promise<Chapter> {
+  async function readChapter(bookId: string, chapterId: string, ext = 'md'): Promise<Chapter> {
     checkId(bookId); checkChapterId(chapterId)
-    const data = await file(`${ROOT}/${bookId}/${chapterId}.md`)
+    const normalized = normalizeFileExt(ext)
+    const data = await file(`${ROOT}/${bookId}/${chapterId}.${normalized}`)
+    if (BINARY_DOCUMENT_EXTENSIONS.has(normalized)) {
+      const source = data.encoding === 'base64' && typeof data.content === 'string' ? data : await gitRequest(`blobs/${encodeURIComponent(data.sha)}`) as GitHubFile
+      const bytes = decodeBinaryBlob(source)
+      const title = titleFromEncodedId(chapterId, 'c')
+      return { bookId, id: chapterId, title, content: '', sha: data.sha, ext: normalized, fileName: `${title}.${normalized}`, fileSize: bytes.length, binaryBytes: bytes }
+    }
     const content = await fileContent(data)
-    return { bookId, id: chapterId, title: titleFrom(content, titleFromEncodedId(chapterId, 'c')), content, sha: data.sha }
+    const title = normalized === 'md' ? titleFrom(content, titleFromEncodedId(chapterId, 'c')) : titleFromEncodedId(chapterId, 'c')
+    return { bookId, id: chapterId, title, content, sha: data.sha, ...(normalized === 'md' ? {} : { ext: normalized }) }
   }
 
   // A directory listing is enough for shelf counts; don't download every
@@ -527,14 +582,26 @@ export function createNotebookStore(repository?: string | null) {
   async function listChapterIds(bookId: string): Promise<string[]> {
     checkId(bookId)
     const list = await entries(`${ROOT}/${bookId}`)
-    return list.filter(item => item.type === 'file' && item.name.endsWith('.md') && item.name.toLowerCase() !== 'index.md' && ID.test(item.name.slice(0, -3))).map(item => item.name.slice(0, -3))
+    return list.flatMap(item => {
+      if (item.type !== 'file' || item.name.toLowerCase() === 'index.md') return []
+      const parsed = splitDocumentFileName(item.name)
+      return parsed && parsed.id.toLowerCase() !== 'index' ? [parsed.id] : []
+    })
   }
 
-  async function readPage(id: string): Promise<Page> {
+  async function readPage(id: string, ext = 'md'): Promise<Page> {
     checkPageId(id)
-    const data = await file(`pages/${id}.md`)
+    const normalized = normalizeFileExt(ext)
+    const data = await file(`pages/${id}.${normalized}`)
+    if (BINARY_DOCUMENT_EXTENSIONS.has(normalized)) {
+      const source = data.encoding === 'base64' && typeof data.content === 'string' ? data : await gitRequest(`blobs/${encodeURIComponent(data.sha)}`) as GitHubFile
+      const bytes = decodeBinaryBlob(source)
+      const title = titleFromEncodedId(id, 'p')
+      return { id, title, content: '', sha: data.sha, ext: normalized, fileName: `${title}.${normalized}`, fileSize: bytes.length, binaryBytes: bytes }
+    }
     const content = await fileContent(data)
-    return { id, title: titleFrom(content, titleFromEncodedId(id, 'p')), content, sha: data.sha }
+    const title = normalized === 'md' ? titleFrom(content, titleFromEncodedId(id, 'p')) : titleFromEncodedId(id, 'p')
+    return { id, title, content, sha: data.sha, ...(normalized === 'md' ? {} : { ext: normalized }) }
   }
 
   // Contents may omit base64 for files over 1 MB; Git blobs still provide it.
@@ -615,14 +682,24 @@ export function createNotebookStore(repository?: string | null) {
       return found.filter((book): book is Notebook => book !== null)
     },
     async listChapters(bookId: string): Promise<Chapter[]> {
-      const ids = await listChapterIds(bookId)
-      return Promise.all(ids.map(id => readChapter(bookId, id)))
+      checkId(bookId)
+      const list = await entries(`${ROOT}/${bookId}`)
+      const items = list.flatMap(item => {
+        if (item.type !== 'file' || item.name.toLowerCase() === 'index.md') return []
+        const parsed = splitDocumentFileName(item.name)
+        return parsed && parsed.id.toLowerCase() !== 'index' ? [parsed] : []
+      })
+      return Promise.all(items.map(item => readChapter(bookId, item.id, item.ext)))
     },
     listChapterIds,
     async listPages(): Promise<Page[]> {
       const list = await entries('pages', true)
-      const pages = list.filter(item => item.type === 'file' && item.name.endsWith('.md') && ID.test(item.name.slice(0, -3)))
-      return Promise.all(pages.map(item => readPage(item.name.slice(0, -3))))
+      const pages = list.flatMap(item => {
+        if (item.type !== 'file') return []
+        const parsed = splitDocumentFileName(item.name)
+        return parsed ? [parsed] : []
+      })
+      return Promise.all(pages.map(item => readPage(item.id, item.ext)))
     },
     readChapter,
     readPage,

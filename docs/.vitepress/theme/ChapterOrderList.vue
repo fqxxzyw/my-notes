@@ -1,13 +1,25 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import type { Chapter } from './notebookStore'
+import { formatBadgeLabel, isMarkdownExt } from './documentFiles'
 
 const props = defineProps<{ chapters: Chapter[]; filtered: Chapter[]; selectedId?: string; disabled?: boolean; searching?: boolean }>()
-const emit = defineEmits<{ open: [chapter: Chapter]; reorder: [ids: string[]] }>()
+const emit = defineEmits<{ open: [chapter: Chapter]; reorder: [ids: string[]]; rename: [chapter: Chapter] }>()
 const drag = ref<{ id: string; ids: string[] } | null>(null)
 const target = ref<{ id: string; after: boolean } | null>(null)
 const canReorder = computed(() => !props.disabled && !props.searching && props.chapters.length > 1)
 const fullIndex = (id: string) => props.chapters.findIndex(item => item.id === id)
+let titleClickTimer: ReturnType<typeof setTimeout> | undefined
+function clearTitleClick() { if (titleClickTimer !== undefined) { clearTimeout(titleClickTimer); titleClickTimer = undefined } }
+function handleTitleClick(chapter: Chapter) {
+  clearTitleClick()
+  titleClickTimer = setTimeout(() => { titleClickTimer = undefined; emit('open', chapter) }, 220)
+}
+function handleTitleDblClick(chapter: Chapter) {
+  clearTitleClick()
+  emit('rename', chapter)
+}
+onBeforeUnmount(clearTitleClick)
 
 function move(from: number, to: number) {
   if (!canReorder.value || from < 0 || to < 0 || from >= props.chapters.length || to >= props.chapters.length || from === to) return
@@ -101,7 +113,9 @@ function dropGap(event: DragEvent) {
         @dragstart="startDrag($event, chapter.id)" @dragend="finishDrag">⠿</button>
       <button type="button" class="chapter-order__open" :disabled="disabled" @click="emit('open', chapter)">
         <span class="chapter-order__number">{{ String(fullIndex(chapter.id) + 1).padStart(2, '0') }}</span>
-        <span class="chapter-order__title">{{ chapter.title }}</span><span aria-hidden="true">↗</span>
+        <span class="chapter-order__title paper-renameable" title="双击修改章节名称" @click.stop="handleTitleClick(chapter)" @dblclick.stop.prevent="handleTitleDblClick(chapter)">{{ chapter.title }}</span>
+        <span v-if="!isMarkdownExt(chapter.ext)" class="paper-ext-pill">{{ formatBadgeLabel(chapter.ext) }}</span>
+        <span aria-hidden="true">↗</span>
       </button>
       <div v-if="chapters.length > 1" class="chapter-order__controls">
         <button type="button" :disabled="!canReorder || fullIndex(chapter.id) === 0" :aria-label="`上移${chapter.title}`" title="上移章节" @click="move(fullIndex(chapter.id), fullIndex(chapter.id) - 1)">↑</button>

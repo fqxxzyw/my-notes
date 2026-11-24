@@ -1,6 +1,7 @@
 import MarkdownIt from 'markdown-it'
 import { enableSafeHtmlImages } from './safeHtmlImage'
 import { enableTaskMarkers } from './markdownTasks'
+import { enableTyporaMarkdown } from './markdownTypora'
 
 /** A rendered block is only a view of these original source offsets. */
 export type MarkdownBlock = { from: number; to: number; source: string; html: string; type: string; direct: boolean }
@@ -16,6 +17,7 @@ export function revealInlineMarker(selections: readonly { from: number; to: numb
 const markdown = new MarkdownIt({ html: false, linkify: false, typographer: false })
 enableSafeHtmlImages(markdown)
 enableTaskMarkers(markdown)
+enableTyporaMarkdown(markdown)
 
 /** Render complete top-level blocks without changing, normalizing or serializing source. */
 export function markdownBlocks(source: string): MarkdownBlock[] {
@@ -48,7 +50,13 @@ export function markdownBlocks(source: string): MarkdownBlock[] {
     // Common text and list blocks stay native editable lines; image syntax
     // inside them gets a small inline widget rather than replacing the block.
     const direct = ['heading_open', 'paragraph_open', 'bullet_list_open', 'ordered_list_open', 'blockquote_open'].includes(token.type)
-    result.push({ from, to, source: raw, html: markdown.render(raw, environment), type: token.type, direct })
+    const blockEnv: Record<string, unknown> = {
+      references: environment.references,
+      __paperFnDefs: environment.__paperFnDefs,
+      __paperDocHeadings: environment.__paperDocHeadings,
+      __paperSingleBlock: true
+    }
+    result.push({ from, to, source: raw, html: markdown.render(raw, blockEnv), type: token.type, direct })
   }
   return result
 }

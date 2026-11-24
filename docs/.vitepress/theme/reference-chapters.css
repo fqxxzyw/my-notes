@@ -1,4 +1,18 @@
 /* Chapter directory and editor sidebar follow the supplied monochrome reference. */
+.chapter-page-layout.has-book {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr);
+  align-items: start;
+  column-gap: 24px;
+  margin-top: 28px;
+}
+/* The card must share a containing block with the content below the list;
+   otherwise a short panel ends before sticky positioning can take effect. */
+.chapter-page-layout.has-book .chapter-panel { display: contents; }
+.chapter-page-layout.has-book .reference-book-card { grid-column: 1; grid-row: 1 / 4; }
+.chapter-page-layout.has-book .contents-list { grid-column: 2; grid-row: 1; }
+.chapter-page-layout.has-book > .sync-catalog { grid-column: 2; grid-row: 2; justify-self: start; }
+.chapter-page-layout.has-book > .batch-box { grid-column: 2; grid-row: 3; min-width: 0; }
 .chapter-panel {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr);
@@ -11,10 +25,16 @@
   margin-top: 28px;
 }
 .reference-book-card {
+  position: sticky;
+  top: var(--editor-sticky-top, 66px);
+  align-self: start;
   min-width: 0;
+  max-height: max(10rem, calc(100vh - var(--editor-sticky-top, 66px) - 12px));
   border: 2px solid #111;
   border-radius: 12px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
   background: #fff;
   transition: box-shadow .16s ease;
 }
@@ -151,6 +171,18 @@
 }
 .reference-outline-button:hover { color: #fff; background: #111; }
 .contents-list { min-width: 0; }
+.chapter-directory-scroll {
+  min-width: 0;
+  max-height: max(12rem, calc(100vh - var(--editor-sticky-top, 66px) - 90px));
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  /* Leave room for card borders and the focus ring inside the scrollport. */
+  padding: 0 6px 6px 2px;
+}
+@supports (height: 100dvh) {
+  .reference-book-card { max-height: max(10rem, calc(100dvh - var(--editor-sticky-top, 66px) - 12px)); }
+  .chapter-directory-scroll { max-height: max(12rem, calc(100dvh - var(--editor-sticky-top, 66px) - 90px)); }
+}
 .chapter-title.reference-chapter-heading {
   align-items: center;
   gap: 12px;
@@ -291,7 +323,12 @@
   overflow: visible;
 }
 @media (max-width: 850px) {
+  .chapter-page-layout.has-book { display: block; margin-top: 0; }
+  .chapter-page-layout.has-book .chapter-panel { display: grid; }
+  .chapter-page-layout.has-book .reference-book-card,
+  .chapter-page-layout.has-book .contents-list { grid-column: auto; grid-row: auto; }
   .chapter-panel { grid-template-columns: 1fr; }
+  .reference-book-card { position: static; max-height: none; overflow: hidden; }
   .reference-editor-workspace { grid-template-columns: minmax(128px, 30%) minmax(0, 1fr); gap: 8px; }
   .reference-editor-sidebar { padding: 8px 12px; }
 }

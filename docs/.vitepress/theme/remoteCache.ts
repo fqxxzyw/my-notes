@@ -69,7 +69,11 @@ function cleanSnapshot(value: unknown): RemoteSnapshot {
           chapter.id.toLowerCase() === 'index' || seen.has(chapter.id) || typeof chapter.title !== 'string' ||
           typeof chapter.content !== 'string' || typeof chapter.sha !== 'string' || !SHA.test(chapter.sha)) throw new Error('远端章节数据无效。')
       seen.add(chapter.id)
-      return { bookId: book.id, id: chapter.id, title: chapter.title, content: chapter.content, sha: chapter.sha }
+      const ext = typeof chapter.ext === 'string' && /^[a-z0-9]{1,10}$/i.test(chapter.ext) ? chapter.ext.toLowerCase() : undefined
+      const filePath = typeof chapter.filePath === 'string' ? chapter.filePath : undefined
+      const fileName = typeof chapter.fileName === 'string' ? chapter.fileName : undefined
+      const fileSize = typeof chapter.fileSize === 'number' && Number.isFinite(chapter.fileSize) && chapter.fileSize >= 0 ? chapter.fileSize : undefined
+      return { bookId: book.id, id: chapter.id, title: chapter.title, content: chapter.content, sha: chapter.sha, ...(ext ? { ext } : {}), ...(filePath ? { filePath } : {}), ...(fileName ? { fileName } : {}), ...(fileSize !== undefined ? { fileSize } : {}) }
     })
   }
   const rawCatalog = input.catalog as Record<string, unknown>
@@ -83,7 +87,11 @@ function cleanSnapshot(value: unknown): RemoteSnapshot {
       if (typeof page.id !== 'string' || !ID.test(page.id) || page.id.length > 251 || seen.has(page.id) ||
           typeof page.title !== 'string' || typeof page.content !== 'string' || typeof page.sha !== 'string' || !SHA.test(page.sha)) throw new Error('远端书页数据无效。')
       seen.add(page.id)
-      return { id: page.id, title: page.title, content: page.content, sha: page.sha }
+      const ext = typeof page.ext === 'string' && /^[a-z0-9]{1,10}$/i.test(page.ext) ? page.ext.toLowerCase() : undefined
+      const filePath = typeof page.filePath === 'string' ? page.filePath : undefined
+      const fileName = typeof page.fileName === 'string' ? page.fileName : undefined
+      const fileSize = typeof page.fileSize === 'number' && Number.isFinite(page.fileSize) && page.fileSize >= 0 ? page.fileSize : undefined
+      return { id: page.id, title: page.title, content: page.content, sha: page.sha, ...(ext ? { ext } : {}), ...(filePath ? { filePath } : {}), ...(fileName ? { fileName } : {}), ...(fileSize !== undefined ? { fileSize } : {}) }
     })
   }
   if (typeof rawCatalog.sha !== 'string' || (rawCatalog.sha !== '' && !SHA.test(rawCatalog.sha))) throw new Error('远端书柜版本无效。')

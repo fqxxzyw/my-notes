@@ -107,6 +107,30 @@ internal static class DesktopAttachmentHarness
         if (!selectedFiles.Any(item => ((string)item["relative"]).EndsWith("/笔记/嵌套.md"))) throw new Exception("Relative folder paths lost");
         if (!ReferencedImageFiles.ReadLiteralImage(source, 20 * 1024 * 1024).SequenceEqual(png)) throw new Exception("Selected image changed");
         if (!File.ReadAllBytes(source).SequenceEqual(png)) throw new Exception("Source image modified");
+
+        // Verify DocumentFiles storage isolation, read-only document reading, and multi-format folder enumeration.
+        string docRoot = Path.Combine(args[0], "文件");
+        string docPath = "docs/pages/files/" + new string('2', 32) + ".pdf";
+        byte[] pdf = System.Text.Encoding.ASCII.GetBytes("%PDF-1.4\n%test\n");
+        DocumentFiles.Write(docRoot, "Alice/Notes", docPath, pdf);
+        if (!DocumentFiles.Read(docRoot, "alice/notes", docPath).SequenceEqual(pdf)) throw new Exception("Document bytes changed");
+        if (DocumentFiles.Read(docRoot, "other/notes", docPath) != null) throw new Exception("Document workspace isolation failed");
+        Fails(() => DocumentFiles.Write(docRoot, "alice/notes", "docs/pages/files/" + new string('2', 32) + ".exe", pdf));
+        Fails(() => DocumentFiles.Write(docRoot, "alice/notes", "docs/pages/files/../../secret.pdf", pdf));
+        string txtFile = Path.Combine(sourceDirectory, "纯文本.txt");
+        byte[] txtBytes = System.Text.Encoding.UTF8.GetBytes("hello plain text");
+        File.WriteAllBytes(txtFile, txtBytes);
+        string pdfFile = Path.Combine(sourceDirectory, "资料.pdf");
+        File.WriteAllBytes(pdfFile, pdf);
+        if (!ReferencedImageFiles.ReadTextFile(txtFile, 5 * 1024 * 1024).SequenceEqual(txtBytes)) throw new Exception("Text file bytes changed");
+        if (!ReferencedImageFiles.ReadDocumentFile(pdfFile, 50 * 1024 * 1024).SequenceEqual(pdf)) throw new Exception("PDF file bytes changed");
+        Fails(() => ReferencedImageFiles.ReadDocumentFile(txtFile, 50 * 1024 * 1024));
+        var allMd = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var allImg = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var allTxt = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var allDoc = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var enumerated = SelectedImportFolder.EnumerateAll(sourceDirectory, allMd, allImg, allTxt, allDoc);
+        if (!allTxt.Contains(txtFile) || !allDoc.Contains(pdfFile) || !enumerated.Any(item => (string)item["kind"] == "document")) throw new Exception("Multi-format folder enumeration failed");
         Console.WriteLine("Desktop attachment storage passed.");
     }
 }

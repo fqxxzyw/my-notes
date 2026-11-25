@@ -199,7 +199,10 @@ class PaperNotesRepository(
                     val d = drafts[chapterKey(ch.bookId, ch.id)]
                     if (d != null) {
                         ch.copy(title = CompatibilityCodecs.titleFromMarkdown(d.content, ch.title))
-                    } else ch
+                    } else {
+                        val cleaned = CompatibilityCodecs.cleanMarkdownTitle(ch.title)
+                        if (cleaned.isNotEmpty() && cleaned != ch.title) ch.copy(title = cleaned) else ch
+                    }
                 }
                 chaptersByBook[id] = sorted
                 val pending = rawBook.sha.isEmpty() ||
@@ -208,7 +211,7 @@ class PaperNotesRepository(
                 shelfItems.add(
                     ShelfItem(
                         id = id,
-                        title = rawBook.title,
+                        title = CompatibilityCodecs.cleanMarkdownTitle(rawBook.title).ifEmpty { rawBook.title },
                         sha = rawBook.sha,
                         isPage = false,
                         description = effectiveDesc,

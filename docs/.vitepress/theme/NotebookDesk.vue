@@ -21,7 +21,7 @@ import { createSyncIndicator, type TransferState } from './syncIndicator'
 import { hasUserData } from './workspaceData'
 import { readDroppedMarkdown, type DroppedMarkdownResult } from './readDroppedMarkdown'
 import { pickDesktopImportFiles, pickDesktopImportFolder, pickDesktopMarkdownFiles, pickDesktopMarkdownFolder, resolveDesktopImportedImages } from './desktopImportImages'
-import { sortChapters, validateChapterOrder } from './notebookChapterOrder'
+import { compareImportedPaths, decodeEncodedChapterPath, sortChapters, validateChapterOrder } from './notebookChapterOrder'
 import { prepareLocalCollection, assertLocalMetadataWritable, restoreNotebookBase } from './localMetadataSafety'
 import { newAttachmentPath, putAttachment, getAttachment, attachmentMime, MAX_ATTACHMENT_BYTES, type NoteAttachment } from './attachmentStore'
 import { attachmentReferences, workspaceAttachmentPaths, workspaceEntriesMatch } from './attachmentReferences'
@@ -29,7 +29,7 @@ import { applyImageUrls } from './imageUrls'
 import { rewriteImportedImages } from './rewriteImportedImages'
 import { finishAttachmentRestore } from './attachmentRestore'
 import { BINARY_DOCUMENT_EXTENSIONS, displayFileName, formatBadgeLabel, getDocumentFile, isBinaryDocumentExt, isEditableExt, isMarkdownExt, isPlainTextExt, newDocumentPath, normalizeFileExt, putDocumentFile, stripSupportedExtension, type StoredDocumentFile } from './documentFiles'
-import { validateRenameTitle, writeMarkdownDocumentTitle, writeNotebookIndexTitle } from './notebookTitle'
+import { cleanMarkdownTitle, extractMarkdownTitle, validateRenameTitle, writeMarkdownDocumentTitle, writeNotebookIndexTitle } from './notebookTitle'
 import { normalizeHeadingKey, parseMarkdownLinkHref, resolveMarkdownTarget, type LinkableItem } from './markdownLinks'
 import { computeDocumentStats, toggleMarkdownTaskAtIndex } from './markdownStats'
 import { exportMarkdownFile, exportStandaloneHtml } from './exportDocument'
@@ -1088,12 +1088,17 @@ function toggleBatchGroup(group: typeof batchGroups.value[number], event: Event)
   }
   selectedKeys.value = [...selected]
 }
+function normalizeChapterTitle(chapter: Chapter): Chapter {
+  if (!isMarkdownExt(chapter.ext)) return chapter
+  const cleaned = cleanMarkdownTitle(chapter.title)
+  return cleaned && cleaned !== chapter.title ? { ...chapter, title: cleaned } : chapter
+}
 async function getChapters(book: Notebook): Promise<Chapter[]> {
   if (isPageBookId(book.id)) {
     const page = remotePages.value.find(item => pageBookId(item.id) === book.id)
     const local = localChapters.value.find(item => item.bookId === book.id)
     const base = page ? pageAsChapter(page) : local
-    return base ? [base] : []
+    return base ? [normalizeChapterTitle(base)] : []
   }
   const useSnapshot = snapshot.value
   const key = `${offlineMode.value ? 'offline' : useSnapshot ? 'snapshot' : 'remote'}:${book.id}`
@@ -1113,11 +1118,11 @@ async function getChapters(book: Notebook): Promise<Chapter[]> {
   const source = await pending
   const merged = source.map(chapter => {
     const copy = syncedCopies.value[chapterKey(chapter)]
-    return useSnapshot && copy?.snapshotVersion === snapshotVersion && copy.baseSha === chapter.sha ? copy.chapter : chapter
+    return normalizeChapterTitle(useSnapshot && copy?.snapshotVersion === snapshotVersion && copy.baseSha === chapter.sha ? copy.chapter : chapter)
   })
   const extras = [ ...localChapters.value.filter(chapter => !chapter.sha), ...Object.values(drafts.value).map(draft => draft.base), ...(useSnapshot ? Object.values(syncedCopies.value).filter(copy => copy.snapshotVersion === snapshotVersion && copy.baseSha === null).map(copy => copy.chapter) : []) ]
   for (const chapter of extras) {
-    if (chapter.bookId === book.id && !merged.some(item => item.id === chapter.id)) merged.push(chapter)
+    if (chapter.bookId === book.id && !merged.some(item => item.id === chapter.id)) merged.push(normalizeChapterTitle(chapter))
   }
   return sortChapters(merged, bookDescriptionDrafts.value[book.id]?.chapterOrder ?? book.chapterOrder)
 }
@@ -1273,9 +1278,11 @@ async function repairCurrentImages(reading: Promise<DroppedMarkdownResult>, sele
   const success = await run(async () => {
     const parsed = await reading
     const result = !selectedImageSource || resolveOriginalPaths ? await resolveDesktopImportedImages(parsed) : parsed
+    const encodedChapterTitle = decodeEncodedChapterPath(chapter.id)
     let matches = selectedImageSource ? result.files.filter(file => file.path === selectedImageSource.path && file.content === original) : result.files.filter(file => {
       const root = result.folders.find(folder => file.path.startsWith(`${folder}/`))
-      return safeImportedTitle(root ? file.path.slice(root.length + 1) : file.name) === chapter.title
+      const candidate = safeImportedTitle(root ? file.path.slice(root.length + 1) : file.name)
+      return candidate === chapter.title || (encodedChapterTitle !== null && candidate === encodedChapterTitle)
     })
     if (!selectedImageSource && !matches.length) {
       // A synced chapter may display its Markdown heading instead of its old
@@ -1348,40 +1355,68 @@ async function importMarkdown(reading: Promise<DroppedMarkdownResult>) {
     })
     for (const folder of importFolders) {
       const book: ShelfBook = { id: newId(), title: safeImportedTitle(folder), sha: '' }
+      const folderEntries: Array<
+        | { kind: 'text'; relative: string; file: DroppedMarkdownResult['files'][number] }
+        | { kind: 'doc'; relative: string; doc: NonNullable<DroppedMarkdownResult['documents']>[number] }
+      > = [
+        ...result.files
+          .filter(item => item.path.startsWith(`${folder}/`))
+          .map(file => ({ kind: 'text' as const, relative: file.path.slice(folder.length + 1), file })),
+        ...droppedDocs
+          .filter(item => item.path.startsWith(`${folder}/`))
+          .map(doc => ({ kind: 'doc' as const, relative: doc.path.slice(folder.length + 1), doc }))
+      ]
+      folderEntries.sort((a, b) => compareImportedPaths(a.relative, b.relative))
+      const folderOrder: string[] = []
+      for (const entry of folderEntries) {
+        const pathTitle = safeImportedTitle(entry.relative)
+        if (entry.kind === 'text') {
+          const displayTitle = entry.file.ext === 'txt'
+            ? pathTitle
+            : extractMarkdownTitle(entry.file.content, pathTitle)
+          const cid = chapterIdFromTitle(pathTitle)
+          const chapter: Chapter = { bookId: book.id, id: cid, title: displayTitle, content: entry.file.content, sha: '', ...(entry.file.ext === 'txt' ? { ext: 'txt' } : {}) }
+          addedChapters.push(chapter)
+          folderOrder.push(cid)
+          if (entry.file.ext !== 'txt') sourceFiles.push({ file: entry.file, chapter, assetBookId: book.id })
+        } else {
+          const filePath = newDocumentPath(book.id, entry.doc.ext)
+          stagedDocs.push({ path: filePath, bytes: entry.doc.bytes })
+          const cid = chapterIdFromTitle(pathTitle)
+          const chapter: Chapter = { bookId: book.id, id: cid, title: pathTitle, content: '', sha: '', ext: entry.doc.ext, filePath, fileName: displayFileName(pathTitle, entry.doc.ext), fileSize: entry.doc.bytes.length }
+          addedChapters.push(chapter)
+          folderOrder.push(cid)
+        }
+      }
+      if (folderOrder.length > 0 && folderOrder.length <= 999) {
+        book.chapterOrder = folderOrder
+      }
       addedBooks.push(book)
-      for (const file of result.files.filter(item => item.path.startsWith(`${folder}/`))) {
-        const relative = file.path.slice(folder.length + 1)
-        const title = safeImportedTitle(relative)
-        const chapter: Chapter = { bookId: book.id, id: chapterIdFromTitle(title), title, content: file.content, sha: '', ...(file.ext === 'txt' ? { ext: 'txt' } : {}) }
-        addedChapters.push(chapter)
-        if (file.ext !== 'txt') sourceFiles.push({ file, chapter, assetBookId: book.id })
-      }
-      for (const doc of droppedDocs.filter(item => item.path.startsWith(`${folder}/`))) {
-        const relative = doc.path.slice(folder.length + 1)
-        const title = safeImportedTitle(relative)
-        const filePath = newDocumentPath(book.id, doc.ext)
-        stagedDocs.push({ path: filePath, bytes: doc.bytes })
-        const chapter: Chapter = { bookId: book.id, id: chapterIdFromTitle(title), title, content: '', sha: '', ext: doc.ext, filePath, fileName: displayFileName(title, doc.ext), fileSize: doc.bytes.length }
-        addedChapters.push(chapter)
-      }
     }
-    for (const file of result.files.filter(item => !importFolders.some(folder => item.path.startsWith(`${folder}/`)))) {
-      const title = safeImportedTitle(file.name)
+    const looseTextFiles = result.files
+      .filter(item => !importFolders.some(folder => item.path.startsWith(`${folder}/`)))
+      .sort((a, b) => compareImportedPaths(a.path, b.path))
+    for (const file of looseTextFiles) {
+      const pathTitle = safeImportedTitle(file.name)
+      const displayTitle = file.ext === 'txt' ? pathTitle : extractMarkdownTitle(file.content, pathTitle)
       const extProp = file.ext === 'txt' ? { ext: 'txt' as const } : {}
       if (destination) {
-        const chapter: Chapter = { bookId: destination.id, id: chapterIdFromTitle(title), title, content: file.content, sha: '', ...extProp }
+        const chapter: Chapter = { bookId: destination.id, id: chapterIdFromTitle(pathTitle), title: displayTitle, content: file.content, sha: '', ...extProp }
         addedChapters.push(chapter)
         if (file.ext !== 'txt') sourceFiles.push({ file, chapter, assetBookId: destination.id })
       } else {
-        const id = pageIdFromTitle(title)
-        const book: ShelfBook = { id: pageBookId(id), title, sha: '', kind: 'page', ...extProp }
+        const id = pageIdFromTitle(pathTitle)
+        const book: ShelfBook = { id: pageBookId(id), title: displayTitle, sha: '', kind: 'page', ...extProp }
         addedBooks.push(book)
-        const chapter: Chapter = { bookId: book.id, id, title, content: file.content, sha: '', ...extProp }
+        const chapter: Chapter = { bookId: book.id, id, title: displayTitle, content: file.content, sha: '', ...extProp }
         addedChapters.push(chapter)
         if (file.ext !== 'txt') sourceFiles.push({ file, chapter, assetBookId: null })
       }
     }
-    for (const doc of droppedDocs.filter(item => !importFolders.some(folder => item.path.startsWith(`${folder}/`)))) {
+    const looseDocs = droppedDocs
+      .filter(item => !importFolders.some(folder => item.path.startsWith(`${folder}/`)))
+      .sort((a, b) => compareImportedPaths(a.path, b.path))
+    for (const doc of looseDocs) {
       const title = safeImportedTitle(doc.name)
       if (destination) {
         const filePath = newDocumentPath(destination.id, doc.ext)
@@ -2281,7 +2316,7 @@ function openChapter(chapter: Chapter) {
   if (!saveDraft()) return
   clearMessages()
   suspendDraft = true
-  selectedChapter.value = chapter
+  selectedChapter.value = normalizeChapterTitle(chapter)
   content.value = chapter.content
   if (isEditableExt(chapter.ext)) {
     try {
@@ -2289,7 +2324,7 @@ function openChapter(chapter: Chapter) {
       if (raw) {
         const saved = JSON.parse(raw)
         if (typeof saved.content === 'string' && saved.base?.id === chapter.id && saved.base?.bookId === chapter.bookId && typeof saved.base?.sha === 'string') {
-          selectedChapter.value = { ...chapter, ...saved.base }
+          selectedChapter.value = normalizeChapterTitle({ ...chapter, ...saved.base })
           content.value = saved.content
           notice.value = '已恢复这篇章节的本地草稿。'
         }
@@ -3087,10 +3122,10 @@ onMounted(() => {
     const prepared = prepareLocalCollection(localStorage, localKey, () => !initialRepository ? addWelcomeNotebook(localStorage, '', snapshotFiles, newId) : null)
     const { saved, metadata, added: addedWelcome } = prepared
     localMetadataDamaged = prepared.damaged
-    if (Array.isArray(saved.books)) localBooks.value = saved.books
+    if (Array.isArray(saved.books)) localBooks.value = saved.books.map(book => ({ ...book, title: isMarkdownExt(book.ext) ? (cleanMarkdownTitle(book.title) || book.title) : book.title }))
     bookDescriptionDrafts.value = metadata.drafts
     if (prepared.damaged) restoreError = '本地笔记本信息损坏，已保留原始数据并暂停写入笔记目录和同步；请先备份本地数据，再检查或恢复。'
-    if (Array.isArray(saved.chapters)) localChapters.value = saved.chapters
+    if (Array.isArray(saved.chapters)) localChapters.value = saved.chapters.map(normalizeChapterTitle)
     if (saved.synced && typeof saved.synced === 'object' && !Array.isArray(saved.synced)) syncedCopies.value = saved.synced
     if (saved.bookVersions && typeof saved.bookVersions === 'object' && !Array.isArray(saved.bookVersions)) bookVersions.value = saved.bookVersions
     welcomeInitialized.value = saved.welcomeInitialized === true

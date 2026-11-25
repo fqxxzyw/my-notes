@@ -68,6 +68,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import com.papernotes.android.data.Chapter
+import com.papernotes.android.data.CompatibilityCodecs
 import com.papernotes.android.data.WorkspaceState
 import com.papernotes.android.ui.components.PaperBadge
 import com.papernotes.android.ui.components.PaperButton
@@ -547,8 +548,20 @@ fun NotebookDetailScreen(
                                     )
                                 }
 
-                                // Chapter title & draft status
-                                Column(modifier = Modifier.weight(1f)) {
+                                // Chapter title, optional nested folder eyebrow & draft status
+                                val folderLabel = remember(chapter.id) { CompatibilityCodecs.chapterFolderPath(chapter.id) }
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    if (folderLabel.isNotEmpty()) {
+                                        Text(
+                                            text = folderLabel,
+                                            color = colors.muted,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 11.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
                                     Text(
                                         text = chapter.title,
                                         color = colors.ink,

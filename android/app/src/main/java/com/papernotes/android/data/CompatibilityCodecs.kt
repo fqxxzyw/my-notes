@@ -9,7 +9,9 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import java.security.MessageDigest
+import java.text.Collator
 import java.util.Base64
+import java.util.Locale
 import java.util.UUID
 
 /**
@@ -217,12 +219,169 @@ object CompatibilityCodecs {
         return split.before + separator + marker + newline + split.after
     }
 
+    private val ENCODED_CHAPTER_ID_REGEX = Regex("^c_[a-f0-9]{32}_([A-Za-z0-9_-]+)$")
+    private val OVERVIEW_NAME_REGEX = Regex("^(?:readme|index)$", RegexOption.IGNORE_CASE)
+    private val NUMERIC_PREFIX_REGEX = Regex("^\\d+")
+    private val IMPORTED_EXT_REGEX = Regex("\\.(?:md|txt|pdf|docx?|pptx?|xlsx?|csv|rtf)$", RegexOption.IGNORE_CASE)
+    private val NATURAL_RUN_REGEX = Regex("\\d+|\\D+")
+    private val SIMPLE_INLINE_HTML_TAG = Regex(
+        "</?(?:u|kbd|sup|sub|mark|strong|b|em|i|code|s|del|span)(?:\\s[^<>]*)?>",
+        RegexOption.IGNORE_CASE
+    )
+    private val MD_IMAGE_REGEX = Regex("!\\[([^\\]]*)\\]\\([^)]*\\)")
+    private val MD_LINK_REGEX = Regex("\\[([^\\]]+)\\]\\([^)]*\\)")
+    private val MD_REF_LINK_REGEX = Regex("\\[([^\\]]+)\\]\\[[^\\]]*\\]")
+    private val MD_MARK_REGEX = Regex("==([^=\\r\\n]+)==")
+    private val MD_STRIKE_REGEX = Regex("~~([^~\\r\\n]+)~~")
+    private val MD_BOLD_STAR_REGEX = Regex("\\*\\*([^*\\r\\n]+)\\*\\*")
+    private val MD_BOLD_UNDERSCORE_REGEX = Regex(
+        "(^|[\\s(\\[{\"\\'（【「『《：:、，。！？；—-])__([^_\\r\\n]+)__(?=$|[\\s)\\]}\"\\'）】」』》：:、，。！？；—-])"
+    )
+    private val MD_ITALIC_STAR_REGEX = Regex("\\*([^*\\s][^*\\r\\n]*?)\\*")
+    private val MD_ITALIC_UNDERSCORE_REGEX = Regex(
+        "(^|[\\s(\\[{\"\\'（【「『《：:、，。！？；—-])_([^_\\s][^_\\r\\n]*?)_(?=$|[\\s)\\]}\"\\'）】」』》：:、，。！？；—-])"
+    )
+    private val MD_ESCAPE_REGEX = Regex("\\\\([\\\\`*_{}\\[\\]()#+\\-.!~=|])")
+    private val ATX_CLOSING_HASHES_REGEX = Regex("[ \\t]+#+[ \\t]*$")
+
+    private val zhCollator: ThreadLocal<Collator> = ThreadLocal.withInitial {
+        Collator.getInstance(Locale.SIMPLIFIED_CHINESE).apply {
+            strength = Collator.PRIMARY
+        }
+    }
+
+    /** Decode the original relative path embedded in an imported chapter ID (`c_<uuid>_<base64url>`). */
+    fun decodedEncodedChapterPath(id: String): String? {
+        val match = ENCODED_CHAPTER_ID_REGEX.matchEntire(id) ?: return null
+        return try {
+            val bytes = Base64.getUrlDecoder().decode(match.groupValues[1])
+            val decoded = String(bytes, Charsets.UTF_8).replace('\\', '/').trim()
+            if (decoded.isNotEmpty() && !decoded.contains('\r') && !decoded.contains('\n')) decoded else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Return the nested subfolder label (e.g. `3-异步编程`) for chapters imported from subfolders, or empty string for flat chapters. */
+    fun chapterFolderPath(id: String): String {
+        val decoded = decodedEncodedChapterPath(id) ?: return ""
+        val slash = decoded.lastIndexOf('/')
+        return if (slash > 0) decoded.substring(0, slash) else ""
+    }
+
+    private fun compareTextRun(a: String, b: String): Int {
+        if (a == b) return 0
+        val cmp = zhCollator.get()?.compare(a, b) ?: a.lowercase(Locale.ROOT).compareTo(b.lowercase(Locale.ROOT))
+        if (cmp != 0) return cmp
+        return a.compareTo(b)
+    }
+
+    private fun compareDigitRun(a: String, b: String): Int {
+        val normA = a.trimStart('0').ifEmpty { "0" }
+        val normB = b.trimStart('0').ifEmpty { "0" }
+        if (normA.length != normB.length) return normA.length.compareTo(normB.length)
+        if (normA != normB) return normA.compareTo(normB)
+        return a.length.compareTo(b.length)
+    }
+
+    /** Natural alphanumeric + zh-CN comparator (1 < 2 < 10, deterministic strict weak ordering). */
+    fun compareNatural(a: String, b: String): Int {
+        if (a == b) return 0
+        val partsA = NATURAL_RUN_REGEX.findAll(a).map { it.value }.toList()
+        val partsB = NATURAL_RUN_REGEX.findAll(b).map { it.value }.toList()
+        val limit = minOf(partsA.size, partsB.size)
+        for (i in 0 until limit) {
+            val segA = partsA[i]
+            val segB = partsB[i]
+            if (segA == segB) continue
+            val numA = segA[0] in '0'..'9'
+            val numB = segB[0] in '0'..'9'
+            if (numA && numB) {
+                val cmp = compareDigitRun(segA, segB)
+                if (cmp != 0) return cmp
+            } else if (numA != numB) {
+                return if (numA) -1 else 1
+            } else {
+                val cmp = compareTextRun(segA, segB)
+                if (cmp != 0) return cmp
+            }
+        }
+        if (partsA.size != partsB.size) return partsA.size.compareTo(partsB.size)
+        return a.compareTo(b)
+    }
+
+    private fun segmentBucket(stem: String, isDir: Boolean): Int {
+        if (!isDir && OVERVIEW_NAME_REGEX.matches(stem)) return 0
+        if (NUMERIC_PREFIX_REGEX.containsMatchIn(stem)) return 1
+        return if (isDir) 3 else 2
+    }
+
+    /**
+     * Strictly transitive hierarchical path comparator for flattened nested folders.
+     * Exact mirror of docs/.vitepress/theme/notebookChapterOrder.ts::compareImportedPaths.
+     */
+    fun compareImportedPaths(pathA: String, pathB: String): Int {
+        val normA = pathA.replace('\\', '/').trim('/')
+        val normB = pathB.replace('\\', '/').trim('/')
+        if (normA == normB) return 0
+        val segsA = if (normA.isEmpty()) emptyList() else normA.split('/')
+        val segsB = if (normB.isEmpty()) emptyList() else normB.split('/')
+        val limit = minOf(segsA.size, segsB.size)
+        for (i in 0 until limit) {
+            val rawA = segsA[i]
+            val rawB = segsB[i]
+            val isDirA = i < segsA.lastIndex
+            val isDirB = i < segsB.lastIndex
+            val stemA = if (isDirA) rawA else rawA.replace(IMPORTED_EXT_REGEX, "")
+            val stemB = if (isDirB) rawB else rawB.replace(IMPORTED_EXT_REGEX, "")
+            if (stemA == stemB && isDirA == isDirB && rawA == rawB) continue
+
+            val bucketA = segmentBucket(stemA, isDirA)
+            val bucketB = segmentBucket(stemB, isDirB)
+            if (bucketA != bucketB) return bucketA.compareTo(bucketB)
+
+            val cmpStem = compareNatural(stemA, stemB)
+            if (cmpStem != 0) return cmpStem
+
+            if (isDirA != isDirB) return if (isDirA) 1 else -1
+
+            val cmpRaw = compareNatural(rawA, rawB)
+            if (cmpRaw != 0) return cmpRaw
+        }
+        if (segsA.size != segsB.size) return segsA.size.compareTo(segsB.size)
+        return normA.compareTo(normB)
+    }
+
+    private class ChapterSortEntry<T>(
+        val value: T,
+        val index: Int,
+        val explicitRank: Int?,
+        val encodedPath: String?
+    )
+
     fun <T> sortChapters(chapters: List<T>, idSelector: (T) -> String, order: List<String>?): List<T> {
-        if (order.isNullOrEmpty()) return chapters.toList()
-        val rank = order.withIndex().associate { it.value to it.index }
-        return chapters.withIndex()
-            .sortedWith(compareBy<IndexedValue<T>> { rank[idSelector(it.value)] ?: Int.MAX_VALUE }.thenBy { it.index })
-            .map { it.value }
+        val rank = if (order.isNullOrEmpty()) null else order.withIndex().associate { it.value to it.index }
+        val items = chapters.mapIndexed { idx, ch ->
+            val id = idSelector(ch)
+            val r = rank?.get(id)
+            val encoded = if (r == null) decodedEncodedChapterPath(id) else null
+            ChapterSortEntry(ch, idx, r, encoded)
+        }
+        if (rank == null && items.none { it.encodedPath != null }) {
+            return chapters.toList()
+        }
+        return items.sortedWith { a, b ->
+            val rA = a.explicitRank ?: Int.MAX_VALUE
+            val rB = b.explicitRank ?: Int.MAX_VALUE
+            if (rA != rB) return@sortedWith rA.compareTo(rB)
+            if (a.encodedPath != null && b.encodedPath != null) {
+                val cmp = compareImportedPaths(a.encodedPath, b.encodedPath)
+                if (cmp != 0) return@sortedWith cmp
+            } else if (a.encodedPath != null || b.encodedPath != null) {
+                return@sortedWith if (a.encodedPath != null) -1 else 1
+            }
+            a.index.compareTo(b.index)
+        }.map { it.value }
     }
 
     // --- IDs, Titles, Page keys, Git Blob SHA-1 ---
@@ -295,9 +454,96 @@ object CompatibilityCodecs {
 
     private val H1_REGEX = Regex("^#\\s+(.+?)\\s*$", RegexOption.MULTILINE)
 
+    private fun stripInlineMarkdownText(segment: String): String {
+        var out = segment
+        out = MD_IMAGE_REGEX.replace(out, "$1")
+        out = MD_LINK_REGEX.replace(out, "$1")
+        out = MD_REF_LINK_REGEX.replace(out, "$1")
+        out = SIMPLE_INLINE_HTML_TAG.replace(out, "")
+        out = MD_MARK_REGEX.replace(out, "$1")
+        out = MD_STRIKE_REGEX.replace(out, "$1")
+        out = MD_BOLD_STAR_REGEX.replace(out, "$1")
+        out = MD_BOLD_UNDERSCORE_REGEX.replace(out, "$1$2")
+        out = MD_ITALIC_STAR_REGEX.replace(out, "$1")
+        out = MD_ITALIC_UNDERSCORE_REGEX.replace(out, "$1$2")
+        out = MD_ESCAPE_REGEX.replace(out, "$1")
+        return out
+    }
+
+    /**
+     * Render inline Markdown syntax in headings/titles into clean plain text while preserving
+     * inline-code contents verbatim (e.g. underscores in `05-asyncio_gather.py`).
+     * Exact mirror of docs/.vitepress/theme/notebookTitle.ts::cleanMarkdownTitle.
+     */
+    fun cleanMarkdownTitle(raw: String): String {
+        val trimmed = raw.replace(Regex("[\\r\\n]+"), " ").trim()
+        if (trimmed.isEmpty()) return ""
+        val withoutClosing = ATX_CLOSING_HASHES_REGEX.replace(trimmed, "").trim()
+        if (withoutClosing.isEmpty()) return trimmed
+
+        val result = StringBuilder(withoutClosing.length)
+        val n = withoutClosing.length
+        var i = 0
+        var plainStart = 0
+
+        fun flushPlain(end: Int) {
+            if (end > plainStart) {
+                result.append(stripInlineMarkdownText(withoutClosing.substring(plainStart, end)))
+            }
+        }
+
+        while (i < n) {
+            if (withoutClosing[i] == '\\' && i + 1 < n) {
+                i += 2
+                continue
+            }
+            if (withoutClosing[i] == '`') {
+                var tickEnd = i
+                while (tickEnd < n && withoutClosing[tickEnd] == '`') tickEnd++
+                val tickCount = tickEnd - i
+                var search = tickEnd
+                var closeStart = -1
+                while (search < n) {
+                    val idx = withoutClosing.indexOf('`', search)
+                    if (idx < 0) break
+                    var runEnd = idx
+                    while (runEnd < n && withoutClosing[runEnd] == '`') runEnd++
+                    if (runEnd - idx == tickCount) {
+                        closeStart = idx
+                        break
+                    }
+                    search = runEnd
+                }
+                if (closeStart >= 0) {
+                    flushPlain(i)
+                    var code = withoutClosing.substring(tickEnd, closeStart)
+                    if (code.length >= 2 && code.startsWith(" ") && code.endsWith(" ") && code.any { it != ' ' }) {
+                        code = code.substring(1, code.length - 1)
+                    }
+                    result.append(code)
+                    i = closeStart + tickCount
+                    plainStart = i
+                    continue
+                }
+                i = tickEnd
+                continue
+            }
+            i++
+        }
+        flushPlain(n)
+
+        val cleaned = result.toString().replace(Regex("\\s+"), " ").trim()
+        return cleaned.ifEmpty { withoutClosing }
+    }
+
     fun titleFromMarkdown(content: String, fallback: String): String {
         val stripped = content.removePrefix("\uFEFF")
-        return H1_REGEX.find(stripped)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() } ?: fallback
+        val raw = H1_REGEX.find(stripped)?.groupValues?.get(1)?.trim()
+        if (!raw.isNullOrEmpty()) {
+            val cleaned = cleanMarkdownTitle(raw)
+            if (cleaned.isNotEmpty()) return cleaned
+        }
+        return cleanMarkdownTitle(fallback).ifEmpty { fallback }
     }
 
     fun pageBookId(pageId: String): String = "page_$pageId"

@@ -3,6 +3,7 @@ import { defaultCatalog, parseCatalog, serializeCatalog, type CabinetCatalog, ty
 import { normalizeRepository } from './repository'
 import { readNotebookDescription, writeNotebookDescription } from './notebookDescription'
 import { readNotebookChapterOrder, writeNotebookChapterOrder } from './notebookChapterOrder'
+import { extractMarkdownTitle } from './notebookTitle'
 import { MAX_ATTACHMENT_BYTES, validateAttachment, validateAttachmentPath, type NoteAttachment } from './attachmentStore'
 import { ALL_SUPPORTED_IMPORT_EXTENSIONS, BINARY_DOCUMENT_EXTENSIONS, MAX_GITHUB_DOCUMENT_BYTES, normalizeFileExt, type StoredDocumentFile } from './documentFiles'
 export { normalizeRepository } from './repository'
@@ -123,8 +124,7 @@ function checkTitle(title: string): string {
 }
 
 function titleFrom(content: string, fallback: string): string {
-  const match = /^#\s+(.+?)\s*$/m.exec(content.replace(/^\uFEFF/, ''))
-  return match?.[1] || fallback
+  return extractMarkdownTitle(content, fallback)
 }
 
 function itemExt(item?: { ext?: string }): string {

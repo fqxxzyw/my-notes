@@ -2,6 +2,12 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import type { Chapter } from './notebookStore'
 import { formatBadgeLabel, isMarkdownExt } from './documentFiles'
+import { chapterFolderPath } from './notebookChapterOrder'
+import { cleanMarkdownTitle } from './notebookTitle'
+
+function displayChapterTitle(chapter: Chapter): string {
+  return isMarkdownExt(chapter.ext) ? (cleanMarkdownTitle(chapter.title) || chapter.title) : chapter.title
+}
 
 const props = defineProps<{ chapters: Chapter[]; filtered: Chapter[]; selectedId?: string; disabled?: boolean; searching?: boolean }>()
 const emit = defineEmits<{ open: [chapter: Chapter]; reorder: [ids: string[]]; rename: [chapter: Chapter] }>()
@@ -113,7 +119,10 @@ function dropGap(event: DragEvent) {
         @dragstart="startDrag($event, chapter.id)" @dragend="finishDrag">⠿</button>
       <button type="button" class="chapter-order__open" :disabled="disabled" @click="emit('open', chapter)">
         <span class="chapter-order__number">{{ String(fullIndex(chapter.id) + 1).padStart(2, '0') }}</span>
-        <span class="chapter-order__title paper-renameable" title="双击修改章节名称" @click.stop="handleTitleClick(chapter)" @dblclick.stop.prevent="handleTitleDblClick(chapter)">{{ chapter.title }}</span>
+        <span class="chapter-order__body">
+          <span v-if="chapterFolderPath(chapter.id)" class="chapter-order__folder">{{ chapterFolderPath(chapter.id) }}</span>
+          <span class="chapter-order__title paper-renameable" title="双击修改章节名称" @click.stop="handleTitleClick(chapter)" @dblclick.stop.prevent="handleTitleDblClick(chapter)">{{ displayChapterTitle(chapter) }}</span>
+        </span>
         <span v-if="!isMarkdownExt(chapter.ext)" class="paper-ext-pill">{{ formatBadgeLabel(chapter.ext) }}</span>
         <span aria-hidden="true">↗</span>
       </button>
@@ -137,7 +146,9 @@ function dropGap(event: DragEvent) {
 .chapter-order__handle:active { cursor: grabbing; }
 .chapter-order__open { display: flex; align-items: center; gap: 14px; flex: 1; min-width: 0; padding: 15px; text-align: left; font-size: 14px; font-weight: 600; }
 .chapter-order__number { flex: none; min-width: 28px; padding: 4px; border: 1px solid var(--line, #111); border-radius: 4px; font: 700 11px ui-monospace, monospace; text-align: center; }
-.chapter-order__title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.chapter-order__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.chapter-order__folder { font: 600 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted, #666); letter-spacing: 0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chapter-order__title { min-width: 0; overflow-wrap: anywhere; }
 .chapter-order__controls { display: flex; align-items: center; gap: 4px; padding-right: 12px; }
 .chapter-order__controls button { width: 28px; height: 28px; border: 1px solid var(--line, #111); border-radius: 4px; font-size: 14px; }
 .chapter-order__controls button:disabled, .chapter-order__handle:disabled { opacity: .4; cursor: default; }

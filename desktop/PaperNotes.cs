@@ -776,7 +776,10 @@ namespace PaperNotesDesktop
             while (pending.Count > 0)
             {
                 var item = pending.Pop();
-                foreach (string entry in Directory.EnumerateFileSystemEntries(item.Key))
+                var dirEntries = new List<string>(Directory.EnumerateFileSystemEntries(item.Key));
+                dirEntries.Sort(StringComparer.CurrentCultureIgnoreCase);
+                var subdirs = new List<string>();
+                foreach (string entry in dirEntries)
                 {
                     if (++count > 2000) throw new InvalidOperationException("文件夹项目超过 2000 个，请选择更具体的笔记文件夹。");
                     string path = Path.GetFullPath(entry);
@@ -786,7 +789,7 @@ namespace PaperNotesDesktop
                     if ((attributes & FileAttributes.Directory) != 0)
                     {
                         if (item.Value >= 31) throw new InvalidOperationException("文件夹嵌套超过 32 层。");
-                        pending.Push(new KeyValuePair<string, int>(path, item.Value + 1)); continue;
+                        subdirs.Add(path); continue;
                     }
                     string extension = Path.GetExtension(path).ToLowerInvariant();
                     bool markdown = extension == ".md";
@@ -803,6 +806,11 @@ namespace PaperNotesDesktop
                     else if (text) textPaths.Add(path);
                     else if (document) documentPaths.Add(path);
                     else imagePaths.Add(path);
+                }
+                // Push subdirectories in reverse order so the stack pops them in natural forward pre-order.
+                for (int i = subdirs.Count - 1; i >= 0; i--)
+                {
+                    pending.Push(new KeyValuePair<string, int>(subdirs[i], item.Value + 1));
                 }
             }
             return files;

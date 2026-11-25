@@ -204,9 +204,10 @@ object ImportEngine {
             refs.forEach { fulfilled.add(it.markdownPath to it.target) }
         }
 
+        val sortedDocs = docs.sortedWith { a, b -> CompatibilityCodecs.compareImportedPaths(a.path, b.path) }
         val unresolved = allLocalRefs.filter { (it.markdownPath to it.target) !in fulfilled }
         return ScanImportResult(
-            files = docs,
+            files = sortedDocs,
             folders = folders.toList(),
             skipped = skipped,
             unresolvedResources = unresolved,
@@ -282,30 +283,46 @@ object ImportEngine {
 
         var unmatched = 0
         for (folder in importFolders) {
-            val book = Notebook(
-                id = CompatibilityCodecs.newRandomId(),
-                title = CompatibilityCodecs.safeImportedTitle(folder),
-                sha = ""
-            )
-            addedBooks.add(book)
-            for (file in scan.files.filter { it.path.startsWith("$folder/") }) {
+            val bookId = CompatibilityCodecs.newRandomId()
+            val folderFiles = scan.files
+                .filter { it.path.startsWith("$folder/") }
+                .sortedWith { a, b ->
+                    CompatibilityCodecs.compareImportedPaths(
+                        a.path.removePrefix("$folder/"),
+                        b.path.removePrefix("$folder/")
+                    )
+                }
+            val folderOrder = mutableListOf<String>()
+            for (file in folderFiles) {
                 val rel = file.path.removePrefix("$folder/")
                 val title = CompatibilityCodecs.safeImportedTitle(rel)
-                val (rewritten, miss) = rewriteFileImages(file.path, file.content, book.id, scan.images, staged, known)
+                val (rewritten, miss) = rewriteFileImages(file.path, file.content, bookId, scan.images, staged, known)
                 unmatched += miss
+                val cid = CompatibilityCodecs.chapterIdFromTitle(title)
+                folderOrder.add(cid)
                 addedChapters.add(
                     Chapter(
-                        bookId = book.id,
-                        id = CompatibilityCodecs.chapterIdFromTitle(title),
+                        bookId = bookId,
+                        id = cid,
                         title = CompatibilityCodecs.titleFromMarkdown(rewritten, title),
                         content = rewritten,
                         sha = ""
                     )
                 )
             }
+            addedBooks.add(
+                Notebook(
+                    id = bookId,
+                    title = CompatibilityCodecs.safeImportedTitle(folder),
+                    sha = "",
+                    chapterOrder = folderOrder.takeIf { it.isNotEmpty() && it.size <= 999 }
+                )
+            )
         }
 
-        val looseFiles = scan.files.filter { file -> importFolders.none { folder -> file.path.startsWith("$folder/") } }
+        val looseFiles = scan.files
+            .filter { file -> importFolders.none { folder -> file.path.startsWith("$folder/") } }
+            .sortedWith { a, b -> CompatibilityCodecs.compareImportedPaths(a.path, b.path) }
         for (file in looseFiles) {
             val title = CompatibilityCodecs.safeImportedTitle(file.name)
             if (targetNotebookId != null) {

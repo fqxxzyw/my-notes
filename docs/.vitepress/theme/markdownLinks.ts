@@ -4,6 +4,7 @@
  * sibling/relative .md/.txt/document files inside the same notebook or cabinet.
  */
 import { extractFileExtension, stripSupportedExtension } from './documentFiles'
+import { decodeEncodedChapterPath } from './notebookChapterOrder'
 
 export function safeDecodeUri(value: string): string {
   try { return decodeURIComponent(value) } catch { return value }
@@ -117,15 +118,20 @@ function itemMatchKeys(item: LinkableItem): { exact: string[]; basenames: string
   const ext = (item.ext || 'md').toLowerCase()
   const withExt = strippedTitle ? `${strippedTitle}.${ext}` : ''
   const fileName = (item.fileName || '').replace(/\\/g, '/').trim()
+  const encodedPath = (decodeEncodedChapterPath(item.id) || '').replace(/\\/g, '/').trim()
+  const strippedEncoded = stripSupportedExtension(encodedPath)
+  const encodedWithExt = strippedEncoded ? `${strippedEncoded}.${ext}` : ''
 
-  const exact = [normalizedTitle, strippedTitle, withExt, fileName, item.id]
+  const exact = [normalizedTitle, strippedTitle, withExt, fileName, encodedPath, strippedEncoded, encodedWithExt, item.id]
     .map(v => v.toLowerCase())
     .filter(Boolean)
 
   const titleLeaf = strippedTitle.split('/').pop() || ''
   const leafWithExt = titleLeaf ? `${titleLeaf}.${ext}` : ''
   const fileLeaf = fileName.split('/').pop() || ''
-  const basenames = [titleLeaf, leafWithExt, fileLeaf]
+  const encodedLeaf = strippedEncoded.split('/').pop() || ''
+  const encodedLeafWithExt = encodedLeaf ? `${encodedLeaf}.${ext}` : ''
+  const basenames = [titleLeaf, leafWithExt, fileLeaf, encodedLeaf, encodedLeafWithExt]
     .map(v => v.toLowerCase())
     .filter(Boolean)
 
@@ -173,7 +179,8 @@ export function resolveMarkdownTarget(
 ): { target: LinkableItem; hash: string } | null {
   const parsed = parseMarkdownLinkHref(rawHref)
   if (parsed.kind !== 'local') return null
-  const { exactPaths, basenames } = resolveRelativeLinkCandidates(current.title, parsed.path)
+  const baseHint = decodeEncodedChapterPath(current.id) || current.title
+  const { exactPaths, basenames } = resolveRelativeLinkCandidates(baseHint, parsed.path)
   if (!exactPaths.length && !basenames.length) return null
 
   const pools: readonly (readonly LinkableItem[])[] = [sameBookChapters, cabinetItems, allItems]

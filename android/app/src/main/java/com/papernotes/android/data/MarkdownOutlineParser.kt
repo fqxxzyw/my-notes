@@ -97,10 +97,5 @@ object MarkdownOutlineParser {
         return sb.toString()
     }
 
-    private fun cleanInlineTitle(raw: String): String = raw
-        .replace(Regex("!\\[([^\\]]*)\\]\\([^)]*\\)"), "$1")
-        .replace(Regex("\\[([^\\]]*)\\]\\([^)]*\\)"), "$1")
-        .replace(Regex("`([^`]*)`"), "$1")
-        .replace(Regex("[*_~]+"), "")
-        .trim()
+    private fun cleanInlineTitle(raw: String): String = CompatibilityCodecs.cleanMarkdownTitle(raw)
 }

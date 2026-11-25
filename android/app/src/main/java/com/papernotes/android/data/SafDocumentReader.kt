@@ -99,7 +99,15 @@ object SafDocumentReader {
 
         fun walk(dir: DocumentFile, prefix: String, depth: Int) {
             if (depth > maxDepth || seen >= maxEntries) return
-            for (child in dir.listFiles()) {
+            val children = dir.listFiles().sortedWith { a, b ->
+                val nameA = a.name.orEmpty()
+                val nameB = b.name.orEmpty()
+                CompatibilityCodecs.compareImportedPaths(
+                    if (a.isDirectory) "$nameA/_" else nameA,
+                    if (b.isDirectory) "$nameB/_" else nameB
+                )
+            }
+            for (child in children) {
                 if (seen >= maxEntries) return
                 seen++
                 val name = child.name ?: continue

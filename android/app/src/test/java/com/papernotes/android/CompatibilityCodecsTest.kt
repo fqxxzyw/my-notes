@@ -166,4 +166,86 @@ class CompatibilityCodecsTest {
         assertEquals(ResolvedTheme.NIGHT, resolvePaperColors(ThemePreference.SYSTEM, systemDark = true).resolved)
         assertEquals(ResolvedTheme.DAY, resolvePaperColors(ThemePreference.SYSTEM, systemDark = false).resolved)
     }
+
+    @Test
+    fun cleanMarkdownTitle_stripsInlineFormattingWhilePreservingSnakeCase() {
+        assertEquals(
+            "05-asyncio_gather.py 代码精讲：多协程并发汇聚（asyncio.gather）与耗时压缩原理",
+            CompatibilityCodecs.cleanMarkdownTitle(
+                "`05-asyncio_gather.py` 代码精讲：多协程并发汇聚（`asyncio.gather`）与耗时压缩原理"
+            )
+        )
+        assertEquals(
+            "模块总览：1-uv环境管理工具 —— 现代 Python 极速包管理",
+            CompatibilityCodecs.cleanMarkdownTitle("模块总览：`1-uv环境管理工具` —— **现代** ==Python== 极速包管理 ###")
+        )
+        assertEquals(
+            "utils/__init__.py 与 chat_service_core.py",
+            CompatibilityCodecs.cleanMarkdownTitle("`utils/__init__.py` 与 chat_service_core.py")
+        )
+        assertEquals(
+            "07-mcp-streamable-server.py 深度精讲",
+            CompatibilityCodecs.titleFromMarkdown("# `07-mcp-streamable-server.py` 深度精讲\n\n正文", "fallback")
+        )
+        val headings = MarkdownOutlineParser.parse("# `05-asyncio_gather.py` 原理\n## `a2a_server` 架构\n")
+        assertEquals(listOf("05-asyncio_gather.py 原理", "a2a_server 架构"), headings.map { it.title })
+    }
+
+    @Test
+    fun nestedChapterSorting_isStrictlyTransitiveAndRecoversEncodedFolderOrder() {
+        val samples = listOf(
+            "README.md",
+            "index.md",
+            "00-导读.md",
+            "01-基础.md",
+            "01-基础/README.md",
+            "01-基础/01-安装.md",
+            "01-基础/2-配置.md",
+            "01-基础/10-排错.md",
+            "1-uv环境管理工具/README.md",
+            "1-uv环境管理工具/requirements.txt.md",
+            "2-Function Call/01-基本调用.py.md",
+            "10-进阶/01-实战.md",
+            "附录.md",
+            "压力测试/stress_test.py.md"
+        )
+        for (a in samples) {
+            assertEquals(0, CompatibilityCodecs.compareImportedPaths(a, a))
+            for (b in samples) {
+                val ab = CompatibilityCodecs.compareImportedPaths(a, b).coerceIn(-1, 1)
+                val ba = CompatibilityCodecs.compareImportedPaths(b, a).coerceIn(-1, 1)
+                assertEquals(ab, -ba)
+                for (c in samples) {
+                    val bc = CompatibilityCodecs.compareImportedPaths(b, c).coerceIn(-1, 1)
+                    val ac = CompatibilityCodecs.compareImportedPaths(a, c).coerceIn(-1, 1)
+                    if (ab < 0 && bc < 0) assertEquals(-1, ac)
+                }
+            }
+        }
+
+        val rels = listOf(
+            "6-A2A协议/12_multi_intent.py",
+            "3-异步编程/05-asyncio_gather.py",
+            "1-uv环境管理工具/requirements.txt",
+            "1-uv环境管理工具/README",
+            "2-Function Call/01-基本调用.py",
+            "3-异步编程/01-async_basic.py",
+            "6-A2A协议/01_agent_card.py"
+        )
+        val encoded = rels.map { rel -> CompatibilityCodecs.chapterIdFromTitle(rel) to rel }
+        val sorted = CompatibilityCodecs.sortChapters(encoded, { it.first }, null)
+        assertEquals(
+            listOf(
+                "1-uv环境管理工具/README",
+                "1-uv环境管理工具/requirements.txt",
+                "2-Function Call/01-基本调用.py",
+                "3-异步编程/01-async_basic.py",
+                "3-异步编程/05-asyncio_gather.py",
+                "6-A2A协议/01_agent_card.py",
+                "6-A2A协议/12_multi_intent.py"
+            ),
+            sorted.map { it.second }
+        )
+        assertEquals("3-异步编程", CompatibilityCodecs.chapterFolderPath(sorted[3].first))
+    }
 }

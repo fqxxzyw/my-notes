@@ -147,4 +147,30 @@ class ImportAndAttachmentTest {
         )
         assertTrue(scan.skipped.any { it.reason == SkipReason.TOO_LARGE })
     }
+
+    @Test
+    fun nestedFolderImport_sortsHierarchicallyCleansTitlesAndPersistsChapterOrder() {
+        val entries = listOf(
+            ImportSourceEntry("前置知识/6-A2A协议/12_multi_intent.py.md", "12_multi_intent.py.md", 64L) { "# `12_multi_intent.py` 精讲".toByteArray() },
+            ImportSourceEntry("前置知识/2-Function Call/01-基本调用.py.md", "01-基本调用.py.md", 64L) { "# `01-基本调用.py` 精讲".toByteArray() },
+            ImportSourceEntry("前置知识/1-uv环境管理工具/requirements.txt.md", "requirements.txt.md", 64L) { "# `requirements.txt` 依赖".toByteArray() },
+            ImportSourceEntry("前置知识/1-uv环境管理工具/README.md", "README.md", 64L) { "# 模块总览：`1-uv环境管理工具`".toByteArray() },
+            ImportSourceEntry("前置知识/6-A2A协议/02_a2a_executor.py.md", "02_a2a_executor.py.md", 64L) { "# `02_a2a_executor.py` 精讲".toByteArray() }
+        )
+        val scan = ImportEngine.scanEntries(entries, listOf("前置知识"))
+        val planned = ImportEngine.planImport(scan, targetNotebookId = null)
+        assertEquals(1, planned.addedBooks.size)
+        val book = planned.addedBooks.single()
+        assertEquals(
+            listOf(
+                "模块总览：1-uv环境管理工具",
+                "requirements.txt 依赖",
+                "01-基本调用.py 精讲",
+                "02_a2a_executor.py 精讲",
+                "12_multi_intent.py 精讲"
+            ),
+            planned.addedChapters.map { it.title }
+        )
+        assertEquals(planned.addedChapters.map { it.id }, book.chapterOrder)
+    }
 }

@@ -2,6 +2,7 @@ import { validateCatalog, type CatalogVersion } from './cabinetStore'
 import type { Chapter, Notebook, Page } from './notebookStore'
 import { namespaceKey } from './repository'
 import { readNotebookChapterOrder, validateChapterOrder } from './notebookChapterOrder'
+import { cleanMarkdownTitle } from './notebookTitle'
 
 /** A complete GitHub revision, separate from unsynchronized local drafts. */
 export type RemoteSnapshot = {
@@ -51,7 +52,8 @@ function cleanSnapshot(value: unknown): RemoteSnapshot {
       try { chapterOrder = readNotebookChapterOrder(book.indexContent) }
       catch { badOrderMetadata = true }
     }
-    return { id: book.id, title: book.title, sha: book.sha, ...(book.description === undefined ? {} : { description: book.description as string }), ...(book.indexContent === undefined ? {} : { indexContent: book.indexContent as string }), ...(chapterOrder === undefined ? {} : { chapterOrder }) }
+    const cleanBookTitle = cleanMarkdownTitle(book.title) || book.title
+    return { id: book.id, title: cleanBookTitle, sha: book.sha, ...(book.description === undefined ? {} : { description: book.description as string }), ...(book.indexContent === undefined ? {} : { indexContent: book.indexContent as string }), ...(chapterOrder === undefined ? {} : { chapterOrder }) }
   })
   const allChapters = input.chapters as Record<string, unknown>
   if (Object.keys(allChapters).length !== books.length || Object.keys(allChapters).some(id => !ids.has(id))) {
@@ -73,7 +75,8 @@ function cleanSnapshot(value: unknown): RemoteSnapshot {
       const filePath = typeof chapter.filePath === 'string' ? chapter.filePath : undefined
       const fileName = typeof chapter.fileName === 'string' ? chapter.fileName : undefined
       const fileSize = typeof chapter.fileSize === 'number' && Number.isFinite(chapter.fileSize) && chapter.fileSize >= 0 ? chapter.fileSize : undefined
-      return { bookId: book.id, id: chapter.id, title: chapter.title, content: chapter.content, sha: chapter.sha, ...(ext ? { ext } : {}), ...(filePath ? { filePath } : {}), ...(fileName ? { fileName } : {}), ...(fileSize !== undefined ? { fileSize } : {}) }
+      const title = (!ext || ext === 'md') ? (cleanMarkdownTitle(chapter.title) || chapter.title) : chapter.title
+      return { bookId: book.id, id: chapter.id, title, content: chapter.content, sha: chapter.sha, ...(ext ? { ext } : {}), ...(filePath ? { filePath } : {}), ...(fileName ? { fileName } : {}), ...(fileSize !== undefined ? { fileSize } : {}) }
     })
   }
   const rawCatalog = input.catalog as Record<string, unknown>
@@ -91,7 +94,8 @@ function cleanSnapshot(value: unknown): RemoteSnapshot {
       const filePath = typeof page.filePath === 'string' ? page.filePath : undefined
       const fileName = typeof page.fileName === 'string' ? page.fileName : undefined
       const fileSize = typeof page.fileSize === 'number' && Number.isFinite(page.fileSize) && page.fileSize >= 0 ? page.fileSize : undefined
-      return { id: page.id, title: page.title, content: page.content, sha: page.sha, ...(ext ? { ext } : {}), ...(filePath ? { filePath } : {}), ...(fileName ? { fileName } : {}), ...(fileSize !== undefined ? { fileSize } : {}) }
+      const title = (!ext || ext === 'md') ? (cleanMarkdownTitle(page.title) || page.title) : page.title
+      return { id: page.id, title, content: page.content, sha: page.sha, ...(ext ? { ext } : {}), ...(filePath ? { filePath } : {}), ...(fileName ? { fileName } : {}), ...(fileSize !== undefined ? { fileSize } : {}) }
     })
   }
   if (typeof rawCatalog.sha !== 'string' || (rawCatalog.sha !== '' && !SHA.test(rawCatalog.sha))) throw new Error('远端书柜版本无效。')

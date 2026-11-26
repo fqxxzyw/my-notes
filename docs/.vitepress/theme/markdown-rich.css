@@ -160,13 +160,45 @@
   background: var(--theme-ink, #111);
   color: var(--theme-paper, #fff);
 }
+.paper-code-body {
+  display: flex;
+  align-items: stretch;
+  overflow-x: auto;
+}
+.paper-code-gutter {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 10px 12px 12px;
+  border-right: 1px solid color-mix(in srgb, var(--theme-edge, #111) 20%, transparent);
+  background: color-mix(in srgb, var(--theme-soft, #f4f3f0) 86%, var(--theme-paper, #fff));
+  color: var(--theme-muted, #666);
+  font: 13px/1.7 ui-monospace, Consolas, "Microsoft YaHei", monospace;
+  text-align: right;
+  user-select: none;
+  min-width: 36px;
+}
+.paper-code-gutter span {
+  display: block;
+}
+.paper-line-numbers-off .paper-code-gutter {
+  display: none;
+}
+.paper-code-block .paper-code-body > pre,
 .paper-code-block > pre {
+  flex: 1 1 auto;
+  min-width: 0;
   margin: 0 !important;
   border: 0 !important;
   border-radius: 0 !important;
   padding: 12px 14px !important;
   background: transparent !important;
-  overflow-x: auto;
+  font: 13px/1.7 ui-monospace, Consolas, "Microsoft YaHei", monospace;
+  overflow-x: visible;
+}
+.paper-code-block .paper-code-body > pre code {
+  font: inherit;
+  line-height: 1.7;
 }
 
 /* Enhanced Markdown tables in both Read and Visual Edit views */
@@ -358,6 +390,13 @@
   background: color-mix(in srgb, var(--theme-soft, #f4f3f0) 45%, var(--theme-paper, #fff));
   text-align: center;
   overflow-x: auto;
+}
+.cm-paper-math-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 .cm-paper-math-preview-label {
   display: block;

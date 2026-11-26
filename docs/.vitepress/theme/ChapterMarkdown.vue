@@ -68,9 +68,13 @@ markdown.renderer.rules.fence = (tokens, idx) => {
   }
   const lang = info.split(/\s+/)[0] || ''
   const highlighted = highlightCodeBlock(token.content, lang)
+  const rawLines = token.content.replace(/\n$/, '').split('\n')
+  const lineCount = Math.max(1, rawLines.length)
+  let gutter = ''
+  for (let i = 1; i <= lineCount; i++) gutter += `<span>${i}</span>`
   const langLabel = markdown.utils.escapeHtml(lang || 'TEXT')
   const langClass = lang ? ` class="hljs language-${markdown.utils.escapeHtml(lang.toLowerCase())}"` : ' class="hljs"'
-  return `<div class="paper-code-block"><div class="paper-code-bar"><span class="paper-code-lang">${langLabel}</span><button type="button" class="paper-code-copy" data-copy-code="1">复制</button></div><pre><code${langClass}>${highlighted}</code></pre></div>\n`
+  return `<div class="paper-code-block"><div class="paper-code-bar"><span class="paper-code-lang">${langLabel}</span><button type="button" class="paper-code-copy" data-copy-code="1">复制</button></div><div class="paper-code-body"><div class="paper-code-gutter" aria-hidden="true">${gutter}</div><pre><code${langClass}>${highlighted}</code></pre></div></div>\n`
 }
 
 const defaultTableOpen = markdown.renderer.rules.table_open

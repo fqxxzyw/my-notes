@@ -1,16 +1,26 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import FindReplaceBar from './FindReplaceBar.vue'
+import { useAppSettings } from './appSettings'
 
 const props = defineProps<{ modelValue: string; readonly?: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
+const gutterRef = ref<HTMLElement | null>(null)
 const findBar = ref<InstanceType<typeof FindReplaceBar> | null>(null)
 const copied = ref(false)
 const findOpen = ref(false)
 const replaceOpen = ref(false)
+const { settings } = useAppSettings()
 
 const lineCount = computed(() => (props.modelValue ? props.modelValue.split(/\r?\n/).length : 1))
+const lineNumbers = computed(() => Array.from({ length: lineCount.value }, (_, i) => i + 1))
+
+function syncGutterScroll() {
+  if (gutterRef.value && textareaRef.value) {
+    gutterRef.value.scrollTop = textareaRef.value.scrollTop
+  }
+}
 
 function openFind(withReplace = false) {
   findOpen.value = true
@@ -80,17 +90,23 @@ function copyAll() {
       @replace-one="replaceOne"
       @replace-all="emit('update:modelValue', $event)"
     />
-    <textarea
-      ref="textareaRef"
-      class="plain-text-area"
-      aria-label="纯文本正文"
-      :value="modelValue"
-      :readonly="readonly"
-      spellcheck="false"
-      placeholder="在此输入纯文本内容…"
-      @input="emit('update:modelValue', ($event.target as HTMLTextAreaElement).value)"
-      @keydown="handleKeydown"
-    />
+    <div class="plain-text-frame">
+      <div v-if="settings.showLineNumbers" ref="gutterRef" class="plain-text-gutter" aria-hidden="true">
+        <span v-for="n in lineNumbers" :key="n">{{ n }}</span>
+      </div>
+      <textarea
+        ref="textareaRef"
+        class="plain-text-area"
+        aria-label="纯文本正文"
+        :value="modelValue"
+        :readonly="readonly"
+        spellcheck="false"
+        placeholder="在此输入纯文本内容…"
+        @scroll="syncGutterScroll"
+        @input="emit('update:modelValue', ($event.target as HTMLTextAreaElement).value)"
+        @keydown="handleKeydown"
+      />
+    </div>
   </div>
 </template>
 
@@ -123,20 +139,42 @@ function copyAll() {
   cursor: pointer;
 }
 .plain-text-btn:hover { background: var(--theme-ink, #111); color: var(--theme-paper, #fff); }
-.plain-text-area {
-  display: block;
-  width: 100%;
+.plain-text-frame {
+  display: flex;
+  align-items: stretch;
   margin-top: 10px;
-  min-height: max(65vh, 520px);
-  padding: 20px clamp(16px, 3vw, 36px);
   border: 2px solid var(--theme-edge, #111);
   border-radius: 9px;
   background: var(--theme-paper, #fff);
+  overflow: hidden;
+}
+.plain-text-frame:focus-within { box-shadow: 3px 3px 0 var(--theme-edge, #111); }
+.plain-text-gutter {
+  flex: 0 0 auto;
+  min-width: 44px;
+  padding: 20px 10px 20px 8px;
+  border-right: 1px solid color-mix(in srgb, var(--theme-edge, #111) 25%, transparent);
+  background: var(--theme-soft, #f4f3f0);
+  color: var(--theme-muted, #666);
+  font: var(--paper-editor-font-size, 15px)/1.85 ui-monospace, Consolas, "Microsoft YaHei", monospace;
+  text-align: right;
+  user-select: none;
+  overflow: hidden;
+}
+.plain-text-gutter span { display: block; }
+.plain-text-area {
+  flex: 1 1 auto;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: max(65vh, 520px);
+  padding: 20px clamp(16px, 3vw, 32px);
+  border: 0;
+  background: transparent;
   color: var(--theme-ink, #111);
-  font: 15px/1.85 ui-monospace, Consolas, "Microsoft YaHei", monospace;
+  font: var(--paper-editor-font-size, 15px)/1.85 ui-monospace, Consolas, "Microsoft YaHei", monospace;
   resize: vertical;
   outline: none;
   tab-size: 4;
 }
-.plain-text-area:focus-visible { box-shadow: 3px 3px 0 var(--theme-edge, #111); }
 </style>

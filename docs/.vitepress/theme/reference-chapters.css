@@ -34,7 +34,7 @@
   border-radius: 12px;
   overflow-x: hidden;
   overflow-y: auto;
-  overscroll-behavior-y: contain;
+  overscroll-behavior-y: auto;
   background: #fff;
   transition: box-shadow .16s ease;
 }
@@ -175,7 +175,7 @@
   min-width: 0;
   max-height: max(12rem, calc(100vh - var(--editor-sticky-top, 66px) - 90px));
   overflow-y: auto;
-  overscroll-behavior-y: contain;
+  overscroll-behavior-y: auto;
   /* Leave room for card borders and the focus ring inside the scrollport. */
   padding: 0 6px 6px 2px;
 }

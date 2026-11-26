@@ -164,8 +164,9 @@ namespace PaperNotesDesktop
         {
             string value = (repository ?? "").Trim().ToLowerInvariant();
             if (value.Length == 0) return "local";
-            string[] parts = value.Split('/');
-            if (parts.Length != 2 || !Regex.IsMatch(parts[0], @"^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$") ||
+            string normalized = Regex.Replace(value, @"^(?:github|gitee|gitlab|gitcode):", "");
+            string[] parts = normalized.Split('/');
+            if (parts.Length != 2 || !Regex.IsMatch(parts[0], @"^[a-z0-9](?:[a-z0-9._-]{0,37}[a-z0-9])?$") ||
                 parts[0].Contains("--") || !Regex.IsMatch(parts[1], @"^[a-z0-9._-]{1,100}$") || parts[1] == "." || parts[1] == "..")
                 throw new InvalidOperationException("仓库标识无效。");
             byte[] digest;
@@ -263,8 +264,9 @@ namespace PaperNotesDesktop
         {
             string value = (repository ?? "").Trim().ToLowerInvariant();
             if (value.Length == 0) return "local";
-            string[] parts = value.Split('/');
-            if (parts.Length != 2 || !Regex.IsMatch(parts[0], @"^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$") ||
+            string normalized = Regex.Replace(value, @"^(?:github|gitee|gitlab|gitcode):", "");
+            string[] parts = normalized.Split('/');
+            if (parts.Length != 2 || !Regex.IsMatch(parts[0], @"^[a-z0-9](?:[a-z0-9._-]{0,37}[a-z0-9])?$") ||
                 parts[0].Contains("--") || !Regex.IsMatch(parts[1], @"^[a-z0-9._-]{1,100}$") || parts[1] == "." || parts[1] == "..")
                 throw new InvalidOperationException("仓库标识无效。");
             byte[] digest;
@@ -1394,8 +1396,9 @@ namespace PaperNotesDesktop
             // The page supplies an owner/repo identity, never a filesystem path.
             // GitHub repository names are case-insensitive.
             string value = (repository ?? "").Trim().ToLowerInvariant();
-            string[] parts = value.Split('/');
-            if (parts.Length != 2 || !Regex.IsMatch(parts[0], @"^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$") ||
+            string normalized = Regex.Replace(value, @"^(?:github|gitee|gitlab|gitcode):", "");
+            string[] parts = normalized.Split('/');
+            if (parts.Length != 2 || !Regex.IsMatch(parts[0], @"^[a-z0-9](?:[a-z0-9._-]{0,37}[a-z0-9])?$") ||
                 parts[0].Contains("--") || !Regex.IsMatch(parts[1], @"^[a-z0-9._-]{1,100}$") || parts[1] == "." || parts[1] == "..")
                 throw new ArgumentException("仓库标识无效。");
             byte[] digest;

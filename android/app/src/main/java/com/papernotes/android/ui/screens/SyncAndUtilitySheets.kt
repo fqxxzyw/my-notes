@@ -173,6 +173,7 @@ private fun ThemeSwatch(pref: ThemePreference) {
         ThemePreference.NIGHT -> Color(0xFF25272A) to Color(0xFFDCD8D0)
         ThemePreference.GREEN -> Color(0xFFE5F1E2) to Color(0xFF415D49)
         ThemePreference.YELLOW -> Color(0xFFFBF2D7) to Color(0xFF756548)
+        ThemePreference.BLUE -> Color(0xFFE4F0FB) to Color(0xFF3D6385)
         ThemePreference.SYSTEM -> Color(0xFFFFFFFF) to Color(0xFF333333)
     }
     Box(

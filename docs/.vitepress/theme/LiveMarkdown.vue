@@ -2,8 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Compartment, EditorSelection, EditorState, Prec, StateEffect, StateField, findClusterBreak, type Range } from '@codemirror/state'
 import { defaultKeymap, deleteCharBackward, deleteCharForward, history, historyKeymap, indentLess, insertTab, isolateHistory } from '@codemirror/commands'
-import { syntaxHighlighting, syntaxTree } from '@codemirror/language'
-import { Decoration, EditorView, keymap, WidgetType, type DecorationSet } from '@codemirror/view'
+import { ensureSyntaxTree, syntaxHighlighting, syntaxTree } from '@codemirror/language'
+import { Decoration, EditorView, keymap, lineNumbers, WidgetType, type DecorationSet } from '@codemirror/view'
 import { applyTextareaChange, markdownBlocks, markdownEnvironment, rawOffsetForTextarea, renderInlineMarkdown, replaceInlineImage, revealInlineMarker, sourceOffsetForText, textareaOffsetForRaw, type MarkdownBlock } from './liveMarkdown'
 import { emptyInlineDeletion, visibleInlineEditPosition } from './inlineDeletion.js'
 import { markdownEditorLanguage, sourceMarkdownHighlight, visualCodeHighlight } from './editorHighlight.js'
@@ -20,6 +20,7 @@ const props = defineProps<{
   readonly?: boolean
   focusMode?: boolean
   typewriterMode?: boolean
+  showLineNumbers?: boolean
   attachmentContext?: string
   imageUrls?: Readonly<Record<string, string>>
   savePastedImages?: (files: File[]) => Promise<string[]>
@@ -31,6 +32,8 @@ const emit = defineEmits<{
   failure: []
   selection: [rect: { left: number; top: number; bottom: number } | null]
   'navigate-link': [href: string]
+  'visual-edit-mermaid': [payload: { from: number; to: number; code: string }]
+  'visual-edit-math': [payload: { from: number; to: number; tex: string; block: boolean }]
 }>()
 
 const host = ref<HTMLElement | null>(null)
@@ -40,6 +43,7 @@ const pasteError = ref('')
 const legacyNewlines = computed(() => /\r(?!\n)/.test(props.modelValue))
 const modeCompartment = new Compartment()
 const readonlyCompartment = new Compartment()
+const lineNumbersCompartment = new Compartment()
 let view: EditorView | null = null
 let composing = false
 let selectionFrame = 0
@@ -214,10 +218,14 @@ class MermaidBlockWidget extends WidgetType {
     this.dispose = mountMermaidCard(host, this.code, {
       theme: currentPaperTheme(),
       showSourceToggle: false,
+      onVisualEdit: editor.state.readOnly ? undefined : () => emit('visual-edit-mermaid', { from: this.from, to: this.to, code: this.code }),
       onEdit: editor.state.readOnly ? undefined : enterEdit,
-      editLabel: '编辑图表'
+      editLabel: '源码'
     })
-    host.addEventListener('dblclick', e => { e.preventDefault(); e.stopPropagation(); enterEdit() })
+    host.addEventListener('dblclick', e => {
+      e.preventDefault(); e.stopPropagation()
+      if (!editor.state.readOnly) emit('visual-edit-mermaid', { from: this.from, to: this.to, code: this.code })
+    })
     return host
   }
   destroy() { this.dispose?.(); this.dispose = undefined }
@@ -226,11 +234,21 @@ class MermaidBlockWidget extends WidgetType {
 
 class MermaidLivePreviewWidget extends WidgetType {
   private dispose?: () => void
-  constructor(private readonly code: string, private readonly themeVersion: number) { super() }
-  eq(other: MermaidLivePreviewWidget) { return this.code === other.code && this.themeVersion === other.themeVersion }
-  toDOM() {
+  constructor(
+    private readonly from: number,
+    private readonly to: number,
+    private readonly code: string,
+    private readonly themeVersion: number
+  ) { super() }
+  eq(other: MermaidLivePreviewWidget) { return this.from === other.from && this.to === other.to && this.code === other.code && this.themeVersion === other.themeVersion }
+  toDOM(editor: EditorView) {
     const host = document.createElement('div')
-    this.dispose = mountMermaidCard(host, this.code, { theme: currentPaperTheme(), showSourceToggle: false, compact: true })
+    this.dispose = mountMermaidCard(host, this.code, {
+      theme: currentPaperTheme(),
+      showSourceToggle: false,
+      compact: true,
+      onVisualEdit: editor.state.readOnly ? undefined : () => emit('visual-edit-mermaid', { from: this.from, to: this.to, code: this.code })
+    })
     return host
   }
   destroy() { this.dispose?.(); this.dispose = undefined }
@@ -238,30 +256,51 @@ class MermaidLivePreviewWidget extends WidgetType {
 }
 
 class MathLivePreviewWidget extends WidgetType {
-  constructor(private readonly tex: string) { super() }
-  eq(other: MathLivePreviewWidget) { return this.tex === other.tex }
-  toDOM() {
+  constructor(private readonly from: number, private readonly to: number, private readonly tex: string) { super() }
+  eq(other: MathLivePreviewWidget) { return this.from === other.from && this.to === other.to && this.tex === other.tex }
+  toDOM(editor: EditorView) {
     const box = document.createElement('div')
     box.className = 'cm-paper-math-preview'
+    const head = document.createElement('div')
+    head.className = 'cm-paper-math-preview-head'
     const label = document.createElement('span')
     label.className = 'cm-paper-math-preview-label'
     label.textContent = 'LATEX · 实时预览'
+    head.append(label)
+    if (!editor.state.readOnly) {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'paper-mermaid-btn is-primary'
+      btn.textContent = '可视化编辑公式'
+      btn.addEventListener('pointerdown', e => e.stopPropagation())
+      btn.addEventListener('click', e => {
+        e.preventDefault(); e.stopPropagation()
+        emit('visual-edit-math', { from: this.from, to: this.to, tex: this.tex, block: true })
+      })
+      head.append(btn)
+    }
     const body = document.createElement('div')
     body.innerHTML = renderKatexMath(this.tex, true)
-    box.append(label, body)
+    box.append(head, body)
     return box
   }
   ignoreEvent() { return true }
 }
 
 class InlineMathWidget extends WidgetType {
-  constructor(private readonly from: number, private readonly tex: string) { super() }
-  eq(other: InlineMathWidget) { return this.from === other.from && this.tex === other.tex }
+  constructor(private readonly from: number, private readonly to: number, private readonly tex: string) { super() }
+  eq(other: InlineMathWidget) { return this.from === other.from && this.to === other.to && this.tex === other.tex }
   toDOM(editor: EditorView) {
     const span = document.createElement('span')
     span.className = 'cm-paper-inline-math'
-    span.title = '点击编辑行内公式'
+    span.title = '单击编辑源码 · 双击打开可视化公式编辑器'
     span.innerHTML = renderKatexMath(this.tex, false)
+    span.addEventListener('dblclick', event => {
+      if (editor.state.readOnly) return
+      event.preventDefault()
+      event.stopPropagation()
+      emit('visual-edit-math', { from: this.from, to: this.to, tex: this.tex, block: false })
+    })
     span.addEventListener('pointerdown', event => {
       if (event.button !== 0) return
       event.preventDefault()
@@ -677,14 +716,21 @@ function addFenceDecorations(state: EditorState, selection: readonly { from: num
   if (!match) return
   const language = (match[2].trim().split(/\s+/)[0] || '代码').slice(0, 40)
   const openingFence = match[1]
+  let codeLineNo = 0
   for (let n = first.number; n <= last.number; n++) {
     const line = state.doc.line(n), isFirst = n === first.number
     const closing = /^\s*(`+|~+)\s*\r?$/.exec(line.text)?.[1] || ''
     const closed = n === last.number && n > first.number && closing[0] === openingFence[0] && closing.length >= openingFence.length
     const fenceLine = isFirst || closed
+    if (!fenceLine) codeLineNo++
     const fenceStart = isFirst ? from : closed ? line.from + line.text.indexOf(closing) : line.from
     const revealFence = fenceLine && selection.some(range => range.from <= line.to && range.to >= fenceStart)
-    ranges.push(Decoration.line({ class: `cm-paper-code-line${isFirst ? ' cm-paper-code-open' : ''}${closed ? ' cm-paper-code-close' : ''}${revealFence ? ' cm-paper-code-revealed' : ''}${blockActive ? ' cm-paper-focus-active' : ''}`, attributes: isFirst ? { 'data-language': language } : undefined }).range(line.from))
+    const attrs: Record<string, string> | undefined = isFirst
+      ? { 'data-language': language }
+      : !fenceLine
+        ? { 'data-code-line': String(codeLineNo) }
+        : undefined
+    ranges.push(Decoration.line({ class: `cm-paper-code-line${isFirst ? ' cm-paper-code-open' : ''}${closed ? ' cm-paper-code-close' : ''}${revealFence ? ' cm-paper-code-revealed' : ''}${blockActive ? ' cm-paper-focus-active' : ''}`, attributes: attrs }).range(line.from))
     if (fenceLine && !revealFence && line.to > fenceStart) ranges.push(Decoration.replace({}).range(fenceStart, line.to))
   }
 }
@@ -732,7 +778,7 @@ function addTyporaInlineDecorations(
         const absFrom = line.from + i
         const absTo = line.from + matched + 1
         if (!inCode(absFrom, absTo) && !selection.some(r => r.from <= absTo && r.to >= absFrom)) {
-          ranges.push(Decoration.replace({ widget: new InlineMathWidget(absFrom, text.slice(i + 1, matched)) }).range(absFrom, absTo))
+          ranges.push(Decoration.replace({ widget: new InlineMathWidget(absFrom, absTo, text.slice(i + 1, matched)) }).range(absFrom, absTo))
         }
         i = matched
       }
@@ -754,7 +800,11 @@ function addTyporaInlineDecorations(
 
 function renderedDecorations(state: EditorState): DecorationSet {
   try {
+    ensureSyntaxTree(state, Math.min(state.doc.length, 60000), 60)
     const selection = state.selection.ranges
+    // Only reveal raw Markdown markers for a collapsed caret; drag-selecting text
+    // must keep rendered prose intact instead of expanding back into raw syntax.
+    const caretSelections = selection.filter(range => range.from === range.to)
     const text = state.doc.toString()
     if (/\r(?!\n)/.test(text)) return Decoration.none
     const blocks = markdownBlocks(text)
@@ -774,7 +824,7 @@ function renderedDecorations(state: EditorState): DecorationSet {
             continue
           }
           addFenceDecorations(state, selection, ranges, block.from, block.to)
-          ranges.push(Decoration.widget({ widget: new MermaidLivePreviewWidget(mermaidFence.code, themeRevision), side: 1, block: true }).range(block.to))
+          ranges.push(Decoration.widget({ widget: new MermaidLivePreviewWidget(block.from, block.to, mermaidFence.code, themeRevision), side: 1, block: true }).range(block.to))
           continue
         }
         addFenceDecorations(state, selection, ranges, block.from, block.to)
@@ -790,7 +840,7 @@ function renderedDecorations(state: EditorState): DecorationSet {
           ranges.push(Decoration.line({ class: `cm-paper-code-line${active ? ' cm-paper-focus-active' : ''}` }).range(state.doc.line(n).from))
         }
         const tex = extractDisplayMathBlock(block.source)
-        if (tex) ranges.push(Decoration.widget({ widget: new MathLivePreviewWidget(tex), side: 1, block: true }).range(block.to))
+        if (tex) ranges.push(Decoration.widget({ widget: new MathLivePreviewWidget(block.from, block.to, tex), side: 1, block: true }).range(block.to))
         continue
       }
       if (block.type === 'code_block') {
@@ -845,7 +895,7 @@ function renderedDecorations(state: EditorState): DecorationSet {
           if (marker?.name === 'HeaderMark') {
             let end = marker.to
             while (end < line.to && /[ \t]/.test(state.doc.sliceString(end, end + 1))) end++
-            if (!selection.some(range => range.from <= end && range.to >= marker.from)) ranges.push(Decoration.replace({}).range(marker.from, end))
+            if (!caretSelections.some(range => range.from <= end && range.to >= marker.from)) ranges.push(Decoration.replace({}).range(marker.from, end))
           }
         }
         if (node.name === 'Link') {
@@ -854,19 +904,19 @@ function renderedDecorations(state: EditorState): DecorationSet {
           if (open && labelEnd && open.to < labelEnd.from) {
             ranges.push(Decoration.mark({ class: 'cm-paper-link' }).range(open.to, labelEnd.from))
             for (const [from, to] of [[open.from, open.to], [labelEnd.from, node.to]]) {
-              if (!revealInlineMarker(selection, from, to)) ranges.push(Decoration.replace({}).range(from, to))
+              if (!revealInlineMarker(caretSelections, from, to)) ranges.push(Decoration.replace({}).range(from, to))
             }
           }
           return
         }
         if (node.name === 'TaskMarker') {
-          if (selection.some(range => range.from <= node.to && range.to >= node.from)) return
+          if (caretSelections.some(range => range.from <= node.to && range.to >= node.from)) return
           const raw = state.doc.sliceString(node.from, node.to)
           ranges.push(Decoration.replace({ widget: new TaskToggleWidget(node.from, node.to, /x/i.test(raw)) }).range(node.from, node.to))
           return
         }
         if (node.name === 'ListMark' || node.name === 'QuoteMark') {
-          if (selection.some(range => range.from <= node.to && range.to >= node.from)) return
+          if (caretSelections.some(range => range.from <= node.to && range.to >= node.from)) return
           const raw = state.doc.sliceString(node.from, node.to)
           const marker = node.name === 'ListMark' && /^[-*+]$/.test(raw) ? '•' : node.name === 'QuoteMark' ? '' : raw
           ranges.push(Decoration.replace(marker ? { widget: new InlineMarker(marker) } : {}).range(node.from, node.to))
@@ -878,10 +928,10 @@ function renderedDecorations(state: EditorState): DecorationSet {
         if (!first || !last || first === last || first.to >= last.from) return
         ranges.push(Decoration.mark({ class: inlineClass }).range(first.to, last.from))
         for (const mark of [first, last]) {
-          if (!revealInlineMarker(selection, mark.from, mark.to)) ranges.push(Decoration.replace({}).range(mark.from, mark.to))
+          if (!revealInlineMarker(caretSelections, mark.from, mark.to)) ranges.push(Decoration.replace({}).range(mark.from, mark.to))
         }
       } })
-      addTyporaInlineDecorations(state, selection, ranges, block.from, block.to, codeSpans)
+      addTyporaInlineDecorations(state, caretSelections, ranges, block.from, block.to, codeSpans)
     }
     return Decoration.set(ranges, true)
   } catch { return Decoration.none }
@@ -891,13 +941,19 @@ const renderedField = StateField.define<DecorationSet>({
   create: renderedDecorations,
   update(value, transaction) {
     if (composing && (transaction.docChanged || transaction.selection)) return value.map(transaction.changes)
-    return transaction.docChanged || transaction.selection || transaction.effects.some(effect => effect.is(refreshVisual)) ? renderedDecorations(transaction.state) : value
+    const treeUpdated = syntaxTree(transaction.state) !== syntaxTree(transaction.startState)
+    return transaction.docChanged || transaction.selection || treeUpdated || transaction.effects.some(effect => effect.is(refreshVisual))
+      ? renderedDecorations(transaction.state)
+      : value
   },
   provide: field => EditorView.decorations.from(field)
 })
 
 function displayExtension(mode: 'source' | 'visual') {
   return mode === 'visual' ? [renderedField, syntaxHighlighting(visualCodeHighlight)] : [syntaxHighlighting(sourceMarkdownHighlight)]
+}
+function lineNumbersExtension(mode: 'source' | 'visual', enabled: boolean) {
+  return mode === 'source' && enabled ? [lineNumbers()] : []
 }
 function editableExtension(readonly: boolean) { return [EditorState.readOnly.of(readonly), EditorView.editable.of(!readonly)] }
 
@@ -1006,7 +1062,9 @@ function stateFor(value: string) {
         if (update.selectionSet || update.docChanged || update.viewportChanged) reportSelection()
         if (update.selectionSet || update.docChanged) centerTypewriterCaret()
       }),
-      modeCompartment.of(displayExtension(props.mode)), readonlyCompartment.of(editableExtension(!!props.readonly))
+      modeCompartment.of(displayExtension(props.mode)),
+      readonlyCompartment.of(editableExtension(!!props.readonly)),
+      lineNumbersCompartment.of(lineNumbersExtension(props.mode, props.showLineNumbers !== false))
     ]
   })
 }
@@ -1055,7 +1113,21 @@ watch(() => props.modelValue, value => {
 })
 watch(() => props.mode, mode => {
   rawTableBlockFrom = null
-  try { view?.dispatch({ effects: modeCompartment.reconfigure(displayExtension(mode)) }) } catch { useFallback() }
+  try {
+    view?.dispatch({
+      effects: [
+        modeCompartment.reconfigure(displayExtension(mode)),
+        lineNumbersCompartment.reconfigure(lineNumbersExtension(mode, props.showLineNumbers !== false))
+      ]
+    })
+  } catch { useFallback() }
+})
+watch(() => props.showLineNumbers, enabled => {
+  try {
+    view?.dispatch({
+      effects: lineNumbersCompartment.reconfigure(lineNumbersExtension(props.mode, enabled !== false))
+    })
+  } catch { /* ignore */ }
 })
 watch(() => props.readonly, value => { try { view?.dispatch({ effects: readonlyCompartment.reconfigure(editableExtension(!!value)) }) } catch { useFallback() } })
 watch(() => props.imageUrls, () => {

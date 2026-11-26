@@ -270,6 +270,18 @@ function setCachedSvg(key: string, svg: string) {
   }
 }
 
+/** Auto-quote unquoted flowchart edge labels like `-->|命中! (~1ms)|` that contain Mermaid lexer tokens `()[]{}<>`. */
+export function sanitizeMermaidSource(code: string): string {
+  return code.replace(/(-->|-\.->|==>|---)\|([^|"\r\n][^|\r\n]*)\|/g, (full, arrow: string, label: string) => {
+    const trimmed = label.trim()
+    if (!trimmed || (trimmed.startsWith('"') && trimmed.endsWith('"'))) return full
+    if (/[()[\]{}<>]/.test(trimmed)) {
+      return `${arrow}|"${trimmed.replace(/"/g, "'")}"|`
+    }
+    return full
+  })
+}
+
 export async function renderMermaidSvg(
   code: string,
   theme: PaperThemeKind = currentPaperTheme()
@@ -304,7 +316,16 @@ export async function renderMermaidSvg(
     sandbox.style.cssText = 'position:fixed;left:-99999px;top:-99999px;visibility:hidden;pointer-events:none;font-family:"Source Sans 3","PingFang SC","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.45;'
     document.body.appendChild(sandbox)
     try {
-      const rendered = await mermaid.render(id, trimmed, sandbox)
+      let rendered: { svg: string }
+      try {
+        rendered = await mermaid.render(id, trimmed, sandbox)
+      } catch (firstErr) {
+        const sanitized = sanitizeMermaidSource(trimmed)
+        if (sanitized === trimmed) throw firstErr
+        document.getElementById(`d${id}`)?.remove()
+        document.getElementById(id)?.remove()
+        rendered = await mermaid.render(`${id}-s`, sanitized, sandbox)
+      }
       const svg = rendered.svg
       setCachedSvg(cacheKey, svg)
       return { svg }
@@ -325,6 +346,7 @@ export async function renderMermaidSvg(
 export interface MermaidMountOptions {
   theme?: PaperThemeKind
   onEdit?: () => void
+  onVisualEdit?: () => void
   editLabel?: string
   showSourceToggle?: boolean
   compact?: boolean
@@ -425,9 +447,15 @@ export function mountMermaidCard(host: HTMLElement, code: string, options: Merma
   })
   actions.append(copyBtn)
 
+  if (options.onVisualEdit) {
+    const visualBtn = makeButton('可视化编辑', '打开可视化节点图编辑器', () => options.onVisualEdit?.())
+    visualBtn.classList.add('is-primary')
+    actions.append(visualBtn)
+  }
+
   if (options.onEdit) {
-    const editBtn = makeButton(options.editLabel || '编辑图表', '编辑 Mermaid 源码', () => options.onEdit?.())
-    editBtn.classList.add('is-primary')
+    const editBtn = makeButton(options.editLabel || '编辑源码', '编辑 Mermaid 源码', () => options.onEdit?.())
+    if (!options.onVisualEdit) editBtn.classList.add('is-primary')
     actions.append(editBtn)
   }
 

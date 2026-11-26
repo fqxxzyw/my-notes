@@ -20,6 +20,7 @@ enum class ThemePreference(val key: String, val label: String, val subtitle: Str
     NIGHT("night", "夜间", "炭墨纸面 · 柔和对比"),
     GREEN("green", "浅绿护眼", "柔和豆绿 · 长时间阅读"),
     YELLOW("yellow", "浅黄阅读", "暖色纸张 · 沉浸手记"),
+    BLUE("blue", "淡蓝护眼", "清透淡蓝 · 专注舒目"),
     SYSTEM("system", "跟随系统", "自动切换日间与夜间");
 
     companion object {
@@ -32,7 +33,8 @@ enum class ResolvedTheme(val cssName: String) {
     DAY("day"),
     NIGHT("night"),
     GREEN("green"),
-    YELLOW("yellow")
+    YELLOW("yellow"),
+    BLUE("blue")
 }
 
 @Immutable
@@ -161,12 +163,38 @@ val YellowPaperColors = PaperColors(
     scrim = Color(0x80000000)
 )
 
+val BluePaperColors = PaperColors(
+    resolved = ResolvedTheme.BLUE,
+    isDark = false,
+    background = Color(0xFFEAF3FB),
+    surface = Color(0xFFF3F8FD),
+    softSurface = Color(0xFFE0EDF8),
+    bookFace = Color(0xFFF3F8FD),
+    ink = Color(0xFF1E354D),
+    muted = Color(0xFF516B85),
+    line = Color(0xFF3D6385),
+    subtleLine = Color(0xFFA8C2DA),
+    depthEdge = Color(0xFF3D6385),
+    spineBrown = Color(0xFF795033),
+    primaryBg = Color(0xFF1E354D),
+    primaryInk = Color(0xFFF3F8FD),
+    error = Color(0xFF9D2C26),
+    errorBg = Color(0xFFF8E7E7),
+    success = Color(0xFF205E44),
+    successBg = Color(0xFFDDF0E8),
+    warning = Color(0xFF845100),
+    warningBg = Color(0xFFF5ECD4),
+    imagePlaceholderBg = Color(0xFFE0EDF8),
+    scrim = Color(0x80000000)
+)
+
 fun resolvePaperColors(preference: ThemePreference, systemDark: Boolean): PaperColors =
     when (preference) {
         ThemePreference.DAY -> DayPaperColors
         ThemePreference.NIGHT -> NightPaperColors
         ThemePreference.GREEN -> GreenPaperColors
         ThemePreference.YELLOW -> YellowPaperColors
+        ThemePreference.BLUE -> BluePaperColors
         ThemePreference.SYSTEM -> if (systemDark) NightPaperColors else DayPaperColors
     }
 

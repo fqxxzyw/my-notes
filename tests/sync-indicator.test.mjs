@@ -25,7 +25,7 @@ test('confirmed sync shows completion then settles into the original line', () =
   assert.equal(scheduled[0].delay, 1400)
   scheduled[0].callback()
   assert.deepEqual(states.at(-1), { phase: 'settling', kind: 'sync' })
-  assert.equal(scheduled[1].delay, 450)
+  assert.equal(scheduled[1].delay, 650)
   scheduled[1].callback()
   assert.deepEqual(states.at(-1), { phase: 'idle' })
 })

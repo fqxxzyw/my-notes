@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { createNotebookStore, chapterIdFromTitle, pageIdFromTitle, type Notebook, type Chapter, type Page } from './notebookStore'
-import { normalizeRepository, namespaceKey, getConfiguredRepository, setConfiguredRepository } from './repository'
+import { normalizeRepository, parseRepository, namespaceKey, getConfiguredRepository, setConfiguredRepository } from './repository'
 import ChapterMarkdown from './ChapterMarkdown.vue'
-import MarkdownEditor from './MarkdownEditor.vue'
+import MarkdownEditor, { type EditorDisplayMode } from './MarkdownEditor.vue'
 import PlainTextEditor from './PlainTextEditor.vue'
 import DocumentViewer from './DocumentViewer.vue'
 import CollapsedOutlineRail from './CollapsedOutlineRail.vue'
@@ -17,11 +17,12 @@ import { markdownOutline } from './markdownOutline'
 import OutlineTree from './OutlineTree.vue'
 import ChapterOrderList from './ChapterOrderList.vue'
 import ThemePicker from './ThemePicker.vue'
+import SettingsModal from './SettingsModal.vue'
 import { createSyncIndicator, type TransferState } from './syncIndicator'
 import { hasUserData } from './workspaceData'
-import { readDroppedMarkdown, type DroppedMarkdownResult } from './readDroppedMarkdown'
+import { localImageReferences, readDroppedMarkdown, type DroppedMarkdownResult } from './readDroppedMarkdown'
 import { pickDesktopImportFiles, pickDesktopImportFolder, pickDesktopMarkdownFiles, pickDesktopMarkdownFolder, resolveDesktopImportedImages } from './desktopImportImages'
-import { compareImportedPaths, decodeEncodedChapterPath, sortChapters, validateChapterOrder } from './notebookChapterOrder'
+import { chapterDisplayInfo, compareImportedPaths, decodeEncodedChapterPath, sortChapters, validateChapterOrder } from './notebookChapterOrder'
 import { prepareLocalCollection, assertLocalMetadataWritable, restoreNotebookBase } from './localMetadataSafety'
 import { newAttachmentPath, putAttachment, getAttachment, attachmentMime, MAX_ATTACHMENT_BYTES, type NoteAttachment } from './attachmentStore'
 import { attachmentReferences, workspaceAttachmentPaths, workspaceEntriesMatch } from './attachmentReferences'
@@ -34,7 +35,7 @@ import { normalizeHeadingKey, parseMarkdownLinkHref, resolveMarkdownTarget, type
 import { computeDocumentStats, toggleMarkdownTaskAtIndex } from './markdownStats'
 import { exportMarkdownFile, exportStandaloneHtml } from './exportDocument'
 import { currentPaperTheme } from './mermaidRenderer'
-import { ensureShelfAudioUnlocked, isSoundEnabled, onSoundChange, toggleSoundEnabled } from './shelfAudio'
+import { ensureShelfAudioUnlocked } from './shelfAudio'
 import {
   base64ToBytes,
   bytesToBase64,
@@ -55,8 +56,34 @@ import {
   type ShareSummary
 } from './shareLink'
 
-const soundEnabled = ref(isSoundEnabled())
-let unsubscribeSound: (() => void) | undefined
+const themePickerRef = ref<InstanceType<typeof ThemePicker> | null>(null)
+const settingsModalRef = ref<InstanceType<typeof SettingsModal> | null>(null)
+const headerMenuOpen = ref(false)
+const folderImportMode = ref<'book' | 'cabinet'>('book')
+const editorDisplayMode = ref<EditorDisplayMode>('visual')
+const showBackToTop = ref(false)
+
+function selectEditorMode(mode: EditorDisplayMode) {
+  if (mode === 'read') {
+    view.value = 'read'
+    return
+  }
+  editorDisplayMode.value = mode
+  view.value = 'edit'
+}
+
+function handleWindowScroll() {
+  showBackToTop.value = typeof window !== 'undefined' && window.scrollY > 360
+}
+
+function scrollToTop() {
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+function displayChapterItem(chapter: Chapter) {
+  const cleaned = isMarkdownExt(chapter.ext) ? (cleanMarkdownTitle(chapter.title) || chapter.title) : chapter.title
+  return chapterDisplayInfo(chapter, cleaned)
+}
 
 // Full-hierarchy Share Dialog state (Cabinet / Bookshelf / Book / Chapter / Page)
 const shareModal = ref<null | {
@@ -394,10 +421,116 @@ async function copyActiveShareLink() {
 }
 
 async function fetchGitHubSharePayload(ref: GitHubShareRef): Promise<PaperSharePayloadV1> {
+  const parsed = parseRepository(ref.repo)
   const remoteStore = createNotebookStore(ref.repo)
+  let hasToken = false
   if (connected.value && initialRepository === ref.repo) {
     const token = await readCredential().catch(() => null)
-    if (token) remoteStore.setToken(token)
+    if (token) {
+      remoteStore.setToken(token)
+      hasToken = true
+    }
+  }
+
+  // Fast, rate-limit-free public GitHub reader: uses 1 single Git Trees call + raw.githubusercontent.com
+  // so unauthenticated users can import an entire 50-chapter cabinet without hitting GitHub's 60 req/hr API cap!
+  if (parsed.provider === 'github' && !hasToken && (ref.scope === 'cabinet' || ref.scope === 'book')) {
+    const rawBase = `https://raw.githubusercontent.com/${parsed.slug}/main`
+    const fetchRawText = async (path: string): Promise<string | null> => {
+      const r = await fetch(`${rawBase}/${path.split('/').map(encodeURIComponent).join('/')}`, { cache: 'no-store' })
+      return r.ok ? r.text() : null
+    }
+    const fetchRawBytes = async (path: string): Promise<Uint8Array | null> => {
+      const r = await fetch(`${rawBase}/${path.split('/').map(encodeURIComponent).join('/')}`, { cache: 'no-store' })
+      return r.ok ? new Uint8Array(await r.arrayBuffer()) : null
+    }
+    const treeRes = await fetch(`https://api.github.com/repos/${parsed.slug}/git/trees/main?recursive=1`, {
+      headers: { Accept: 'application/vnd.github+json' },
+      cache: 'no-store'
+    })
+    if (treeRes.ok) {
+      const treeJson = await treeRes.json() as { tree?: Array<{ path: string; type: string }> }
+      const blobPaths = (treeJson.tree || []).filter(item => item.type === 'blob').map(item => item.path)
+      const collectRawImages = async (bookId: string | null, markdowns: string[]): Promise<SharedAttachment[]> => {
+        const out: SharedAttachment[] = []
+        const seen = new Set<string>()
+        for (const md of markdowns) {
+          for (const r of attachmentReferences(md, bookId)) {
+            if (seen.has(r.src)) continue
+            seen.add(r.src)
+            try {
+              const bytes = await fetchRawBytes(r.path)
+              if (bytes) out.push({ relPath: r.src, mime: attachmentMime(r.path) as SharedAttachment['mime'], base64: bytesToBase64(bytes) })
+            } catch { /* skip missing image */ }
+          }
+        }
+        return out
+      }
+      const loadRawBook = async (bookId: string): Promise<SharedBook | null> => {
+        const prefix = `docs/notebooks/${bookId}/`
+        const indexText = await fetchRawText(`${prefix}index.md`)
+        if (indexText === null) return null
+        const bookTitle = extractMarkdownTitle(indexText, bookId)
+        const chPaths = blobPaths.filter(p => p.startsWith(prefix) && !p.slice(prefix.length).includes('/') && !p.endsWith('/index.md'))
+        const loaded: Array<{ id: string; title: string; content: string; ext?: 'txt' }> = []
+        for (const p of chPaths) {
+          const name = p.slice(prefix.length)
+          const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase()
+          if (ext !== 'md' && ext !== 'txt') continue
+          const id = name.slice(0, name.lastIndexOf('.'))
+          const body = await fetchRawText(p)
+          if (body === null) continue
+          const fallback = decodeEncodedChapterPath(id) || id
+          const title = ext === 'md' ? extractMarkdownTitle(body, fallback) : fallback
+          loaded.push({ id, title, content: body, ...(ext === 'txt' ? { ext: 'txt' as const } : {}) })
+        }
+        const ordered = sortChapters(loaded)
+        const attachments = await collectRawImages(bookId, ordered.filter(c => c.ext !== 'txt').map(c => c.content))
+        return {
+          title: bookTitle,
+          chapters: ordered.map(c => ({ title: c.title, content: c.content, ...(c.ext ? { ext: c.ext } : {}) })),
+          ...(attachments.length ? { attachments } : {})
+        }
+      }
+
+      if (ref.scope === 'book') {
+        const book = await loadRawBook(ref.id)
+        if (book) return { v: 1, scope: 'book', book }
+      } else {
+        const catText = await fetchRawText('docs/cabinets.json')
+        const cat = catText ? JSON.parse(catText) as { cabinets?: Array<{ id: string; title: string }>; assignments?: Record<string, string> } : { cabinets: [], assignments: {} }
+        const cab = (cat.cabinets || []).find(c => c.id === ref.id)
+        const cabTitle = cab?.title || ref.title || '分享书柜'
+        const assignedTo = (id: string) => {
+          const target = cat.assignments?.[id]
+          return target && (cat.cabinets || []).some(c => c.id === target) ? target : 'general'
+        }
+        const bookIds = [...new Set(blobPaths.filter(p => p.startsWith('docs/notebooks/') && p.endsWith('/index.md')).map(p => p.split('/')[2]))]
+        const sharedBooks: SharedBook[] = []
+        for (const bid of bookIds.filter(id => assignedTo(id) === ref.id)) {
+          const b = await loadRawBook(bid)
+          if (b) sharedBooks.push(b)
+        }
+        const sharedPages: SharedPage[] = []
+        for (const p of blobPaths.filter(path => path.startsWith('docs/pages/') && !path.slice('docs/pages/'.length).includes('/'))) {
+          const name = p.slice('docs/pages/'.length)
+          const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase()
+          if (ext !== 'md' && ext !== 'txt') continue
+          const id = name.slice(0, name.lastIndexOf('.'))
+          if (assignedTo(pageBookId(id)) !== ref.id) continue
+          const body = await fetchRawText(p)
+          if (body === null) continue
+          const title = ext === 'md' ? extractMarkdownTitle(body, id) : id
+          const attachments = ext === 'txt' ? [] : await collectRawImages(null, [body])
+          sharedPages.push({ title, content: body, ...(ext === 'txt' ? { ext: 'txt' as const } : {}), ...(attachments.length ? { attachments } : {}) })
+        }
+        return { v: 1, scope: 'cabinet', cabinet: { title: cabTitle, books: sharedBooks, pages: sharedPages } }
+      }
+    } else if (treeRes.status === 404) {
+      throw new Error('无法免登录读取该仓库：原仓库可能是私有仓库（仅公开仓库支持免登录导入），请让分享者改发离线分享链接，或连接对应仓库令牌后重试。')
+    } else if (treeRes.status === 403 && treeRes.headers.get('x-ratelimit-remaining') === '0') {
+      throw new Error('当前网络已触发 GitHub 匿名访问频率上限（每小时 60 次），请稍后重试、连接个人 GitHub 令牌，或让分享者改发离线分享链接。')
+    }
   }
   const collectRemoteImages = async (bookId: string | null, markdowns: string[]): Promise<SharedAttachment[]> => {
     const out: SharedAttachment[] = []
@@ -548,6 +681,22 @@ async function stageSharedAttachments(
   return mapping
 }
 
+function safeEncodedTitleForId(raw: string, maxBytes = 148): string {
+  const clean = (raw || '').replace(/[\r\n]+/g, ' ').trim() || '未命名笔记'
+  const encoder = new TextEncoder()
+  if (clean.length <= 120 && encoder.encode(clean).length <= maxBytes) return clean
+  let out = ''
+  let bytes = 0
+  for (const ch of clean) {
+    if (out.length >= 115) break
+    const len = encoder.encode(ch).length
+    if (bytes + len > maxBytes) break
+    out += ch
+    bytes += len
+  }
+  return out.trim() || '未命名笔记'
+}
+
 async function confirmImportShare() {
   const pending = pendingShareImport.value
   if (!pending) return
@@ -575,8 +724,8 @@ async function confirmImportShare() {
       const chapterOrder: string[] = []
       const usedChapterIds = new Set<string>()
       for (const ch of sb.chapters) {
-        let cid = chapterIdFromTitle(ch.title)
-        while (usedChapterIds.has(cid)) cid = `${cid}-${newId().slice(0, 4)}`
+        let cid = chapterIdFromTitle(safeEncodedTitleForId(ch.title))
+        while (usedChapterIds.has(cid)) cid = `${cid.slice(0, 240)}-${newId().slice(0, 4)}`
         usedChapterIds.add(cid)
         chapterOrder.push(cid)
         addedChapters.push({
@@ -599,10 +748,11 @@ async function confirmImportShare() {
     }
 
     const addSharedPageToList = async (sp: SharedPage) => {
-      let pid = pageIdFromTitle(sp.title)
+      const safePageTitle = safeEncodedTitleForId(sp.title)
+      let pid = pageIdFromTitle(safePageTitle)
       let bookId = pageBookId(pid)
       while (books.value.some(b => b.id === bookId) || addedBooks.some(b => b.id === bookId)) {
-        pid = `${pageIdFromTitle(sp.title)}-${newId().slice(0, 4)}`
+        pid = `${pageIdFromTitle(safePageTitle).slice(0, 240)}-${newId().slice(0, 4)}`
         bookId = pageBookId(pid)
       }
       const map = await stageSharedAttachments(null, sp.attachments, staged)
@@ -1279,10 +1429,18 @@ async function repairCurrentImages(reading: Promise<DroppedMarkdownResult>, sele
     const parsed = await reading
     const result = !selectedImageSource || resolveOriginalPaths ? await resolveDesktopImportedImages(parsed) : parsed
     const encodedChapterTitle = decodeEncodedChapterPath(chapter.id)
+    const chapterPrimaryTitle = displayChapterItem(chapter).primaryTitle
     let matches = selectedImageSource ? result.files.filter(file => file.path === selectedImageSource.path && file.content === original) : result.files.filter(file => {
       const root = result.folders.find(folder => file.path.startsWith(`${folder}/`))
       const candidate = safeImportedTitle(root ? file.path.slice(root.length + 1) : file.name)
-      return candidate === chapter.title || (encodedChapterTitle !== null && candidate === encodedChapterTitle)
+      const fileStem = safeImportedTitle(file.name)
+      const fileH1 = extractMarkdownTitle(file.content, candidate)
+      return (
+        candidate === chapter.title ||
+        fileStem === chapterPrimaryTitle ||
+        fileH1 === chapter.title ||
+        (encodedChapterTitle !== null && candidate === encodedChapterTitle)
+      )
     })
     if (!selectedImageSource && !matches.length) {
       // A synced chapter may display its Markdown heading instead of its old
@@ -1353,8 +1511,46 @@ async function importMarkdown(reading: Promise<DroppedMarkdownResult>) {
       const isResourceFolder = /\.assets$/i.test(folder) || result.images.some(image => image.path.startsWith(`${folder}/`)) || result.skipped.some(item => item.path.startsWith(`${folder}/`) && /\.(?:png|jpe?g|gif|webp)$/i.test(item.path))
       return !isResourceFolder
     })
+    const createdCabinetBooks = new Map<string, string[]>()
+    const createdCabinetIds: string[] = []
+    const importAsCabinet = folderImportMode.value === 'cabinet' && !destination
+
+    const appendEntriesToBook = (
+      book: ShelfBook,
+      entries: Array<
+        | { kind: 'text'; relative: string; file: DroppedMarkdownResult['files'][number] }
+        | { kind: 'doc'; relative: string; doc: NonNullable<DroppedMarkdownResult['documents']>[number] }
+      >
+    ) => {
+      entries.sort((a, b) => compareImportedPaths(a.relative, b.relative))
+      const folderOrder: string[] = []
+      for (const entry of entries) {
+        const pathTitle = safeImportedTitle(entry.relative)
+        if (entry.kind === 'text') {
+          const displayTitle = entry.file.ext === 'txt'
+            ? pathTitle
+            : extractMarkdownTitle(entry.file.content, pathTitle)
+          const cid = chapterIdFromTitle(safeEncodedTitleForId(pathTitle))
+          const chapter: Chapter = { bookId: book.id, id: cid, title: displayTitle, content: entry.file.content, sha: '', ...(entry.file.ext === 'txt' ? { ext: 'txt' } : {}) }
+          addedChapters.push(chapter)
+          folderOrder.push(cid)
+          if (entry.file.ext !== 'txt') sourceFiles.push({ file: entry.file, chapter, assetBookId: book.id })
+        } else {
+          const filePath = newDocumentPath(book.id, entry.doc.ext)
+          stagedDocs.push({ path: filePath, bytes: entry.doc.bytes })
+          const cid = chapterIdFromTitle(safeEncodedTitleForId(pathTitle))
+          const chapter: Chapter = { bookId: book.id, id: cid, title: pathTitle, content: '', sha: '', ext: entry.doc.ext, filePath, fileName: displayFileName(pathTitle, entry.doc.ext), fileSize: entry.doc.bytes.length }
+          addedChapters.push(chapter)
+          folderOrder.push(cid)
+        }
+      }
+      if (folderOrder.length > 0 && folderOrder.length <= 999) {
+        book.chapterOrder = folderOrder
+      }
+      addedBooks.push(book)
+    }
+
     for (const folder of importFolders) {
-      const book: ShelfBook = { id: newId(), title: safeImportedTitle(folder), sha: '' }
       const folderEntries: Array<
         | { kind: 'text'; relative: string; file: DroppedMarkdownResult['files'][number] }
         | { kind: 'doc'; relative: string; doc: NonNullable<DroppedMarkdownResult['documents']>[number] }
@@ -1366,32 +1562,60 @@ async function importMarkdown(reading: Promise<DroppedMarkdownResult>) {
           .filter(item => item.path.startsWith(`${folder}/`))
           .map(doc => ({ kind: 'doc' as const, relative: doc.path.slice(folder.length + 1), doc }))
       ]
-      folderEntries.sort((a, b) => compareImportedPaths(a.relative, b.relative))
-      const folderOrder: string[] = []
-      for (const entry of folderEntries) {
-        const pathTitle = safeImportedTitle(entry.relative)
-        if (entry.kind === 'text') {
-          const displayTitle = entry.file.ext === 'txt'
-            ? pathTitle
-            : extractMarkdownTitle(entry.file.content, pathTitle)
-          const cid = chapterIdFromTitle(pathTitle)
-          const chapter: Chapter = { bookId: book.id, id: cid, title: displayTitle, content: entry.file.content, sha: '', ...(entry.file.ext === 'txt' ? { ext: 'txt' } : {}) }
-          addedChapters.push(chapter)
-          folderOrder.push(cid)
-          if (entry.file.ext !== 'txt') sourceFiles.push({ file: entry.file, chapter, assetBookId: book.id })
-        } else {
-          const filePath = newDocumentPath(book.id, entry.doc.ext)
-          stagedDocs.push({ path: filePath, bytes: entry.doc.bytes })
-          const cid = chapterIdFromTitle(pathTitle)
-          const chapter: Chapter = { bookId: book.id, id: cid, title: pathTitle, content: '', sha: '', ext: entry.doc.ext, filePath, fileName: displayFileName(pathTitle, entry.doc.ext), fileSize: entry.doc.bytes.length }
-          addedChapters.push(chapter)
-          folderOrder.push(cid)
+      if (importAsCabinet) {
+        const cabId = catalog.create(safeImportedTitle(folder))
+        createdCabinetIds.push(cabId)
+        const cabBookIds: string[] = []
+        const subGroups = new Map<string, typeof folderEntries>()
+        const rootEntries: typeof folderEntries = []
+        for (const entry of folderEntries) {
+          const slashIdx = entry.relative.indexOf('/')
+          if (slashIdx > 0) {
+            const subName = entry.relative.slice(0, slashIdx)
+            const innerRel = entry.relative.slice(slashIdx + 1)
+            const list = subGroups.get(subName) || []
+            list.push({ ...entry, relative: innerRel } as typeof entry)
+            subGroups.set(subName, list)
+          } else {
+            rootEntries.push(entry)
+          }
         }
+        const sortedSubNames = [...subGroups.keys()].sort((a, b) => compareImportedPaths(a, b))
+        for (const subName of sortedSubNames) {
+          const book: ShelfBook = { id: newId(), title: safeImportedTitle(subName), sha: '' }
+          appendEntriesToBook(book, subGroups.get(subName)!)
+          cabBookIds.push(book.id)
+        }
+        rootEntries.sort((a, b) => compareImportedPaths(a.relative, b.relative))
+        for (const entry of rootEntries) {
+          if (entry.kind === 'text') {
+            const pathTitle = safeImportedTitle(entry.relative)
+            const displayTitle = entry.file.ext === 'txt' ? pathTitle : extractMarkdownTitle(entry.file.content, pathTitle)
+            const extProp = entry.file.ext === 'txt' ? { ext: 'txt' as const } : {}
+            const id = pageIdFromTitle(safeEncodedTitleForId(pathTitle))
+            const book: ShelfBook = { id: pageBookId(id), title: displayTitle, sha: '', kind: 'page', ...extProp }
+            addedBooks.push(book)
+            cabBookIds.push(book.id)
+            const chapter: Chapter = { bookId: book.id, id, title: displayTitle, content: entry.file.content, sha: '', ...extProp }
+            addedChapters.push(chapter)
+            if (entry.file.ext !== 'txt') sourceFiles.push({ file: entry.file, chapter, assetBookId: null })
+          } else {
+            const title = safeImportedTitle(entry.relative)
+            const id = pageIdFromTitle(title)
+            const filePath = newDocumentPath(null, entry.doc.ext)
+            stagedDocs.push({ path: filePath, bytes: entry.doc.bytes })
+            const book: ShelfBook = { id: pageBookId(id), title, sha: '', kind: 'page', ext: entry.doc.ext }
+            addedBooks.push(book)
+            cabBookIds.push(book.id)
+            const chapter: Chapter = { bookId: book.id, id, title, content: '', sha: '', ext: entry.doc.ext, filePath, fileName: displayFileName(title, entry.doc.ext), fileSize: entry.doc.bytes.length }
+            addedChapters.push(chapter)
+          }
+        }
+        createdCabinetBooks.set(cabId, cabBookIds)
+      } else {
+        const book: ShelfBook = { id: newId(), title: safeImportedTitle(folder), sha: '' }
+        appendEntriesToBook(book, folderEntries)
       }
-      if (folderOrder.length > 0 && folderOrder.length <= 999) {
-        book.chapterOrder = folderOrder
-      }
-      addedBooks.push(book)
     }
     const looseTextFiles = result.files
       .filter(item => !importFolders.some(folder => item.path.startsWith(`${folder}/`)))
@@ -1448,9 +1672,18 @@ async function importMarkdown(reading: Promise<DroppedMarkdownResult>) {
     localChapters.value = [...beforeChapters, ...addedChapters]
     try {
       persistLocal()
-      if (addedBooks.length) catalog.moveMany(addedBooks.map(book => book.id), targetCabinet)
+      const assignedToNewCab = new Set<string>()
+      for (const [cabId, bookIds] of createdCabinetBooks.entries()) {
+        if (bookIds.length) {
+          catalog.moveMany(bookIds, cabId)
+          bookIds.forEach(id => assignedToNewCab.add(id))
+        }
+      }
+      const remainingBookIds = addedBooks.map(book => book.id).filter(id => !assignedToNewCab.has(id))
+      if (remainingBookIds.length) catalog.moveMany(remainingBookIds, targetCabinet)
     } catch (e) {
       localBooks.value = beforeBooks; localChapters.value = beforeChapters
+      for (const cabId of createdCabinetIds) { try { catalog.remove(cabId) } catch { /* ignore */ } }
       try { persistLocal() } catch { throw new Error('导入未完成，本地保存失败，请检查存储空间。') }
       throw e
     }
@@ -1458,10 +1691,12 @@ async function importMarkdown(reading: Promise<DroppedMarkdownResult>) {
     if (destination && selectedBook.value?.id === destination.id) chapters.value = [...chapters.value, ...addedChapters.filter(chapter => chapter.bookId === destination.id)]
     localMutationVersion++
     const unresolved = result.localResources.length + unmatched
-    const extra = [result.skipped.length ? `${result.skipped.length} 项不支持或无法读取，已跳过` : '', unresolved ? `${unresolved} 处相对图片或链接未随文件导入，请检查` : ''].filter(Boolean).join('；')
+    const extra = [result.skipped.length ? `${result.skipped.length} 项不支持或无法读取，已跳过` : '', unresolved ? `${unresolved} 处相对图片或链接未随文件导入（可打开文档后一键补齐图片）` : ''].filter(Boolean).join('；')
     const docHint = stagedDocs.length ? `（其中 ${stagedDocs.length} 个外部文档为只读查看）` : ''
-    notice.value = `已导入 ${addedBooks.length} 项书本/书页、${addedChapters.filter(item => !isPageBookId(item.bookId)).length} 篇章节、${staged.size} 张图片到本机${docHint}。${extra ? ` ${extra}。` : ''}`
+    const cabHint = createdCabinetIds.length ? `${createdCabinetIds.length} 个书柜、` : ''
+    notice.value = `已导入 ${cabHint}${addedBooks.length} 项书本/书页、${addedChapters.filter(item => !isPageBookId(item.bookId)).length} 篇章节、${staged.size} 张图片到本机${docHint}。${extra ? ` ${extra}。` : ''}`
     if (autoSave.value) {
+      for (const cabId of createdCabinetIds) autoCabinets.add(cabId)
       for (const book of addedBooks) if (book.kind !== 'page') autoBooks.add(book.id)
       for (const chapter of addedChapters) autoKeys.add(chapterKey(chapter))
       scheduleAuto()
@@ -1488,6 +1723,11 @@ function addWelcome() {
 }
 const draftKey = (chapter: Chapter) => `${draftPrefix}${chapter.bookId}:${chapter.id}`
 const dirty = computed(() => !!selectedChapter.value && content.value !== selectedChapter.value.content)
+const selectedChapterDisplay = computed(() => selectedChapter.value ? displayChapterItem(selectedChapter.value) : null)
+const unresolvedLocalImageCount = computed(() => {
+  if (!selectedChapter.value || !selectedChapterIsMarkdown.value || !content.value) return 0
+  return localImageReferences(content.value).filter(src => !/^(?:\.\/)?assets\/[a-f0-9]{32}\.(?:png|jpe?g|gif|webp)$/i.test(src)).length
+})
 const chosenCabinet = computed(() => catalog.cabinets.value.find(cabinet => cabinet.id === activeCabinet.value) || null)
 const cabinetItems = computed(() => catalog.cabinets.value.map(cabinet => ({ ...cabinet, books: books.value.filter(book => catalog.assigned(book.id) === cabinet.id) })))
 const defaultCabinetTitle = computed(() => catalog.cabinets.value.find(cabinet => cabinet.id === 'general')?.title || '默认书柜')
@@ -2120,7 +2360,7 @@ function changeOutline(before: string, after: string, focus: number) {
 function openNewNote() {
   if (!saveDraft()) return
   clearMessages()
-  bookCabinet.value = ''
+  bookCabinet.value = activeCabinet.value && activeCabinet.value !== 'general' ? activeCabinet.value : ''
   bookDescription.value = ''
   newBookCabinetName.value = ''
   newPageFormat.value = 'md'
@@ -3170,12 +3410,12 @@ onMounted(() => {
     }
   })()
   window.addEventListener('focus', scheduleDesktopRemoteCheck)
+  window.addEventListener('scroll', handleWindowScroll, { passive: true })
   ensureShelfAudioUnlocked()
-  unsubscribeSound = onSoundChange(enabled => { soundEnabled.value = enabled })
   checkInitialShareHash()
 })
 onBeforeUnmount(() => {
-  unsubscribeSound?.()
+  window.removeEventListener('scroll', handleWindowScroll)
   stopChapterDragScroll()
   imageRefresh++
   clearTimeout(imageRefreshTimer)
@@ -3234,39 +3474,49 @@ async function openSearchResult(chapter: Chapter) {
               <span aria-hidden="true"> / </span>
               <button type="button" @click="openBook(selectedBook)">{{ selectedBook.title }}</button>
             </template>
-            <template v-if="selectedChapter"><span aria-hidden="true"> / </span><span>{{ selectedChapter.title }}</span></template>
+            <template v-if="selectedChapter"><span aria-hidden="true"> / </span><span>{{ selectedChapterDisplay?.primaryTitle || selectedChapter.title }}</span></template>
           </nav>
         </div>
         <div class="archive-actions">
-          <div class="archive-search-wrap">
+          <div class="archive-search-wrap archive-hide-sm">
             <label class="archive-search"><span class="sr-only">搜索笔记</span><input v-model="query" type="search" placeholder="搜索书柜 / 笔记本 / 章节..."></label>
             <div v-if="selectedChapter && view === 'edit' && query.trim()" class="archive-search-results">
               <p v-if="searching">正在查找章节…</p>
               <template v-else>
                 <button v-for="result in searchResults" :key="result.bookId + '/' + result.id" type="button"
                   :disabled="busy" @click="openSearchResult(result)">
-                  {{ books.find(book => book.id === result.bookId)?.title }} ／ {{ result.title }}
+                  {{ books.find(book => book.id === result.bookId)?.title }} ／ {{ displayChapterItem(result).primaryTitle }}
                 </button>
                 <p v-if="!searchResults.length">没有匹配的章节。</p>
               </template>
             </div>
           </div>
-          <ThemePicker />
-          <button
-            type="button"
-            class="theme-toggle sound-toggle"
-            :aria-pressed="soundEnabled"
-            :title="soundEnabled ? '已开启滑动音效（点击静音）' : '滑动音效已静音（点击开启）'"
-            @click="toggleSoundEnabled"
-          ><span aria-hidden="true">{{ soundEnabled ? '♪' : '×' }}</span><span>{{ soundEnabled ? '音效' : '静音' }}</span></button>
-          <button class="archive-refresh" :disabled="busy" title="从 GitHub 恢复笔记到本机，保留未同步草稿" aria-label="从 GitHub 恢复笔记，保留未同步草稿" @click="refresh">恢复</button>
-          <button class="archive-sync" :disabled="busy" title="将勾选的笔记、当前章节或书柜整理提交到 GitHub" aria-label="将勾选的笔记、当前章节或书柜整理同步到 GitHub" @click="syncFromHeader">同步</button>
-          <button type="button" class="archive-new" :disabled="busy" @click="importing = true">导入</button>
+          <span class="archive-hide-md"><ThemePicker ref="themePickerRef" /></span>
+          <span class="archive-hide-md"><SettingsModal ref="settingsModalRef" /></span>
+          <button class="archive-refresh archive-hide-lg" :disabled="busy" title="从 GitHub 恢复笔记到本机，保留未同步草稿" aria-label="从 GitHub 恢复笔记，保留未同步草稿" @click="refresh">恢复</button>
+          <button class="archive-sync archive-hide-lg" :disabled="busy" title="将勾选的笔记、当前章节或书柜整理提交到 GitHub" aria-label="将勾选的笔记、当前章节或书柜整理同步到 GitHub" @click="syncFromHeader">同步</button>
+          <button type="button" class="archive-new archive-hide-md" :disabled="busy" @click="importing = true">导入</button>
           <button type="button" class="archive-new" :disabled="busy" @click="openNewNote">＋ 新建笔记</button>
+          <div class="archive-overflow-wrap">
+            <button type="button" class="archive-new archive-overflow-btn" :aria-expanded="headerMenuOpen" aria-label="更多操作" title="更多操作" @click="headerMenuOpen = !headerMenuOpen">⋯</button>
+            <div v-if="headerMenuOpen" class="archive-overflow-menu" role="menu" @click="headerMenuOpen = false">
+              <button type="button" role="menuitem" :disabled="busy" @click="refresh">从 GitHub 恢复</button>
+              <button type="button" role="menuitem" :disabled="busy" @click="syncFromHeader">同步到 GitHub</button>
+              <button type="button" role="menuitem" :disabled="busy" @click="importing = true">导入笔记与文档</button>
+              <button type="button" role="menuitem" @click="themePickerRef?.show()">主题与自定义配色</button>
+              <button type="button" role="menuitem" @click="settingsModalRef?.show()">常规设置</button>
+            </div>
+          </div>
           <div v-if="isDesktop" class="window-controls" aria-label="窗口控制">
-            <button type="button" aria-label="最小化窗口" title="最小化" @click="windowCommand('window.minimize')">&#x2212;</button>
-            <button type="button" aria-label="最大化或还原窗口" title="最大化或还原" @click="windowCommand('window.maximize')">&#x25A1;</button>
-            <button type="button" class="window-close" aria-label="关闭窗口" title="关闭" @click="windowCommand('window.close')">&#x00D7;</button>
+            <button type="button" class="window-btn" aria-label="最小化窗口" title="最小化" @click="windowCommand('window.minimize')">
+              <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+            </button>
+            <button type="button" class="window-btn" aria-label="最大化或还原窗口" title="最大化或还原" @click="windowCommand('window.maximize')">
+              <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><rect x="2.2" y="2.2" width="7.6" height="7.6" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.35"/></svg>
+            </button>
+            <button type="button" class="window-btn window-close" aria-label="关闭窗口" title="关闭" @click="windowCommand('window.close')">
+              <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><line x1="2.6" y1="2.6" x2="9.4" y2="9.4" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"/><line x1="9.4" y1="2.6" x2="2.6" y2="9.4" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"/></svg>
+            </button>
           </div>
         </div>
       </div>
@@ -3294,6 +3544,11 @@ async function openSearchResult(chapter: Chapter) {
         <p>支持导入 Markdown（.md）、纯文本（.txt）及只读外部文档（PDF、Word .doc/.docx、PPT .ppt/.pptx、Excel .xls/.xlsx、CSV 等）；文件夹内引用的图片会一起导入。也可以直接拖入窗口。</p>
         <p>提示：仅 <strong>.md</strong> 与 <strong>.txt</strong> 支持在纸间内编辑，其他格式导入后仅支持只读预览或用系统默认程序打开。</p>
         <p>{{ selectedBook && selectedBook.kind !== 'page' ? '文件将导入当前笔记本的章节。' : '单个文件将作为独立书页，放入当前书柜。' }}</p>
+        <fieldset v-if="!selectedBook || selectedBook.kind === 'page'" class="note-kind import-folder-mode">
+          <legend>导入文件夹方式</legend>
+          <label><input v-model="folderImportMode" type="radio" value="book"> 作为书本导入 <small>最外层为笔记本，子文件夹按“章 / 话”折叠</small></label>
+          <label><input v-model="folderImportMode" type="radio" value="cabinet"> 作为书柜导入 <small>最外层为书柜，二层为笔记本，三层按“章 / 话”折叠</small></label>
+        </fieldset>
         <p v-if="selectedChapter && selectedChapterIsMarkdown">如果原笔记中的图片位于其他文件夹，可选择图片文件夹补齐当前笔记。</p>
         <p v-if="error" class="feedback error" role="alert">{{ error }}</p>
         <div class="archive-dialog-actions">
@@ -3465,7 +3720,7 @@ async function openSearchResult(chapter: Chapter) {
         </div>
       </div>
     </div>
-    <section v-show="!selectedBook && (!selectedChapter || view !== 'edit')" class="intro" aria-labelledby="desk-title">
+    <section v-show="!selectedBook && !selectedChapter" class="intro" aria-labelledby="desk-title">
       <div class="intro-copy">
         <p v-if="!chosenCabinet" class="archive-kicker">LEVEL 01 · ARCHITECTURAL BOOKCASES</p>
         <nav v-if="chosenCabinet && !selectedBook" class="crumbs"><button type="button" @click="openCabinet()">← 返回书柜</button></nav>
@@ -3487,7 +3742,7 @@ async function openSearchResult(chapter: Chapter) {
       </div>
     </section>
 
-    <section v-show="creatingBook || (selectedBook?.kind !== 'page' && (!selectedChapter || view !== 'edit'))" id="bookshelf" class="library" aria-label="笔记本与章节">
+    <section v-show="creatingBook || (selectedBook?.kind !== 'page' && !selectedChapter)" id="bookshelf" class="library" aria-label="笔记本与章节">
       <div class="tools archive-mobile-tools">
         <label class="search">
           <span class="lens" aria-hidden="true"></span><span class="sr-only">搜索笔记</span>
@@ -3679,14 +3934,15 @@ async function openSearchResult(chapter: Chapter) {
       <div class="writing-top">
         <div>
           <div class="writing-nav-links">
-            <button v-if="view === 'edit' || selectedBook?.kind === 'page'" class="back-to-chapters" type="button" @click="backToChapters">{{ selectedBook?.kind === 'page' ? '← 返回书架' : '← 返回章节目录' }}</button>
+            <button class="back-to-chapters" type="button" @click="backToChapters">{{ selectedBook?.kind === 'page' ? '← 返回书架' : '← 返回章节目录' }}</button>
             <button v-if="linkHistory.length" class="back-to-chapters link-history-back" type="button" @click="goBackLinkHistory">↩ 返回上一篇：{{ linkHistory[linkHistory.length - 1].title }}</button>
           </div>
           <p>{{ selectedBook?.title }}</p>
           <div class="writing-title-row">
-            <h2 id="writing-title" class="paper-renameable" title="双击修改文件名" @dblclick.stop.prevent="beginChapterRename(selectedChapter)">{{ selectedChapter.title }}</h2>
+            <h2 id="writing-title" class="paper-renameable" title="双击修改文件名" @dblclick.stop.prevent="beginChapterRename(selectedChapter)">{{ selectedChapterDisplay?.primaryTitle || selectedChapter.title }}</h2>
             <span v-if="!selectedChapterIsMarkdown" class="paper-ext-pill">{{ formatBadgeLabel(selectedChapter.ext) }}</span>
           </div>
+          <p v-if="selectedChapterDisplay?.summaryTitle" class="writing-summary-subtitle">{{ selectedChapterDisplay.summaryTitle }}</p>
           <p>
             {{ !selectedChapter.sha ? '本地文档，尚未同步' : dirty ? '本机有未同步的修改' : 'GitHub 已收录此版本' }}
             <template v-if="selectedChapterEditable"> · {{ currentStats.words }} 词 · 约 {{ currentStats.readingMinutes }} 分钟阅读</template>
@@ -3709,12 +3965,23 @@ async function openSearchResult(chapter: Chapter) {
               <button type="button" role="menuitem" @click="printCurrentDocument">打印 / 另存为 PDF</button>
             </div>
           </details>
-          <div v-if="selectedChapterEditable" class="view-actions">
+          <div v-if="selectedChapterEditable && selectedChapterIsMarkdown" class="view-actions">
+            <button :class="{ chosen: view === 'read' }" :aria-pressed="view === 'read'" @click="selectEditorMode('read')">阅读</button>
+            <button :class="{ chosen: view === 'edit' && editorDisplayMode === 'visual' }" :aria-pressed="view === 'edit' && editorDisplayMode === 'visual'" @click="selectEditorMode('visual')">所见即写</button>
+            <button :class="{ chosen: view === 'edit' && editorDisplayMode === 'source' }" :aria-pressed="view === 'edit' && editorDisplayMode === 'source'" @click="selectEditorMode('source')">源代码</button>
+            <button :class="{ chosen: view === 'edit' && editorDisplayMode === 'split' }" :aria-pressed="view === 'edit' && editorDisplayMode === 'split'" title="左侧源代码，右侧实时渲染，滚轮同步对齐" @click="selectEditorMode('split')">双栏对照</button>
+          </div>
+          <div v-else-if="selectedChapterEditable" class="view-actions">
             <button :class="{ chosen: view === 'read' }" :aria-pressed="view === 'read'" @click="view = 'read'">阅读</button>
             <button :class="{ chosen: view === 'edit' }" :aria-pressed="view === 'edit'" @click="view = 'edit'">编辑</button>
           </div>
           <span v-else class="paper-readonly-pill">只读文件 · 不支持编辑</span>
         </div>
+      </div>
+      <div v-if="unresolvedLocalImageCount > 0" class="missing-images-banner" role="status">
+        <span>检测到 {{ unresolvedLocalImageCount }} 处本地图片尚未随文件导入：</span>
+        <button type="button" class="archive-new" :disabled="busy" @click="repairImageFolderInput?.click()">选择图片文件夹补齐</button>
+        <button v-if="isDesktop" type="button" class="archive-new" :disabled="busy" @click="repairImagesFromOriginalPaths">选择原笔记自动补齐</button>
       </div>
       <p v-if="imageWarning" class="feedback" role="status">{{ imageWarning }}</p>
       <div v-if="view === 'read' || !selectedChapterEditable" ref="readingPaper" class="paper">
@@ -3762,17 +4029,18 @@ async function openSearchResult(chapter: Chapter) {
           <div v-if="!selectedChapterIsMarkdown || editorSidebarTab === 'chapters'" class="reference-sidebar-list">
             <button v-for="chapter in chapters" :key="chapter.id" type="button" class="reference-sidebar-row"
               :class="{ active: selectedChapter.id === chapter.id }" :disabled="busy"
-              :aria-label="chapter.title" :aria-current="selectedChapter.id === chapter.id ? 'page' : undefined" :title="chapter.title"
+              :aria-label="displayChapterItem(chapter).primaryTitle" :aria-current="selectedChapter.id === chapter.id ? 'page' : undefined" :title="displayChapterItem(chapter).summaryTitle || displayChapterItem(chapter).primaryTitle"
               @click="openChapter(chapter); view = isEditableExt(chapter.ext) ? 'edit' : 'read'">
-              {{ chapter.title }}<template v-if="!isMarkdownExt(chapter.ext)"> [{{ formatBadgeLabel(chapter.ext) }}]</template>
+              {{ displayChapterItem(chapter).primaryTitle }}<template v-if="!isMarkdownExt(chapter.ext)"> [{{ formatBadgeLabel(chapter.ext) }}]</template>
             </button>
           </div>
           <OutlineTree v-else :headings="currentOutline" :source="content" :disabled="busy" @jump="goToOutlineHeading" @change="changeOutline" @error="error = $event" />
         </aside>
         <div class="paper editor">
           <MarkdownEditor v-if="selectedChapterIsMarkdown" ref="markdownEditor" v-model="content" :readonly="busy"
+            :show-read-option="true" :display-mode="editorDisplayMode"
             :attachment-context="chapterKey(selectedChapter)" :image-urls="imageUrls" :save-pasted-images="savePastedImages"
-            :on-paste-status="reportImagePasteStatus" @navigate-link="handleMarkdownLink" />
+            :on-paste-status="reportImagePasteStatus" @update:display-mode="selectEditorMode" @navigate-link="handleMarkdownLink" @toggle-task="toggleReadTask" />
           <PlainTextEditor v-else v-model="content" :readonly="busy" />
           <div class="editor-footer">
             <span>{{ content.length }} 字符<span v-if="isHosted && connected" aria-live="polite"> · {{ autoStatus }}</span></span>
@@ -3792,24 +4060,32 @@ async function openSearchResult(chapter: Chapter) {
         <pre>{{ remoteVersion.content }}</pre>
         <button class="text-button" @click="useRemoteBase">已完成合并，使用这个版本作为基准</button>
       </div>
+      <button
+        v-if="showBackToTop"
+        type="button"
+        class="back-to-top-fab"
+        aria-label="回到顶部"
+        title="回到文档顶部"
+        @click="scrollToTop"
+      >↑ 回到顶部</button>
     </section>
 
     <details id="connection" class="connection-details">
-      <summary><span class="connection-label">GitHub 同步设置</span><span class="connection-meta" aria-hidden="true">GITHUB · SYNC</span></summary>
+      <summary><span class="connection-label">Git 云同步设置（GitHub / Gitee / GitLab / GitCode）</span><span class="connection-meta" aria-hidden="true">GIT · SYNC</span></summary>
       <div class="connection">
       <div>
-        <p>填写你自己的 GitHub 仓库并连接令牌。{{ isHosted ? '连接后可选择自动保存；已有本机草稿需手动选择同步。' : '勾选笔记后点击同步，将本机改动提交到所选仓库。' }}</p>
-        <p v-if="repository">当前仓库：<a :href="`https://github.com/${repository}`" target="_blank" rel="noopener noreferrer">{{ repository }}</a></p>
+        <p>支持连接 <strong>GitHub</strong>、<strong>Gitee（码云）</strong>、<strong>GitLab</strong> 或 <strong>GitCode</strong> 仓库。直接粘贴 HTTPS 仓库地址（如 <code>https://gitee.com/用户名/仓库名</code>）或填写 <code>用户名/仓库名</code>（默认 GitHub）。{{ isHosted ? '连接后可选择自动保存；已有本机草稿需手动选择同步。' : '勾选笔记后点击同步，将本机改动提交到所选仓库。' }}</p>
+        <p v-if="repository">当前仓库（{{ parseRepository(repository).providerLabel }}）：<a :href="parseRepository(repository).webUrl" target="_blank" rel="noopener noreferrer">{{ parseRepository(repository).slug }}</a></p>
         <p>公开仓库的内容任何人都可以查看；请按需要选择仓库的可见性。</p>
       </div>
       <div class="connection-form">
         <form v-if="!connected || changingRepository" @submit.prevent="connect">
-          <label for="github-repository">GitHub 仓库</label>
-          <input id="github-repository" v-model="repositoryInput" class="repository-input" type="text" autocomplete="off" placeholder="用户名/仓库名，或 GitHub 仓库地址" :disabled="tokenLoading || busy" required>
-          <label for="github-token">此仓库的精细访问令牌</label>
+          <label for="github-repository">Git 仓库地址</label>
+          <input id="github-repository" v-model="repositoryInput" class="repository-input" type="text" autocomplete="off" placeholder="https://gitee.com/用户名/仓库名 或 用户名/仓库名" :disabled="tokenLoading || busy" required>
+          <label for="github-token">此仓库的访问令牌（Personal Access Token）</label>
           <div class="token-row">
-            <input id="github-token" v-model="tokenInput" type="password" autocomplete="off" placeholder="GitHub 访问令牌" :disabled="tokenLoading" required>
-            <button class="primary-button" :disabled="busy || tokenLoading">连接 GitHub</button>
+            <input id="github-token" v-model="tokenInput" type="password" autocomplete="off" placeholder="GitHub / Gitee / GitLab 私人令牌" :disabled="tokenLoading" required>
+            <button class="primary-button" :disabled="busy || tokenLoading">连接仓库</button>
           </div>
           <button type="button" class="text-button" :disabled="busy || tokenLoading" @click="importLegacyCredential">使用旧版已保存令牌</button>
           <button v-if="connected && changingRepository" type="button" class="text-button" :disabled="busy" @click="changingRepository = false; repositoryInput = repository; tokenInput = ''">取消切换</button>

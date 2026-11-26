@@ -1,12 +1,12 @@
 /** GitHub-backed notebook storage. Credentials live only in this store instance. */
 import { defaultCatalog, parseCatalog, serializeCatalog, type CabinetCatalog, type CatalogVersion } from './cabinetStore'
-import { normalizeRepository } from './repository'
+import { normalizeRepository, parseRepository, type GitProvider } from './repository'
 import { readNotebookDescription, writeNotebookDescription } from './notebookDescription'
 import { readNotebookChapterOrder, writeNotebookChapterOrder } from './notebookChapterOrder'
 import { extractMarkdownTitle } from './notebookTitle'
 import { MAX_ATTACHMENT_BYTES, validateAttachment, validateAttachmentPath, type NoteAttachment } from './attachmentStore'
 import { ALL_SUPPORTED_IMPORT_EXTENSIONS, BINARY_DOCUMENT_EXTENSIONS, MAX_GITHUB_DOCUMENT_BYTES, normalizeFileExt, type StoredDocumentFile } from './documentFiles'
-export { normalizeRepository } from './repository'
+export { normalizeRepository, parseRepository } from './repository'
 export type { CabinetCatalog, CatalogVersion } from './cabinetStore'
 export type Notebook = { id: string; title: string; sha: string; description?: string; indexContent?: string; chapterOrder?: string[] }
 export type Chapter = { bookId: string; id: string; title: string; content: string; sha: string; ext?: string; filePath?: string; fileName?: string; fileSize?: number; binaryBytes?: Uint8Array }
@@ -162,72 +162,175 @@ function decode(file: GitHubFile): string {
 }
 
 export function createNotebookStore(repository?: string | null) {
-  const canonical = repository ? normalizeRepository(repository) : ''
-  const repoPath = canonical.split('/').map(encodeURIComponent).join('/')
-  const repoApi = canonical ? `https://api.github.com/repos/${repoPath}` : ''
-  const api = repoApi ? `${repoApi}/contents/docs` : ''
+  const parsedRepo = repository ? parseRepository(repository) : null
+  const provider: GitProvider = parsedRepo?.provider || 'github'
+  const providerLabel = parsedRepo?.providerLabel || 'GitHub'
+  const repoPath = parsedRepo ? `${encodeURIComponent(parsedRepo.owner)}/${encodeURIComponent(parsedRepo.repo)}` : ''
+  const gitlabProject = parsedRepo ? encodeURIComponent(`${parsedRepo.owner}/${parsedRepo.repo}`) : ''
+  const repoApi = !parsedRepo ? ''
+    : provider === 'gitee' ? `https://gitee.com/api/v5/repos/${repoPath}`
+    : provider === 'gitcode' ? `https://api.gitcode.com/api/v5/repos/${repoPath}`
+    : provider === 'gitlab' ? `https://gitlab.com/api/v4/projects/${gitlabProject}`
+    : `https://api.github.com/repos/${repoPath}`
+  const api = repoApi ? (provider === 'gitlab' ? `${repoApi}/repository` : `${repoApi}/contents/docs`) : ''
   const gitApi = repoApi ? `${repoApi}/git` : ''
   let token = ''
+  let activeBranch = 'main'
+
+  function authHeaders(withJson = false): Record<string, string> {
+    if (provider === 'gitlab') {
+      return {
+        Accept: 'application/json',
+        ...(token ? { 'PRIVATE-TOKEN': token } : {}),
+        ...(withJson ? { 'Content-Type': 'application/json' } : {})
+      }
+    }
+    if (provider === 'gitee' || provider === 'gitcode') {
+      return {
+        Accept: 'application/json',
+        ...(token ? { Authorization: provider === 'gitee' ? `token ${token}` : `Bearer ${token}` } : {}),
+        ...(withJson ? { 'Content-Type': 'application/json' } : {})
+      }
+    }
+    return {
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(withJson ? { 'Content-Type': 'application/json' } : {})
+    }
+  }
 
   async function request(path: string, options: { allowMissing?: boolean } = {}): Promise<unknown> {
-    if (!api) throw new NotebookStoreError('invalid', '请先设置 GitHub 仓库地址。')
+    if (!api) throw new NotebookStoreError('invalid', '请先设置 Git 仓库地址。')
     let response: Response
+    if (provider === 'gitlab') {
+      const fullPath = path ? `docs/${path}` : 'docs'
+      const url = options.allowMissing || !path.includes('.')
+        ? `${api}/tree?path=${encodeURIComponent(fullPath)}&ref=${encodeURIComponent(activeBranch)}&per_page=100`
+        : `${api}/files/${encodeURIComponent(fullPath)}?ref=${encodeURIComponent(activeBranch)}`
+      try {
+        response = await fetch(url, { headers: authHeaders(), cache: 'no-store' })
+      } catch {
+        throw new NotebookStoreError('network', `无法连接 ${providerLabel}，请检查网络后重试。`)
+      }
+      if (response.status === 404 && options.allowMissing) return null
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) throw new NotebookStoreError('auth', `${providerLabel} 拒绝访问。请检查令牌权限或稍后重试。`)
+        if (response.status === 404) throw new NotebookStoreError('not-found', '文件不存在或无权访问。')
+        throw new NotebookStoreError('github', `${providerLabel} 请求失败（HTTP ${response.status}）。`)
+      }
+      const data = await response.json() as unknown
+      if (Array.isArray(data)) {
+        return data.map((item: { type?: string; name?: string; path?: string; id?: string }) => ({
+          type: item.type === 'tree' ? 'dir' : 'file',
+          name: item.name || '',
+          path: item.path || '',
+          sha: item.id || ''
+        }))
+      }
+      const fileObj = data as { file_name?: string; file_path?: string; blob_id?: string; encoding?: string; content?: string }
+      return {
+        type: 'file',
+        name: fileObj.file_name || '',
+        path: fileObj.file_path || fullPath,
+        sha: fileObj.blob_id || '',
+        encoding: fileObj.encoding || 'base64',
+        content: fileObj.content || ''
+      }
+    }
     try {
-      response = await fetch(`${api}/${path.split('/').map(encodeURIComponent).join('/')}?ref=main`, {
-        headers: {
-          Accept: 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-          ...(token ? { Authorization: `Bearer ${token}` } : {})
-        },
+      const encoded = path.split('/').map(encodeURIComponent).join('/')
+      response = await fetch(`${api}/${encoded}?ref=${encodeURIComponent(activeBranch)}`, {
+        headers: authHeaders(),
         cache: 'no-store'
       })
     } catch {
-      throw new NotebookStoreError('network', '无法连接 GitHub，请检查网络后重试。')
+      throw new NotebookStoreError('network', `无法连接 ${providerLabel}，请检查网络后重试。`)
     }
     if (response.status === 404 && options.allowMissing) return null
     if (!response.ok) {
+      if (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0') {
+        throw new NotebookStoreError('auth', `${providerLabel} 匿名访问已达每小时上限（60 次），请稍后重试或连接个人令牌。`)
+      }
       if (response.status === 401 || response.status === 403) {
-        throw new NotebookStoreError('auth', 'GitHub 拒绝访问。请检查令牌权限或稍后重试。')
+        throw new NotebookStoreError('auth', `${providerLabel} 拒绝访问。请检查令牌权限或稍后重试。`)
       }
       if (response.status === 404) throw new NotebookStoreError('not-found', '文件不存在或无权访问。')
-      throw new NotebookStoreError('github', `GitHub 请求失败（HTTP ${response.status}）。`)
+      throw new NotebookStoreError('github', `${providerLabel} 请求失败（HTTP ${response.status}）。`)
     }
-    try { return await response.json() } catch {
-      throw new NotebookStoreError('github', 'GitHub 返回了无法识别的数据。')
+    try {
+      const parsed = await response.json()
+      // Gitee returns [] when a requested file path does not exist.
+      if ((provider === 'gitee' || provider === 'gitcode') && Array.isArray(parsed) && parsed.length === 0 && options.allowMissing) {
+        return null
+      }
+      return parsed
+    } catch {
+      throw new NotebookStoreError('github', `${providerLabel} 返回了无法识别的数据。`)
     }
   }
 
   async function gitRequest(path: string, method: 'GET' | 'POST' | 'PATCH' = 'GET', body?: object): Promise<unknown> {
-    if (!gitApi) throw new NotebookStoreError('invalid', '请先设置 GitHub 仓库地址。')
+    if (!gitApi) throw new NotebookStoreError('invalid', '请先设置 Git 仓库地址。')
     let response: Response
     try {
       response = await fetch(`${gitApi}/${path}`, {
         method,
-        headers: {
-          Accept: 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          ...(body ? { 'Content-Type': 'application/json' } : {})
-        },
+        headers: authHeaders(!!body),
         ...(body ? { body: JSON.stringify(body) } : {}),
         cache: 'no-store'
       })
     } catch {
       throw new NotebookStoreError('network', method === 'GET'
-        ? '无法连接 GitHub，请检查网络后重试。'
-        : '无法连接 GitHub。提交结果可能未知，请保留草稿并用相同内容重试。')
+        ? `无法连接 ${providerLabel}，请检查网络后重试。`
+        : `无法连接 ${providerLabel}。提交结果可能未知，请保留草稿并用相同内容重试。`)
     }
     if (!response.ok) {
-      if (response.status === 401 || response.status === 403) throw new NotebookStoreError('auth', 'GitHub 拒绝访问。请检查令牌权限或稍后重试。')
+      if (response.status === 401 || response.status === 403) throw new NotebookStoreError('auth', `${providerLabel} 拒绝访问。请检查令牌权限或稍后重试。`)
       if (method === 'PATCH' && (response.status === 409 || response.status === 422)) {
         throw new NotebookStoreError('conflict', '同步期间远程分支发生变化，请保留草稿并重新检查后重试。')
       }
-      if (response.status === 404) throw new NotebookStoreError('not-found', '仓库或 main 分支不存在，或无权访问。')
-      throw new NotebookStoreError('github', `GitHub 请求失败（HTTP ${response.status}）。请保留草稿后重试。`)
+      if (response.status === 404) throw new NotebookStoreError('not-found', `仓库或 ${activeBranch} 分支不存在，或无权访问。`)
+      throw new NotebookStoreError('github', `${providerLabel} 请求失败（HTTP ${response.status}）。请保留草稿后重试。`)
     }
     try { return await response.json() } catch {
-      throw new NotebookStoreError('github', 'GitHub 返回了无法识别的数据；请保留草稿并用相同内容重试。')
+      throw new NotebookStoreError('github', `${providerLabel} 返回了无法识别的数据；请保留草稿并用相同内容重试。`)
     }
+  }
+
+  async function readBranchHead(): Promise<string> {
+    if (provider === 'github') {
+      const ref = await gitRequest(`ref/heads/${encodeURIComponent(activeBranch)}`) as { object?: { sha?: string } }
+      if (!ref.object?.sha || !/^[a-f0-9]{40}$/.test(ref.object.sha)) throw new NotebookStoreError('github', 'GitHub 返回的分支版本无效。')
+      return ref.object.sha
+    }
+    const url = provider === 'gitlab'
+      ? `${repoApi}/repository/branches/${encodeURIComponent(activeBranch)}`
+      : `${repoApi}/branches/${encodeURIComponent(activeBranch)}`
+    let res: Response
+    try { res = await fetch(url, { headers: authHeaders(), cache: 'no-store' }) }
+    catch { throw new NotebookStoreError('network', `无法连接 ${providerLabel}，请检查网络后重试。`) }
+    if (res.status === 404 && activeBranch === 'main') {
+      // Many Gitee / GitLab repos default to master.
+      const fallbackUrl = provider === 'gitlab'
+        ? `${repoApi}/repository/branches/master`
+        : `${repoApi}/branches/master`
+      const fallbackRes = await fetch(fallbackUrl, { headers: authHeaders(), cache: 'no-store' })
+      if (fallbackRes.ok) {
+        activeBranch = 'master'
+        const b = await fallbackRes.json() as { commit?: { sha?: string; id?: string } }
+        const sha = b?.commit?.sha || b?.commit?.id || ''
+        if (/^[a-f0-9]{40}$/.test(sha)) return sha
+      }
+    }
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) throw new NotebookStoreError('auth', `${providerLabel} 拒绝访问，请检查令牌权限。`)
+      throw new NotebookStoreError('not-found', `仓库或 ${activeBranch} 分支不存在，或无权访问。`)
+    }
+    const data = await res.json() as { commit?: { sha?: string; id?: string } }
+    const sha = data?.commit?.sha || data?.commit?.id || ''
+    if (!/^[a-f0-9]{40}$/.test(sha)) throw new NotebookStoreError('github', `${providerLabel} 返回的分支版本无效。`)
+    return sha
   }
 
   async function syncBatch(newBooks: Notebook[], chapters: Chapter[], catalogChange?: CatalogVersion, pages: Page[] = [], attachments: NoteAttachment[] = [], documents: StoredDocumentFile[] = []): Promise<BatchResult> {
@@ -303,6 +406,84 @@ export function createNotebookStore(repository?: string | null) {
       // Images use immutable random names. Reusing a name for different bytes
       // is always a conflict, even if a stale local cache carries a SHA.
       changes.push({ path: attachment.path, bytes: attachment.bytes, baseline: '', desired: await blobBytesSha(attachment.bytes) })
+    }
+
+    // Non-GitHub providers (Gitee, GitLab, GitCode) commit via their native Contents / Commits APIs.
+    if (provider !== 'github') {
+      const parent = await readBranchHead()
+      let head = parent
+      if (provider === 'gitlab') {
+        const actions = changes.map(change => {
+          const base64 = change.bytes ? encodeBytes(change.bytes) : encodeBytes(new TextEncoder().encode(change.content || ''))
+          return {
+            action: change.baseline ? 'update' : 'create',
+            file_path: change.path,
+            content: base64,
+            encoding: 'base64'
+          }
+        })
+        const res = await fetch(`${repoApi}/repository/commits`, {
+          method: 'POST',
+          headers: authHeaders(true),
+          body: JSON.stringify({
+            branch: activeBranch,
+            commit_message: `Sync ${newBooks.length} notebook(s), ${chapters.length} chapter(s), ${pages.length} page(s)`,
+            actions
+          }),
+          cache: 'no-store'
+        })
+        if (!res.ok) {
+          if (res.status === 401 || res.status === 403) throw new NotebookStoreError('auth', `${providerLabel} 拒绝写入，请检查令牌权限。`)
+          throw new NotebookStoreError('github', `${providerLabel} 提交失败（HTTP ${res.status}）。`)
+        }
+        const commitData = await res.json() as { id?: string }
+        head = commitData.id || (await readBranchHead())
+      } else {
+        // Gitee / GitCode REST API v5: create (POST) or update (PUT with sha) per file.
+        for (const change of changes) {
+          const relPath = change.path.split('/').map(encodeURIComponent).join('/')
+          const contentUrl = `${repoApi}/contents/${relPath}`
+          const base64 = change.bytes ? encodeBytes(change.bytes) : encodeBytes(new TextEncoder().encode(change.content || ''))
+          let existingSha = change.baseline
+          if (!existingSha) {
+            const probe = await fetch(`${contentUrl}?ref=${encodeURIComponent(activeBranch)}`, { headers: authHeaders(), cache: 'no-store' })
+            if (probe.ok) {
+              const info = await probe.json() as { sha?: string }
+              if (info && !Array.isArray(info) && info.sha) existingSha = info.sha
+            }
+          }
+          const method = existingSha ? 'PUT' : 'POST'
+          const bodyPayload: Record<string, string> = {
+            content: base64,
+            message: `Sync ${change.path}`,
+            branch: activeBranch,
+            ...(existingSha ? { sha: existingSha } : {})
+          }
+          const res = await fetch(contentUrl, {
+            method,
+            headers: authHeaders(true),
+            body: JSON.stringify(bodyPayload),
+            cache: 'no-store'
+          })
+          if (!res.ok) {
+            if (res.status === 401 || res.status === 403) throw new NotebookStoreError('auth', `${providerLabel} 拒绝写入，请检查令牌权限。`)
+            if (res.status === 409) throw new NotebookStoreError('conflict', `远程文件已发生变化：${change.path}。`)
+            throw new NotebookStoreError('github', `${providerLabel} 提交失败（HTTP ${res.status}）。`)
+          }
+          const resultData = await res.json() as { commit?: { sha?: string } }
+          if (resultData?.commit?.sha) head = resultData.commit.sha
+        }
+        if (head === parent) head = await readBranchHead()
+      }
+      const nextShaByPath = new Map(changes.map(c => [c.path, c.desired]))
+      return {
+        books: newBooks.map(book => ({ ...book, sha: nextShaByPath.get(`docs/${ROOT}/${book.id}/index.md`) || book.sha })),
+        chapters: chapters.map(ch => ({ ...ch, sha: nextShaByPath.get(`docs/${ROOT}/${ch.bookId}/${ch.id}.${itemExt(ch)}`) || ch.sha })),
+        pages: pages.map(p => ({ ...p, sha: nextShaByPath.get(`docs/pages/${p.id}.${itemExt(p)}`) || p.sha })),
+        ...(catalog ? { catalog: { catalog, sha: nextShaByPath.get('docs/cabinets.json') || '' } } : {}),
+        parent,
+        head
+      }
     }
 
     const ref = await gitRequest('ref/heads/main') as { object?: { sha?: string } }
@@ -453,6 +634,39 @@ export function createNotebookStore(repository?: string | null) {
       addExpected(`docs/${ROOT}/${bookId}/${chapterId}.${itemExt(chapter)}`, chapter.sha)
     }
     for (const page of pages) addExpected(`docs/pages/${checkPageId(page.id)}.${itemExt(page)}`, page.sha)
+
+    if (provider !== 'github') {
+      const parent = await readBranchHead()
+      let head = parent
+      if (provider === 'gitlab') {
+        const actions = [...expected.keys()].map(file_path => ({ action: 'delete', file_path }))
+        const res = await fetch(`${repoApi}/repository/commits`, {
+          method: 'POST',
+          headers: authHeaders(true),
+          body: JSON.stringify({
+            branch: activeBranch,
+            commit_message: `Delete ${books.length} notebook(s), ${chapters.length} chapter(s), ${pages.length} page(s)`,
+            actions
+          }),
+          cache: 'no-store'
+        })
+        if (!res.ok) throw new NotebookStoreError('github', `${providerLabel} 删除失败（HTTP ${res.status}）。`)
+        const data = await res.json() as { id?: string }
+        head = data.id || (await readBranchHead())
+      } else {
+        for (const [path, sha] of expected) {
+          const relPath = path.split('/').map(encodeURIComponent).join('/')
+          const res = await fetch(`${repoApi}/contents/${relPath}?sha=${encodeURIComponent(sha)}&message=${encodeURIComponent(`Delete ${path}`)}&branch=${encodeURIComponent(activeBranch)}`, {
+            method: 'DELETE',
+            headers: authHeaders(true),
+            cache: 'no-store'
+          })
+          if (!res.ok) throw new NotebookStoreError('github', `${providerLabel} 删除失败（HTTP ${res.status}）。`)
+        }
+        head = await readBranchHead()
+      }
+      return { parent, head }
+    }
 
     const ref = await gitRequest('ref/heads/main') as { object?: { sha?: string } }
     const parent = requireSha(ref?.object?.sha || '')
@@ -626,24 +840,22 @@ export function createNotebookStore(repository?: string | null) {
     setToken(value: string): void { token = value.trim() },
     clearToken(): void { token = '' },
     async verifyRepository(): Promise<void> {
-      if (!repoApi) throw new NotebookStoreError('invalid', '请先设置 GitHub 仓库地址。')
+      if (!repoApi) throw new NotebookStoreError('invalid', '请先设置 Git 仓库地址。')
       let response: Response
       try {
-        response = await fetch(repoApi, { headers: {
-          Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28',
-          ...(token ? { Authorization: `Bearer ${token}` } : {})
-        }, cache: 'no-store' })
-      } catch { throw new NotebookStoreError('network', '无法连接 GitHub，请检查网络后重试。') }
+        response = await fetch(repoApi, { headers: authHeaders(), cache: 'no-store' })
+      } catch { throw new NotebookStoreError('network', `无法连接 ${providerLabel}，请检查网络后重试。`) }
       if (!response.ok) {
-        if (response.status === 401 || response.status === 403) throw new NotebookStoreError('auth', 'GitHub 拒绝访问，请检查令牌权限。')
+        if (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0') {
+          throw new NotebookStoreError('auth', `${providerLabel} 匿名访问已达每小时上限（60 次），请稍后重试或连接个人令牌。`)
+        }
+        if (response.status === 401 || response.status === 403) throw new NotebookStoreError('auth', `${providerLabel} 拒绝访问，请检查令牌权限。`)
         if (response.status === 404) throw new NotebookStoreError('not-found', '仓库不存在或无权访问，请检查仓库地址和令牌。')
-        throw new NotebookStoreError('github', `GitHub 请求失败（HTTP ${response.status}）。`)
+        throw new NotebookStoreError('github', `${providerLabel} 请求失败（HTTP ${response.status}）。`)
       }
     },
     async readHead(): Promise<string> {
-      const ref = await gitRequest('ref/heads/main') as { object?: { sha?: string } }
-      if (!ref.object?.sha || !/^[a-f0-9]{40}$/.test(ref.object.sha)) throw new NotebookStoreError('github', 'GitHub 返回的分支版本无效。')
-      return ref.object.sha
+      return readBranchHead()
     },
     syncBatch,
     readAttachment,

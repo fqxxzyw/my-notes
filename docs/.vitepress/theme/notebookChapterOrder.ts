@@ -38,6 +38,86 @@ export function chapterFolderPath(id: string): string {
   return decoded.slice(0, decoded.lastIndexOf('/'))
 }
 
+export interface ChapterDisplayInfo {
+  /** Whether the chapter was imported with an encoded filename/path (`c_<uuid>_<base64>`). */
+  isImported: boolean
+  /** Top-level folder inside the notebook (章), or empty string if flat. */
+  groupName: string
+  /** Extra subfolder path for 4+ level nesting (e.g. `sub/deep`), or empty string. */
+  nestedSubpath: string
+  /** Primary display title: filename (without ext) for imported files, else cleaned title. */
+  primaryTitle: string
+  /** Secondary summary line: cleaned H1 heading when different from primaryTitle. */
+  summaryTitle: string
+}
+
+/**
+ * Derive display hierarchy for a chapter:
+ * - Level 3 (1st subfolder inside notebook) -> collapsible group (`groupName`, 章)
+ * - Level 4+ (deeper subfolders) -> flattened inside that group as `子文件夹/文档名`
+ * - Imported files prioritize filename as `primaryTitle` and show the H1 heading as `summaryTitle`.
+ */
+export function chapterDisplayInfo(
+  chapter: { id: string; title: string },
+  cleanedTitle?: string
+): ChapterDisplayInfo {
+  const decoded = decodeEncodedChapterPath(chapter.id)
+  const effectiveTitle = (cleanedTitle ?? chapter.title).trim() || chapter.title
+  if (!decoded) {
+    return {
+      isImported: false,
+      groupName: '',
+      nestedSubpath: '',
+      primaryTitle: effectiveTitle,
+      summaryTitle: ''
+    }
+  }
+  const parts = decoded.split('/').filter(Boolean)
+  const rawFile = parts[parts.length - 1] || decoded
+  const fileStem = rawFile.replace(IMPORTED_EXT, '').trim() || rawFile
+  const groupName = parts.length >= 2 ? parts[0] : ''
+  const nestedSubpath = parts.length >= 3 ? parts.slice(1, -1).join('/') : ''
+  const primaryTitle = nestedSubpath ? `${nestedSubpath}/${fileStem}` : fileStem
+  const normPrimary = fileStem.toLowerCase().replace(/\s+/g, '')
+  const normHeading = effectiveTitle.toLowerCase().replace(/\s+/g, '')
+  const summaryTitle = effectiveTitle && normHeading !== normPrimary ? effectiveTitle : ''
+  return {
+    isImported: true,
+    groupName,
+    nestedSubpath,
+    primaryTitle,
+    summaryTitle
+  }
+}
+
+export interface ChapterDirectoryGroup<T> {
+  key: string
+  groupName: string
+  items: T[]
+}
+
+/**
+ * Group chapters into ordered directory sections:
+ * - Consecutive chapters sharing the same top-level folder (`groupName`) form a collapsible 章 group.
+ * - Flat chapters (no subfolder) appear directly without a folder wrapper.
+ */
+export function groupChaptersForDirectory<T extends { id: string; title: string }>(
+  chapters: readonly T[]
+): ChapterDirectoryGroup<T>[] {
+  const groups: ChapterDirectoryGroup<T>[] = []
+  for (const chapter of chapters) {
+    const info = chapterDisplayInfo(chapter)
+    const key = info.groupName ? `dir:${info.groupName}` : `flat:${chapter.id}`
+    const prev = groups[groups.length - 1]
+    if (info.groupName && prev && prev.key === key) {
+      prev.items.push(chapter)
+    } else {
+      groups.push({ key, groupName: info.groupName, items: [chapter] })
+    }
+  }
+  return groups
+}
+
 function compareTextRun(a: string, b: string): number {
   if (a === b) return 0
   if (zhCollator) {

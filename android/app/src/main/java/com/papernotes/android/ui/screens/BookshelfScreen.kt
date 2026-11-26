@@ -15,6 +15,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -59,10 +60,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -316,74 +320,91 @@ fun BookshelfScreen(
                         }
                     } else {
                         val hScroll = rememberScrollState()
-                        // Play tactile paper-spine sliding tick + micro-vibration & keep focused book synced while dragging!
-                        LaunchedEffect(hScroll, items.size) {
-                            val stepPx = with(density) { 82.dp.toPx() }.coerceAtLeast(40f)
-                            var lastBucket = (hScroll.value / stepPx).toInt()
-                            var atEdge = if (hScroll.value <= 2) -1 else 0
-                            snapshotFlow { Triple(hScroll.value, hScroll.maxValue, hScroll.isScrollInProgress) }
-                                .collect { (pos, maxVal, scrolling) ->
-                                    if (maxVal <= 2) return@collect
-                                    val bucket = (pos / stepPx).toInt()
-                                    if (bucket != lastBucket) {
-                                        lastBucket = bucket
-                                        ShelfSoundHaptics.playShelfTick(context, view)
-                                        if (scrolling && items.isNotEmpty()) {
-                                            val frac = pos.toFloat() / maxVal.toFloat()
-                                            val targetIdx = (frac * (items.size - 1)).toInt().coerceIn(0, items.lastIndex)
-                                            focusedId = items[targetIdx].id
+                        val itemCenters = remember(items.map { it.id }) { mutableStateMapOf<String, Float>() }
+                        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                            val viewportWidthPx = with(density) { maxWidth.toPx() }
+                            val sidePad = ((maxWidth - 96.dp) / 2f).coerceAtLeast(24.dp)
+
+                            // Auto-select the book closest to the horizontal center while scrolling + tactile ticks.
+                            LaunchedEffect(hScroll, items.size, viewportWidthPx) {
+                                val stepPx = with(density) { 64.dp.toPx() }.coerceAtLeast(32f)
+                                var lastBucket = (hScroll.value / stepPx).toInt()
+                                var atEdge = if (hScroll.value <= 2) -1 else 0
+                                snapshotFlow { Triple(hScroll.value, hScroll.maxValue, hScroll.isScrollInProgress) }
+                                    .collect { (pos, maxVal, _) ->
+                                        val bucket = (pos / stepPx).toInt()
+                                        if (bucket != lastBucket) {
+                                            lastBucket = bucket
+                                            ShelfSoundHaptics.playShelfTick(context, view)
+                                        }
+                                        if (items.isNotEmpty() && itemCenters.isNotEmpty()) {
+                                            val centerX = pos + viewportWidthPx / 2f
+                                            val nearest = items.minByOrNull { item ->
+                                                kotlin.math.abs((itemCenters[item.id] ?: Float.MAX_VALUE) - centerX)
+                                            }
+                                            if (nearest != null && nearest.id != focusedId) {
+                                                focusedId = nearest.id
+                                            }
+                                        }
+                                        if (maxVal > 2) {
+                                            if (pos <= 2 && atEdge != -1) {
+                                                atEdge = -1
+                                                ShelfSoundHaptics.playEdgeBump(context, view)
+                                            } else if (pos >= maxVal - 2 && atEdge != 1) {
+                                                atEdge = 1
+                                                ShelfSoundHaptics.playEdgeBump(context, view)
+                                            } else if (pos in 3 until (maxVal - 2)) {
+                                                atEdge = 0
+                                            }
                                         }
                                     }
-                                    if (pos <= 2 && atEdge != -1) {
-                                        atEdge = -1
-                                        ShelfSoundHaptics.playEdgeBump(context, view)
-                                    } else if (pos >= maxVal - 2 && atEdge != 1) {
-                                        atEdge = 1
-                                        ShelfSoundHaptics.playEdgeBump(context, view)
-                                    } else if (pos in 3 until (maxVal - 2)) {
-                                        atEdge = 0
+                            }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(hScroll)
+                                    .padding(start = sidePad, end = sidePad, top = 20.dp, bottom = 0.dp),
+                                verticalAlignment = Alignment.Bottom
+                            ) {
+                                items.forEachIndexed { idx, item ->
+                                    val isFocused = item.id == focusedId
+                                    val isSelected = item.id in selectedIds
+                                    val nextIsPage = items.getOrNull(idx + 1)?.isPage == true
+
+                                    Box(
+                                        modifier = Modifier.onGloballyPositioned { coords ->
+                                            itemCenters[item.id] = coords.positionInParent().x + coords.size.width / 2f
+                                        }
+                                    ) {
+                                        ShelfVolume3D(
+                                            index = idx,
+                                            item = item,
+                                            isFocused = isFocused,
+                                            manageMode = manageMode,
+                                            isSelected = isSelected,
+                                            touchesPage = item.isPage || nextIsPage,
+                                            onTap = {
+                                                ShelfSoundHaptics.playShelfTick(context, view)
+                                                if (manageMode) {
+                                                    selectedIds = if (isSelected) selectedIds - item.id else selectedIds + item.id
+                                                } else if (isFocused) {
+                                                    onOpenItem(item)
+                                                } else {
+                                                    focusedId = item.id
+                                                }
+                                            },
+                                            onLongPress = {
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                if (!manageMode) {
+                                                    manageMode = true
+                                                    selectedIds = setOf(item.id)
+                                                } else {
+                                                    selectedIds = if (isSelected) selectedIds - item.id else selectedIds + item.id
+                                                }
+                                            }
+                                        )
                                     }
                                 }
-                        }
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(hScroll)
-                                .padding(start = 24.dp, end = 96.dp, top = 20.dp, bottom = 0.dp),
-                            verticalAlignment = Alignment.Bottom
-                        ) {
-                            items.forEachIndexed { idx, item ->
-                                val isFocused = item.id == focusedId
-                                val isSelected = item.id in selectedIds
-                                val nextIsPage = items.getOrNull(idx + 1)?.isPage == true
-
-                                ShelfVolume3D(
-                                    index = idx,
-                                    item = item,
-                                    isFocused = isFocused,
-                                    manageMode = manageMode,
-                                    isSelected = isSelected,
-                                    touchesPage = item.isPage || nextIsPage,
-                                    onTap = {
-                                        ShelfSoundHaptics.playShelfTick(context, view)
-                                        if (manageMode) {
-                                            selectedIds = if (isSelected) selectedIds - item.id else selectedIds + item.id
-                                        } else if (isFocused) {
-                                            onOpenItem(item)
-                                        } else {
-                                            focusedId = item.id
-                                        }
-                                    },
-                                    onLongPress = {
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        if (!manageMode) {
-                                            manageMode = true
-                                            selectedIds = setOf(item.id)
-                                        } else {
-                                            selectedIds = if (isSelected) selectedIds - item.id else selectedIds + item.id
-                                        }
-                                    }
-                                )
                             }
                         }
 
@@ -676,20 +697,20 @@ private fun ShelfVolume3D(
         label = "bookFocus"
     )
 
-    // Uniform heights and restrained spine thickness; standalone pages are noticeably thinner folios
-    val baseH = 204f
-    val maxH = 224f
+    // Uniform heights and sleeker, thinner spine proportions on mobile
+    val baseH = 200f
+    val maxH = 220f
     val heightDp = (baseH + (maxH - baseH) * f).dp
 
     val spineW = if (item.isPage) {
-        (24f + 4f * f).dp
+        (16f + 3f * f).dp
     } else {
-        (46f + 8f * f).dp
+        (30f + 6f * f).dp
     }
 
-    val tiltDeg = 24f + 16f * f
+    val tiltDeg = 22f + 16f * f
     val rad = tiltDeg * PI / 180.0
-    val coverDepth = if (item.isPage) 128f else 112f
+    val coverDepth = if (item.isPage) 108f else 88f
     val projectedCoverW = (coverDepth * sin(rad)).toFloat().dp
     val topSlopeY = (12f + 3f * f).dp
 

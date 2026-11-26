@@ -1,27 +1,146 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import LiveMarkdown from './LiveMarkdown.vue'
+import ChapterMarkdown from './ChapterMarkdown.vue'
 import FindReplaceBar from './FindReplaceBar.vue'
+import MermaidVisualModal from './MermaidVisualModal.vue'
+import MathVisualModal from './MathVisualModal.vue'
 import { toggleInlineFormat } from './inlineFormatting.js'
 import { MERMAID_TEMPLATES } from './mermaidRenderer'
 import { applyHeadingLevel, toggleTyporaInline } from './typoraKeymap'
 import { computeDocumentStats } from './markdownStats'
+import { applyImageUrls } from './imageUrls'
+import { useAppSettings } from './appSettings'
+
+export type EditorDisplayMode = 'read' | 'visual' | 'source' | 'split'
 
 const props = defineProps<{
   modelValue: string
   readonly?: boolean
+  showReadOption?: boolean
+  displayMode?: EditorDisplayMode
   attachmentContext?: string
   imageUrls?: Readonly<Record<string, string>>
   savePastedImages?: (files: File[]) => Promise<string[]>
   onPasteStatus?: (message: string) => void
 }>()
-const emit = defineEmits<{ 'update:modelValue': [value: string]; 'navigate-link': [href: string] }>()
+const emit = defineEmits<{
+  'update:modelValue': [value: string]
+  'update:displayMode': [mode: EditorDisplayMode]
+  'navigate-link': [href: string]
+  'toggle-task': [index: number]
+}>()
 
 const editor = ref<InstanceType<typeof LiveMarkdown> | null>(null)
 const findBar = ref<InstanceType<typeof FindReplaceBar> | null>(null)
 const imageFileInput = ref<HTMLInputElement | null>(null)
-const mode = ref<'source' | 'visual'>('visual')
+const splitSourcePane = ref<HTMLElement | null>(null)
+const splitPreviewPane = ref<HTMLElement | null>(null)
+const { settings, update: updateSettings } = useAppSettings()
+
+const internalMode = ref<EditorDisplayMode>(props.displayMode || 'visual')
+const activeMode = computed<EditorDisplayMode>({
+  get: () => props.displayMode ?? internalMode.value,
+  set: next => {
+    internalMode.value = next
+    emit('update:displayMode', next)
+  }
+})
+const liveMode = computed<'source' | 'visual'>(() => (activeMode.value === 'visual' ? 'visual' : 'source'))
+const toolbarCollapsed = ref(settings.value.toolbarCollapsed)
+watch(() => settings.value.toolbarCollapsed, value => { toolbarCollapsed.value = value })
+
+function toggleToolbarCollapsed() {
+  toolbarCollapsed.value = !toolbarCollapsed.value
+  updateSettings({ toolbarCollapsed: toolbarCollapsed.value })
+}
+
+let scrollSyncLock: 'source' | 'preview' | null = null
+let scrollSyncFrame = 0
+function syncSplitScroll(origin: 'source' | 'preview') {
+  if (scrollSyncLock && scrollSyncLock !== origin) return
+  const fromEl = origin === 'source' ? splitSourcePane.value : splitPreviewPane.value
+  const toEl = origin === 'source' ? splitPreviewPane.value : splitSourcePane.value
+  if (!fromEl || !toEl) return
+  const maxFrom = Math.max(1, fromEl.scrollHeight - fromEl.clientHeight)
+  const maxTo = Math.max(0, toEl.scrollHeight - toEl.clientHeight)
+  const ratio = Math.max(0, Math.min(1, fromEl.scrollTop / maxFrom))
+  scrollSyncLock = origin
+  toEl.scrollTop = Math.round(ratio * maxTo)
+  cancelAnimationFrame(scrollSyncFrame)
+  scrollSyncFrame = requestAnimationFrame(() => { scrollSyncLock = null })
+}
+
+function hydrateSplitImages() {
+  if (activeMode.value !== 'split' || !splitPreviewPane.value || !props.imageUrls) return
+  applyImageUrls(splitPreviewPane.value, props.imageUrls)
+}
+watch([activeMode, () => props.modelValue, () => props.imageUrls], () => {
+  void nextTick(hydrateSplitImages)
+}, { flush: 'post' })
+
 const editorFallback = ref(false)
+const mermaidVisualModal = ref<null | { from: number; to: number; code: string; isNew: boolean }>(null)
+const mathVisualModal = ref<null | { from: number; to: number; tex: string; block: boolean; isNew: boolean }>(null)
+
+function openVisualMermaid(payload?: { from: number; to: number; code: string }) {
+  if (props.readonly) return
+  if (payload) {
+    mermaidVisualModal.value = { ...payload, isNew: false }
+    return
+  }
+  const field = editor.value
+  const range = field?.selectionRange() ?? { start: 0, end: 0 }
+  const selected = field?.currentText().slice(range.start, range.end).trim() || ''
+  const template = MERMAID_TEMPLATES.find(item => item.id === mermaidTemplateId.value) || MERMAID_TEMPLATES[0]
+  mermaidVisualModal.value = { from: range.start, to: range.end, code: selected || template.code, isNew: true }
+}
+
+function applyVisualMermaid(nextCode: string) {
+  const modal = mermaidVisualModal.value
+  const field = editor.value
+  mermaidVisualModal.value = null
+  if (!modal || !field || props.readonly) return
+  const source = field.currentText()
+  if (modal.isNew) {
+    const before = modal.from > 0 && source[modal.from - 1] !== '\n' ? '\n\n' : modal.from > 0 && source[modal.from - 2] !== '\n' ? '\n' : ''
+    const after = modal.to < source.length && source[modal.to] !== '\n' ? '\n\n' : '\n'
+    const snippet = `${before}\`\`\`mermaid\n${nextCode}\n\`\`\`${after}`
+    field.replace(modal.from, modal.to, snippet, modal.from + before.length, modal.from + snippet.length, true)
+  } else {
+    const snippet = `\`\`\`mermaid\n${nextCode}\n\`\`\``
+    field.replace(modal.from, modal.to, snippet, modal.from, modal.from + snippet.length, true)
+  }
+}
+
+function openVisualMath(payload?: { from: number; to: number; tex: string; block: boolean }) {
+  if (props.readonly) return
+  if (payload) {
+    mathVisualModal.value = { ...payload, isNew: false }
+    return
+  }
+  const field = editor.value
+  const range = field?.selectionRange() ?? { start: 0, end: 0 }
+  const selected = field?.currentText().slice(range.start, range.end).trim() || ''
+  mathVisualModal.value = { from: range.start, to: range.end, tex: selected, block: mathKind.value === 'block', isNew: true }
+}
+
+function applyVisualMath(result: { tex: string; block: boolean }) {
+  const modal = mathVisualModal.value
+  const field = editor.value
+  mathVisualModal.value = null
+  if (!modal || !field || props.readonly) return
+  const source = field.currentText()
+  if (result.block) {
+    const before = modal.isNew && modal.from > 0 && source[modal.from - 1] !== '\n' ? '\n\n' : ''
+    const after = modal.isNew && modal.to < source.length && source[modal.to] !== '\n' ? '\n\n' : ''
+    const snippet = `${before}$$\n${result.tex}\n$$${after}`
+    field.replace(modal.from, modal.to, snippet, modal.from + before.length, modal.from + snippet.length, true)
+  } else {
+    const snippet = `$${result.tex}$`
+    field.replace(modal.from, modal.to, snippet, modal.from, modal.from + snippet.length, true)
+  }
+}
 const codeLanguage = ref('')
 const mermaidTemplateId = ref(MERMAID_TEMPLATES[0].id)
 const calloutKind = ref<'NOTE' | 'TIP' | 'IMPORTANT' | 'WARNING' | 'CAUTION'>('NOTE')
@@ -104,6 +223,7 @@ onMounted(() => {
   window.addEventListener('keydown', handleGlobalShortcut)
 })
 onBeforeUnmount(() => {
+  cancelAnimationFrame(scrollSyncFrame)
   window.removeEventListener('keydown', handleGlobalShortcut)
 })
 
@@ -312,21 +432,31 @@ defineExpose({ focusHeading, applyOutlineChange, openFind })
 
 <template>
   <div class="markdown-editor">
-    <div class="editor-toolbar-sticky">
+    <div class="editor-toolbar-sticky" :class="{ 'is-collapsed': toolbarCollapsed }">
       <div class="editor-header">
         <span class="editor-caption">Markdown <small>· Typora 兼容 · 自动保存草稿</small></span>
         <div class="editor-header-right">
-          <button type="button" class="editor-mini-toggle" :class="{ active: focusMode }" title="专注模式：淡化非当前段落" @click="focusMode = !focusMode">专注</button>
-          <button type="button" class="editor-mini-toggle" :class="{ active: typewriterMode }" title="打字机模式：光标行保持居中" @click="typewriterMode = !typewriterMode">打字机</button>
-          <button type="button" class="editor-mini-toggle" :class="{ active: findOpen }" :title="`查找与替换 (${shortcut('F')} / ${shortcut('H')})`" @click="findOpen ? (findOpen = false) : openFind(false)">查找</button>
+          <button
+            type="button"
+            class="editor-mini-toggle"
+            :class="{ active: !toolbarCollapsed }"
+            :aria-expanded="!toolbarCollapsed"
+            :title="toolbarCollapsed ? '展开格式工具栏' : '收起格式工具栏'"
+            @click="toggleToolbarCollapsed"
+          >{{ toolbarCollapsed ? '展开工具栏 ▾' : '收起工具栏 ▴' }}</button>
+          <button v-if="activeMode === 'visual'" type="button" class="editor-mini-toggle" :class="{ active: focusMode }" title="专注模式：淡化非当前段落" @click="focusMode = !focusMode">专注</button>
+          <button v-if="activeMode !== 'read'" type="button" class="editor-mini-toggle" :class="{ active: typewriterMode }" title="打字机模式：光标行保持居中" @click="typewriterMode = !typewriterMode">打字机</button>
+          <button v-if="activeMode !== 'read'" type="button" class="editor-mini-toggle" :class="{ active: findOpen }" :title="`查找与替换 (${shortcut('F')} / ${shortcut('H')})`" @click="findOpen ? (findOpen = false) : openFind(false)">查找</button>
           <div class="editor-modes" role="group" aria-label="编辑器显示方式">
-            <button type="button" :aria-pressed="mode === 'source'" @click="mode = 'source'">源代码</button>
-            <button type="button" :disabled="editorFallback" :aria-pressed="mode === 'visual'" @click="mode = 'visual'">所见即写</button>
+            <button v-if="showReadOption" type="button" :aria-pressed="activeMode === 'read'" @click="activeMode = 'read'">阅读</button>
+            <button type="button" :disabled="editorFallback" :aria-pressed="activeMode === 'visual'" @click="activeMode = 'visual'">所见即写</button>
+            <button type="button" :aria-pressed="activeMode === 'source'" @click="activeMode = 'source'">源代码</button>
+            <button type="button" :aria-pressed="activeMode === 'split'" title="左侧源代码，右侧实时渲染，滚轮同步对齐" @click="activeMode = 'split'">双栏对照</button>
           </div>
         </div>
       </div>
 
-      <div class="markdown-toolbar" role="toolbar" aria-label="Markdown 格式">
+      <div v-show="!toolbarCollapsed" class="markdown-toolbar" role="toolbar" aria-label="Markdown 格式">
         <div class="code-tool">
           <button type="button" :disabled="readonly" :title="`一级标题 (${shortcut('1')})`" @mousedown.prevent @click="apply('h1')">H1</button>
           <button type="button" :disabled="readonly" :title="`二级标题 (${shortcut('2')})`" @mousedown.prevent @click="apply('h2')">H2</button>
@@ -360,14 +490,14 @@ defineExpose({ focusHeading, applyOutlineChange, openFind })
         </div>
 
         <div class="code-tool">
-          <button type="button" :disabled="readonly" title="插入 Mermaid 节点图 / 流程图" @mousedown.prevent @click="apply('mermaid')">⬡ 节点图</button>
+          <button type="button" :disabled="readonly" title="打开可视化节点图编辑器" @mousedown.prevent @click="openVisualMermaid()">⬡ 节点图</button>
           <select v-model="mermaidTemplateId" :disabled="readonly" aria-label="节点图模板" title="选择节点图模板">
             <option v-for="tpl in MERMAID_TEMPLATES" :key="tpl.id" :value="tpl.id">{{ tpl.label }}</option>
           </select>
         </div>
 
         <div class="code-tool">
-          <button type="button" :disabled="readonly" :title="`插入 LaTeX 公式 (${shortcut('Shift+M')})`" @mousedown.prevent @click="apply('math')">∑ 公式</button>
+          <button type="button" :disabled="readonly" :title="`打开可视化公式编辑器 (${shortcut('Shift+M')})`" @mousedown.prevent @click="openVisualMath()">∑ 公式</button>
           <select v-model="mathKind" :disabled="readonly" aria-label="公式类型" title="选择公式块或行内公式">
             <option value="block">公式块 $$</option>
             <option value="inline">行内公式 $</option>
@@ -395,7 +525,7 @@ defineExpose({ focusHeading, applyOutlineChange, openFind })
         <button type="button" :disabled="readonly" title="插入脚注 [^1]" @mousedown.prevent @click="apply('footnote')">[^] 脚注</button>
         <button type="button" :disabled="readonly" title="插入水平分割线" @mousedown.prevent @click="apply('hr')">― 分割线</button>
         <button type="button" :disabled="readonly" :title="`插入链接 (${shortcut('K')})`" @mousedown.prevent @click="apply('link')">链接</button>
-        <input ref="imageFileInput" class="sr-only" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple @change="onImageFilePicked">
+        <input ref="imageFileInput" class="sr-only" hidden type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple @change="onImageFilePicked">
       </div>
 
       <FindReplaceBar
@@ -410,19 +540,59 @@ defineExpose({ focusHeading, applyOutlineChange, openFind })
         @replace-all="handleReplaceAll"
       />
 
-      <p class="markdown-shortcuts">快捷键：{{ shortcut('1') }}–{{ shortcut('6') }} 标题 · {{ shortcut('0') }} 正文 · {{ shortcut('B') }}/{{ shortcut('I') }}/{{ shortcut('U') }} 粗斜下划线 · {{ shortcut('Shift+H') }} 高亮 · {{ shortcut('Shift+M') }} 公式 · {{ shortcut('T') }} 表格 · {{ shortcut('F') }}/{{ shortcut('H') }} 查找替换 · Ctrl+点击链接跳转</p>
+      <p v-show="!toolbarCollapsed" class="markdown-shortcuts">快捷键：{{ shortcut('1') }}–{{ shortcut('6') }} 标题 · {{ shortcut('0') }} 正文 · {{ shortcut('B') }}/{{ shortcut('I') }}/{{ shortcut('U') }} 粗斜下划线 · {{ shortcut('Shift+H') }} 高亮 · {{ shortcut('Shift+M') }} 公式 · {{ shortcut('T') }} 表格 · {{ shortcut('F') }}/{{ shortcut('H') }} 查找替换 · Ctrl+点击链接跳转</p>
       <p v-if="formatError" class="markdown-error" role="alert">{{ formatError }}</p>
       <p v-if="editorFallback" class="markdown-error" role="alert">排版编辑器无法启动，已切换到源代码编辑；正文和草稿没有改变。</p>
     </div>
 
-    <div class="editor-panes">
-      <div class="editor-pane">
-        <span class="pane-heading">正文 <span v-if="mode === 'visual'">· 点击文字、公式、表格或节点图直接编辑；支持粘贴/拖入图片</span></span>
+    <div class="editor-panes" :class="{ 'is-split': activeMode === 'split' }">
+      <div
+        v-if="activeMode === 'split'"
+        ref="splitSourcePane"
+        class="editor-pane split-pane-scroll split-source-pane"
+        @scroll="syncSplitScroll('source')"
+      >
+        <span class="pane-heading">源代码 · 滚轮与右侧实时预览同步</span>
         <LiveMarkdown
           ref="editor"
           :model-value="modelValue"
-          :mode="mode"
+          mode="source"
           :readonly="readonly"
+          :show-line-numbers="settings.showLineNumbers"
+          :typewriter-mode="false"
+          :attachment-context="attachmentContext"
+          :image-urls="imageUrls"
+          :save-pasted-images="savePastedImages"
+          :on-paste-status="onPasteStatus"
+          @update:model-value="emit('update:modelValue', $event)"
+          @keydown="handleKeydown"
+          @selection="selectionAnchor = $event"
+          @navigate-link="emit('navigate-link', $event)"
+          @failure="editorFallback = true; activeMode = 'source'"
+        />
+      </div>
+      <div
+        v-if="activeMode === 'split'"
+        ref="splitPreviewPane"
+        class="editor-pane split-pane-scroll split-preview-pane"
+        @scroll="syncSplitScroll('preview')"
+      >
+        <span class="pane-heading">实时渲染预览</span>
+        <ChapterMarkdown
+          :source="modelValue"
+          :editable-tasks="!readonly"
+          @navigate-link="emit('navigate-link', $event)"
+          @toggle-task="emit('toggle-task', $event)"
+        />
+      </div>
+      <div v-if="activeMode !== 'split'" class="editor-pane">
+        <span class="pane-heading">正文 <span v-if="activeMode === 'visual'">· 点击文字、公式、表格或节点图直接编辑；支持粘贴/拖入图片</span></span>
+        <LiveMarkdown
+          ref="editor"
+          :model-value="modelValue"
+          :mode="liveMode"
+          :readonly="readonly"
+          :show-line-numbers="settings.showLineNumbers"
           :focus-mode="focusMode"
           :typewriter-mode="typewriterMode"
           :attachment-context="attachmentContext"
@@ -433,10 +603,26 @@ defineExpose({ focusHeading, applyOutlineChange, openFind })
           @keydown="handleKeydown"
           @selection="selectionAnchor = $event"
           @navigate-link="emit('navigate-link', $event)"
-          @failure="editorFallback = true; mode = 'source'"
+          @visual-edit-mermaid="openVisualMermaid"
+          @visual-edit-math="openVisualMath"
+          @failure="editorFallback = true; activeMode = 'source'"
         />
       </div>
     </div>
+
+    <MermaidVisualModal
+      :open="!!mermaidVisualModal"
+      :initial-code="mermaidVisualModal?.code || ''"
+      @close="mermaidVisualModal = null"
+      @apply="applyVisualMermaid"
+    />
+    <MathVisualModal
+      :open="!!mathVisualModal"
+      :initial-tex="mathVisualModal?.tex || ''"
+      :initial-block="mathVisualModal?.block ?? true"
+      @close="mathVisualModal = null"
+      @apply="applyVisualMath"
+    />
 
     <div class="typora-status-bar" aria-label="文档字数统计">
       <span>{{ stats.words }} 词（中文 {{ stats.cjkChars }} 字）</span>

@@ -38,7 +38,7 @@ export function createSyncIndicator(setState: (state: TransferState) => void, cl
         timer = clock.schedule(() => {
           if (expected !== sequence) return
           timer = undefined; setState({ phase: 'idle' })
-        }, 450)
+        }, 650)
       }, 1400)
     },
     fail(id: number) {

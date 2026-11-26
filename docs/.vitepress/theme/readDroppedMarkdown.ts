@@ -134,15 +134,26 @@ export function selectedImageMatch(target: string, selectedPaths: readonly strin
     if (!segments.length || segments.some(part => part === '..' || /[\\/\0]/.test(part))) return { path: null, ambiguous: false }
   }
   const filename = segments[segments.length - 1].toLowerCase()
+  const lowerSegments = segments.map(part => part.toLowerCase())
   const names = selectedPaths.filter(path => {
     if (!validInputPath(path)) return false
     const parts = path.split('/')
     return parts[parts.length - 1].toLowerCase() === filename
   })
-  // Browser file pickers do not reveal the selected folder's real absolute
-  // path. A duplicated filename cannot be safely disambiguated by guessing.
-  if (names.length > 1) return { path: null, ambiguous: true }
-  return { path: names[0] || null, ambiguous: false }
+  if (names.length <= 1) return { path: names[0] || null, ambiguous: false }
+  // Disambiguate duplicate filenames using longest matching relative folder suffix
+  // (e.g. `chapter1.assets/fig1.png` vs `chapter2.assets/fig1.png`).
+  for (let suffixLen = lowerSegments.length; suffixLen >= 2; suffixLen--) {
+    const wantedSuffix = lowerSegments.slice(lowerSegments.length - suffixLen)
+    const suffixMatches = names.filter(path => {
+      const parts = path.split('/').map(p => p.toLowerCase())
+      if (parts.length < suffixLen) return false
+      const tail = parts.slice(parts.length - suffixLen)
+      return wantedSuffix.every((seg, idx) => seg === tail[idx])
+    })
+    if (suffixMatches.length === 1) return { path: suffixMatches[0], ambiguous: false }
+  }
+  return { path: null, ambiguous: true }
 }
 
 /** FileList paths and entry names must never escape the explicitly selected roots. */

@@ -13,8 +13,8 @@ android {
         applicationId = "com.papernotes.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10600
-        versionName = "1.0.6-android"
+        versionCode = 10700
+        versionName = "1.0.7-android"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

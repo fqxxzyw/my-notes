@@ -1,12 +1,13 @@
 import { Compartment, EditorSelection, EditorState, Prec, StateEffect, StateField, findClusterBreak, type Range } from '@codemirror/state'
 import { defaultKeymap, deleteCharBackward, deleteCharForward, history, historyKeymap, indentLess, insertTab, isolateHistory, redo, redoDepth, undo, undoDepth } from '@codemirror/commands'
-import { syntaxHighlighting, syntaxTree } from '@codemirror/language'
+import { ensureSyntaxTree, syntaxHighlighting, syntaxTree } from '@codemirror/language'
 import { Decoration, EditorView, keymap, WidgetType, type DecorationSet } from '@codemirror/view'
 import { markdownBlocks, markdownEnvironment, renderInlineMarkdown, revealInlineMarker, sourceOffsetForText, tableCellRange, type MarkdownBlock } from '../../../docs/.vitepress/theme/liveMarkdown'
 import { emptyInlineDeletion, visibleInlineEditPosition } from '../../../docs/.vitepress/theme/inlineDeletion.js'
 import { markdownEditorLanguage, sourceMarkdownHighlight, visualCodeHighlight } from '../../../docs/.vitepress/theme/editorHighlight.js'
 import { toggleInlineFormat } from '../../../docs/.vitepress/theme/inlineFormatting.js'
 import { renderSafeHtmlImage } from '../../../docs/.vitepress/theme/safeHtmlImage'
+import { extractMermaidFence, mountMermaidCard, type MermaidThemeMode } from '../../../docs/.vitepress/theme/mermaidRenderer'
 
 declare global {
   interface Window {
@@ -21,7 +22,7 @@ declare global {
     PaperEditor?: {
       setDocument(content: string, docKey: string, imageBaseUrl: string): void
       setMode(mode: 'visual' | 'source'): void
-      setTheme(theme: 'day' | 'night' | 'green' | 'yellow'): void
+      setTheme(theme: 'day' | 'night' | 'green' | 'yellow' | 'blue'): void
       setReadOnly(readonly: boolean): void
       applyFormat(action: string, codeLanguage: string): void
       insertText(snippet: string): void
@@ -46,7 +47,16 @@ let currentReadOnly = false
 let currentDocKey = ''
 let currentImageBaseUrl = ''
 let imageRevision = 0
+let themeRevision = 0
+let currentTheme: 'day' | 'night' | 'green' | 'yellow' | 'blue' = 'day'
 let composing = false
+
+function mermaidThemeFor(theme: typeof currentTheme): MermaidThemeMode {
+  if (theme === 'night') return 'night'
+  if (theme === 'green') return 'green'
+  if (theme === 'yellow') return 'yellow'
+  return 'day'
+}
 let pointerSelecting = false
 let selectionTimer: number | undefined
 
@@ -212,6 +222,56 @@ class InlineImage extends WidgetType {
   ignoreEvent() { return true }
 }
 
+class MermaidBlockWidget extends WidgetType {
+  private dispose?: () => void
+  constructor(
+    private readonly from: number,
+    private readonly to: number,
+    private readonly code: string,
+    private readonly themeRev: number
+  ) { super() }
+  eq(other: MermaidBlockWidget) {
+    return this.from === other.from && this.to === other.to && this.code === other.code && this.themeRev === other.themeRev
+  }
+  toDOM(editor: EditorView) {
+    const host = document.createElement('div')
+    host.className = 'cm-paper-mermaid-widget'
+    this.dispose = mountMermaidCard(host, this.code, {
+      theme: mermaidThemeFor(currentTheme),
+      showSourceToggle: true,
+      onEditSource: editor.state.readOnly ? undefined : () => {
+        const line = editor.state.doc.lineAt(this.from)
+        const nextPos = Math.min(this.to, line.to + 1)
+        editor.dispatch({ selection: EditorSelection.cursor(nextPos) })
+        editor.focus()
+      }
+    })
+    return host
+  }
+  destroy() { this.dispose?.(); this.dispose = undefined }
+  ignoreEvent() { return true }
+}
+
+class MermaidLivePreviewWidget extends WidgetType {
+  private dispose?: () => void
+  constructor(private readonly code: string, private readonly themeRev: number) { super() }
+  eq(other: MermaidLivePreviewWidget) {
+    return this.code === other.code && this.themeRev === other.themeRev
+  }
+  toDOM() {
+    const host = document.createElement('div')
+    host.className = 'cm-paper-mermaid-live'
+    this.dispose = mountMermaidCard(host, this.code, {
+      theme: mermaidThemeFor(currentTheme),
+      compact: true,
+      showSourceToggle: false
+    })
+    return host
+  }
+  destroy() { this.dispose?.(); this.dispose = undefined }
+  ignoreEvent() { return true }
+}
+
 function addFenceDecorations(state: EditorState, selection: readonly { from: number; to: number }[], ranges: Range<Decoration>[], from: number, to: number) {
   const first = state.doc.lineAt(from), last = state.doc.lineAt(to)
   const match = /^\s*(`{3,}|~{3,})([^\r\n]*)/.exec(state.doc.sliceString(from, first.to))
@@ -235,7 +295,9 @@ function addFenceDecorations(state: EditorState, selection: readonly { from: num
 
 function renderedDecorations(state: EditorState): DecorationSet {
   try {
+    ensureSyntaxTree(state, Math.min(state.doc.length, 60000), 60)
     const selection = state.selection.ranges
+    const caretSelections = selection.filter(range => range.from === range.to)
     const text = state.doc.toString()
     const hasLegacyCr = /\r(?!\n)/.test(text)
     legacyBanner.hidden = !(currentMode === 'visual' && hasLegacyCr)
@@ -247,6 +309,16 @@ function renderedDecorations(state: EditorState): DecorationSet {
     for (const block of blocks) {
       const active = selection.some(range => range.from <= block.to && range.to >= block.from)
       if (block.type === 'fence') {
+        const mermaidFence = extractMermaidFence(block.source)
+        if (mermaidFence) {
+          if (!active) {
+            ranges.push(Decoration.replace({ widget: new MermaidBlockWidget(block.from, block.to, mermaidFence.code, themeRevision), block: true }).range(block.from, block.to))
+            continue
+          }
+          addFenceDecorations(state, selection, ranges, block.from, block.to)
+          ranges.push(Decoration.widget({ widget: new MermaidLivePreviewWidget(mermaidFence.code, themeRevision), side: 1, block: true }).range(block.to))
+          continue
+        }
         addFenceDecorations(state, selection, ranges, block.from, block.to)
         continue
       }
@@ -292,7 +364,7 @@ function renderedDecorations(state: EditorState): DecorationSet {
             if (marker?.name === 'HeaderMark') {
               let end = marker.to
               while (end < line.to && /[ \t]/.test(state.doc.sliceString(end, end + 1))) end++
-              if (!selection.some(range => range.from <= end && range.to >= marker.from)) {
+              if (!caretSelections.some(range => range.from <= end && range.to >= marker.from)) {
                 ranges.push(Decoration.replace({}).range(marker.from, end))
               }
             }
@@ -303,13 +375,13 @@ function renderedDecorations(state: EditorState): DecorationSet {
             if (open && labelEnd && open.to < labelEnd.from) {
               ranges.push(Decoration.mark({ class: 'cm-paper-link' }).range(open.to, labelEnd.from))
               for (const [from, to] of [[open.from, open.to], [labelEnd.from, node.to]]) {
-                if (!revealInlineMarker(selection, from, to)) ranges.push(Decoration.replace({}).range(from, to))
+                if (!revealInlineMarker(caretSelections, from, to)) ranges.push(Decoration.replace({}).range(from, to))
               }
             }
             return
           }
           if (node.name === 'ListMark' || node.name === 'TaskMarker' || node.name === 'QuoteMark') {
-            if (selection.some(range => range.from <= node.to && range.to >= node.from)) return
+            if (caretSelections.some(range => range.from <= node.to && range.to >= node.from)) return
             const raw = state.doc.sliceString(node.from, node.to)
             const marker = node.name === 'ListMark' && /^[-*+]$/.test(raw) ? '•' : node.name === 'TaskMarker' ? (/x/i.test(raw) ? '☑' : '☐') : node.name === 'QuoteMark' ? '' : raw
             ranges.push(Decoration.replace(marker ? { widget: new InlineMarker(marker) } : {}).range(node.from, node.to))
@@ -324,7 +396,7 @@ function renderedDecorations(state: EditorState): DecorationSet {
           if (!first || !last || first === last || first.to >= last.from) return
           ranges.push(Decoration.mark({ class: inlineClass }).range(first.to, last.from))
           for (const mark of [first, last]) {
-            if (!revealInlineMarker(selection, mark.from, mark.to)) ranges.push(Decoration.replace({}).range(mark.from, mark.to))
+            if (!revealInlineMarker(caretSelections, mark.from, mark.to)) ranges.push(Decoration.replace({}).range(mark.from, mark.to))
           }
         }
       })
@@ -339,7 +411,8 @@ const renderedField = StateField.define<DecorationSet>({
   create: renderedDecorations,
   update(value, tr) {
     if (composing && (tr.docChanged || tr.selection)) return value.map(tr.changes)
-    return tr.docChanged || tr.selection || tr.effects.some(e => e.is(refreshVisual))
+    const treeUpdated = syntaxTree(tr.state) !== syntaxTree(tr.startState)
+    return tr.docChanged || tr.selection || treeUpdated || tr.effects.some(e => e.is(refreshVisual))
       ? renderedDecorations(tr.state)
       : value
   },
@@ -598,8 +671,11 @@ window.PaperEditor = {
     legacyBanner.hidden = true
     view?.dispatch({ effects: modeCompartment.reconfigure(displayExtension(mode)) })
   },
-  setTheme(theme: 'day' | 'night' | 'green' | 'yellow') {
+  setTheme(theme: 'day' | 'night' | 'green' | 'yellow' | 'blue') {
+    currentTheme = theme
     document.body.dataset.theme = theme
+    themeRevision++
+    view?.dispatch({ effects: refreshVisual.of(null) })
   },
   setReadOnly(ro: boolean) {
     currentReadOnly = ro

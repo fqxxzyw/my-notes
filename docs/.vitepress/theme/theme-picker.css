@@ -135,6 +135,7 @@
 }
 
 /* Recolor surfaces and drawn outlines together, including nested book artwork. */
+:root.paper-night .desk { --ink: var(--theme-ink); --muted: var(--theme-muted); --line: var(--theme-edge); --panel: var(--theme-paper); --shelf: var(--theme-soft); --button: var(--theme-ink); --depth-edge: var(--theme-edge); color: var(--theme-ink); }
 :is(.paper-theme-green, .paper-theme-yellow, .paper-theme-blue, .paper-theme-custom) body,
 :is(.paper-theme-green, .paper-theme-yellow, .paper-theme-blue, .paper-theme-custom) .Layout { background: var(--vp-c-bg); color: var(--theme-ink); }
 :is(.paper-theme-green, .paper-theme-yellow, .paper-theme-blue, .paper-theme-custom) .desk { --ink: var(--theme-ink); --muted: var(--theme-muted); --line: var(--theme-edge); --red: #795033; --panel: var(--theme-paper); --shelf: var(--vp-c-bg-soft); --button: var(--theme-ink); --depth-edge: var(--theme-edge); color: var(--theme-ink); }

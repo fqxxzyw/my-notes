@@ -2,22 +2,22 @@
 .editor-header { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; padding: 0 0 12px; }
 .editor-caption { font-size: 13px; font-weight: 700; }
 .editor-caption small { color: #555; font-size: 12px; font-weight: 400; }
-.editor-modes { display: flex; overflow: hidden; border: 1.5px solid #111; border-radius: 8px; background: white; }
+.editor-modes { display: flex; overflow: hidden; border: 1.5px solid var(--line, #111); border-radius: 8px; background: var(--panel, #fff); }
 .editor-modes { transition: box-shadow .14s ease; }
 .editor-modes:hover, .editor-modes:has(button:focus-visible) { box-shadow: 2px 2px 0 var(--depth-edge, #111); }
-.editor-modes button { padding: 6px 12px; border-right: 1.5px solid #111; color: #111; font-size: 12px; font-weight: 600; }
+.editor-modes button { padding: 6px 12px; border-right: 1.5px solid var(--line, #111); color: var(--ink, #111); font-size: 12px; font-weight: 600; }
 .editor-modes button:last-child { border-right: 0; }
-.editor-modes button[aria-pressed="true"] { color: #fff; background: #111; }
+.editor-modes button[aria-pressed="true"] { color: var(--panel, #fff); background: var(--ink, #111); }
 .editor-modes button:focus-visible { outline: 2px solid var(--vp-c-brand-1, #344e64); outline-offset: 2px; }
-.markdown-toolbar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 0 8px; border-top: 2px solid #111; }
+.markdown-toolbar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 0 8px; border-top: 2px solid var(--line, #111); }
 .markdown-toolbar button {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  border: 1.5px solid #111;
-  border-radius: 6px;
-  background: white;
-  color: #111;
+  border: 1.5px solid var(--line, #111);
+  border-radius: 7px;
+  background: var(--panel, #fff);
+  color: var(--ink, #111);
   padding: 5px 8px;
   font-size: 12px;
   font-weight: 600;
@@ -25,33 +25,33 @@
   cursor: pointer;
   white-space: nowrap;
 }
-.markdown-toolbar button:hover:not(:disabled) { background: #111; color: #fff; }
-.markdown-toolbar button:hover:not(:disabled) .kbd-tag { border-color: #fff; }
+.markdown-toolbar button:hover:not(:disabled) { background: var(--ink, #111); color: var(--panel, #fff); }
+.markdown-toolbar button:hover:not(:disabled) .kbd-tag { border-color: var(--panel, #fff); }
 .markdown-toolbar button:focus-visible { outline: 2px solid var(--vp-c-brand-1, #344e64); outline-offset: 2px; }
 .markdown-toolbar button:disabled { opacity: .55; cursor: default; }
 .markdown-toolbar > button, .code-tool { transition: box-shadow .14s ease, transform .14s ease; }
 .markdown-toolbar > button:not(:disabled):is(:hover, :focus-visible), .code-tool:hover, .code-tool:has(:focus-visible) { box-shadow: 1px 2px 0 var(--depth-edge, #111); }
 .markdown-toolbar > button:active:not(:disabled) { transform: translate(1px, 1px); box-shadow: 0 1px 0 var(--depth-edge, #111); }
 .kbd-tag { padding: 1px 4px; border: 1px solid currentColor; border-radius: 4px; font: 600 10px/1.1 ui-monospace, monospace; }
-.code-tool { display: flex; border: 1.5px solid #111; border-radius: 7px; overflow: hidden; background: #fff; }
+.code-tool { display: flex; border: 1.5px solid var(--line, #111); border-radius: 7px; overflow: hidden; background: var(--panel, #fff); }
 .code-tool button { border: 0; border-radius: 0; }
 .code-tool select {
   appearance: none;
   border: 0;
-  border-left: 1.5px solid #111;
+  border-left: 1.5px solid var(--line, #111);
   padding: 0 22px 0 8px;
-  background-color: #fff;
-  color: #111;
-  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
-  background-position: calc(100% - 11px) 50%, calc(100% - 7px) 50%;
-  background-size: 4px 4px;
+  background-color: var(--panel, #fff);
+  color: var(--ink, #111);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.25L6 7.75L9.5 4.25' fill='none' stroke='%23666' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-position: right 7px center;
+  background-size: 10px 10px;
   background-repeat: no-repeat;
   font: 600 11px ui-monospace, monospace;
   cursor: pointer;
 }
 .markdown-shortcuts { margin: 3px 0 9px; color: var(--muted, #59616a); font-size: 12px; line-height: 1.6; }
 .markdown-error { margin: 8px 0; color: #a12626; font-size: 13px; }
-.editor-panes { display: grid; grid-template-columns: minmax(0, 1fr); border: 2px solid #111; border-radius: 9px; overflow: hidden; background: #fff; }
+.editor-panes { display: grid; grid-template-columns: minmax(0, 1fr); border: 2px solid var(--line, #111); border-radius: 9px; overflow: hidden; background: var(--panel, #fff); }
 .editor-panes { transition: box-shadow .14s ease; }
 .editor-panes:hover, .editor-panes:has(:focus-visible) { box-shadow: 2px 2px 0 var(--depth-edge, #111); }
 @media (prefers-reduced-motion: reduce) {

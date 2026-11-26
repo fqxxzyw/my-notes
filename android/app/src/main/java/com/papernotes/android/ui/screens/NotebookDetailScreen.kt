@@ -49,6 +49,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -242,6 +243,14 @@ fun NotebookDetailScreen(
             }
         }
     ) { innerPadding ->
+        val directoryGroups = remember(liveChapters) {
+            CompatibilityCodecs.groupChaptersForDirectory(liveChapters) { it.id }
+        }
+        val namedGroups = remember(directoryGroups) { directoryGroups.filter { it.groupName.isNotEmpty() } }
+        val hasNamedGroups = namedGroups.isNotEmpty()
+        val collapsedGroups = remember(bookId) { mutableStateMapOf<String, Boolean>() }
+        val allCollapsed = hasNamedGroups && namedGroups.all { collapsedGroups[it.key] == true }
+
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
@@ -376,7 +385,7 @@ fun NotebookDetailScreen(
                 }
             }
 
-            // Section Heading + Drag hint
+            // Section Heading + Collapse-all / Drag hint
             item {
                 Row(
                     modifier = Modifier
@@ -391,7 +400,15 @@ fun NotebookDetailScreen(
                         fontWeight = FontWeight.Bold,
                         fontSize = 14.sp
                     )
-                    if (liveChapters.size > 1) {
+                    if (hasNamedGroups) {
+                        PaperBadge(
+                            text = if (allCollapsed) "展开全部章 ▾" else "收起全部章 ▴",
+                            modifier = Modifier.clickable {
+                                val next = !allCollapsed
+                                namedGroups.forEach { collapsedGroups[it.key] = next }
+                            }
+                        )
+                    } else if (liveChapters.size > 1) {
                         Text(
                             text = if (manageMode) "可点 ↑↓ 调整顺序或勾选删除" else "拖动左侧 ⠿ 排序 · 长按管理",
                             color = colors.muted,
@@ -417,194 +434,255 @@ fun NotebookDetailScreen(
                     }
                 }
             } else {
-                itemsIndexed(liveChapters, key = { _, ch -> ch.id }) { index, chapter ->
-                    val isDragging = draggingId == chapter.id
-                    val isSelected = chapter.id in selectedIds
-                    val isDirty = chapter.sha.isEmpty() || "${chapter.bookId}/${chapter.id}" in workspace.drafts
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .zIndex(if (isDragging) 20f else 1f)
-                            .onSizeChanged { if (it.height > 0) rowHeightPx = it.height.toFloat() }
-                            .graphicsLayer {
-                                if (isDragging) {
-                                    translationY = dragOffsetY
-                                    if (!reducedMotion) {
-                                        scaleX = 1.02f
-                                        scaleY = 1.02f
-                                    }
-                                }
-                            }
-                    ) {
-                        PaperCard(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .combinedClickable(
-                                    onClick = {
-                                        if (manageMode) {
-                                            selectedIds = if (isSelected) selectedIds - chapter.id else selectedIds + chapter.id
-                                        } else {
-                                            onOpenChapter(chapter)
-                                        }
-                                    },
-                                    onLongClick = {
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        manageMode = true
-                                        selectedIds = selectedIds + chapter.id
-                                    }
-                                ),
-                            cornerRadius = 9.dp,
-                            shadowOffset = if (isDragging) 6.dp else 2.dp,
-                            borderColor = if (isDragging || isSelected) colors.spineBrown else colors.line,
-                            backgroundColor = if (isSelected) colors.softSurface else colors.surface
-                        ) {
-                            Row(
+                directoryGroups.forEach { group ->
+                    val isGroupCollapsed = group.groupName.isNotEmpty() && collapsedGroups[group.key] == true
+                    if (group.groupName.isNotEmpty()) {
+                        item(key = "grp_${group.key}") {
+                            PaperCard(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 8.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    .clickable { collapsedGroups[group.key] = !isGroupCollapsed },
+                                cornerRadius = 9.dp,
+                                shadowOffset = 2.dp,
+                                backgroundColor = colors.softSurface
                             ) {
-                                // Left: either Checkbox (in manage mode) or Drag Handle (when >1 chapters)
-                                if (manageMode) {
-                                    Icon(
-                                        imageVector = if (isSelected) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank,
-                                        contentDescription = "选择章节",
-                                        tint = colors.ink,
-                                        modifier = Modifier
-                                            .size(24.dp)
-                                            .clickable {
-                                                selectedIds = if (isSelected) selectedIds - chapter.id else selectedIds + chapter.id
-                                            }
-                                    )
-                                } else if (liveChapters.size > 1) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(32.dp)
-                                            .pointerInput(chapter.id, liveChapters.size) {
-                                                detectDragGestures(
-                                                    onDragStart = {
-                                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                        draggingId = chapter.id
-                                                        dragOffsetY = 0f
-                                                    },
-                                                    onDrag = { change, dragAmount ->
-                                                        change.consume()
-                                                        dragOffsetY += dragAmount.y
-                                                        val curIdx = liveChapters.indexOfFirst { it.id == chapter.id }
-                                                        val threshold = (rowHeightPx + 10f) * 0.55f
-                                                        if (curIdx >= 0) {
-                                                            if (dragOffsetY > threshold && curIdx < liveChapters.lastIndex) {
-                                                                val next = liveChapters.toMutableList()
-                                                                next.add(curIdx + 1, next.removeAt(curIdx))
-                                                                liveChapters = next
-                                                                dragOffsetY -= rowHeightPx
-                                                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                                            } else if (dragOffsetY < -threshold && curIdx > 0) {
-                                                                val next = liveChapters.toMutableList()
-                                                                next.add(curIdx - 1, next.removeAt(curIdx))
-                                                                liveChapters = next
-                                                                dragOffsetY += rowHeightPx
-                                                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                                            }
-                                                        }
-                                                    },
-                                                    onDragEnd = {
-                                                        draggingId = null
-                                                        dragOffsetY = 0f
-                                                        onReorderChapters(liveChapters.map { it.id })
-                                                    },
-                                                    onDragCancel = {
-                                                        draggingId = null
-                                                        dragOffsetY = 0f
-                                                        liveChapters = chapters
-                                                    }
-                                                )
-                                            },
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            Icons.Outlined.DragIndicator,
-                                            contentDescription = "拖动调整章节顺序",
-                                            tint = if (isDragging) colors.spineBrown else colors.muted,
-                                            modifier = Modifier.size(22.dp)
-                                        )
-                                    }
-                                }
-
-                                // Chapter number badge (updates live as rows swap!)
-                                Box(
+                                Row(
                                     modifier = Modifier
-                                        .border(1.2.dp, colors.line, RoundedCornerShape(4.dp))
-                                        .padding(horizontal = 6.dp, vertical = 3.dp)
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 11.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     Text(
-                                        text = "%02d".format(index + 1),
-                                        color = colors.ink,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 11.sp
+                                        text = if (isGroupCollapsed) "▸" else "▾",
+                                        color = colors.muted,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold
                                     )
-                                }
-
-                                // Chapter title, optional nested folder eyebrow & draft status
-                                val folderLabel = remember(chapter.id) { CompatibilityCodecs.chapterFolderPath(chapter.id) }
-                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                    if (folderLabel.isNotEmpty()) {
+                                    Box(
+                                        modifier = Modifier
+                                            .background(colors.surface, RoundedCornerShape(4.dp))
+                                            .border(1.1.dp, colors.line, RoundedCornerShape(4.dp))
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
                                         Text(
-                                            text = folderLabel,
-                                            color = colors.muted,
+                                            text = "第 %02d 章".format(group.ordinal),
+                                            color = colors.ink,
                                             fontFamily = FontFamily.Monospace,
-                                            fontWeight = FontWeight.SemiBold,
-                                            fontSize = 11.sp,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp
                                         )
                                     }
                                     Text(
-                                        text = chapter.title,
+                                        text = group.groupName,
                                         color = colors.ink,
-                                        fontWeight = FontWeight.SemiBold,
-                                        fontSize = 15.sp,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
                                     )
-                                    if (isDirty) {
-                                        Text("草稿待同步", color = colors.spineBrown, fontSize = 10.sp, fontWeight = FontWeight.Medium)
-                                    }
+                                    Text(
+                                        text = "${group.items.size} 话",
+                                        color = colors.muted,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
                                 }
+                            }
+                        }
+                    }
 
-                                // Non-drag reorder controls in manage mode (or open arrow in normal mode)
-                                if (manageMode && liveChapters.size > 1) {
-                                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                        IconButton(
-                                            onClick = { moveIndex(index, index - 1) },
-                                            enabled = index > 0,
-                                            modifier = Modifier.size(32.dp)
-                                        ) {
-                                            Icon(
-                                                Icons.Outlined.ArrowUpward,
-                                                contentDescription = "上移章节",
-                                                tint = if (index > 0) colors.ink else colors.subtleLine,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        }
-                                        IconButton(
-                                            onClick = { moveIndex(index, index + 1) },
-                                            enabled = index < liveChapters.lastIndex,
-                                            modifier = Modifier.size(32.dp)
-                                        ) {
-                                            Icon(
-                                                Icons.Outlined.ArrowDownward,
-                                                contentDescription = "下移章节",
-                                                tint = if (index < liveChapters.lastIndex) colors.ink else colors.subtleLine,
-                                                modifier = Modifier.size(18.dp)
-                                            )
+                    if (!isGroupCollapsed) {
+                        itemsIndexed(group.items, key = { _, ch -> ch.id }) { itemIdx, chapter ->
+                            val index = liveChapters.indexOfFirst { it.id == chapter.id }.coerceAtLeast(0)
+                            val isDragging = draggingId == chapter.id
+                            val isSelected = chapter.id in selectedIds
+                            val isDirty = chapter.sha.isEmpty() || "${chapter.bookId}/${chapter.id}" in workspace.drafts
+                            val displayInfo = remember(chapter.id, chapter.title) {
+                                CompatibilityCodecs.chapterDisplayInfo(chapter.id, chapter.title)
+                            }
+                            val badgeText = if (group.groupName.isNotEmpty()) "%02d 话".format(itemIdx + 1) else "%02d".format(index + 1)
+
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = if (group.groupName.isNotEmpty()) 12.dp else 0.dp)
+                                    .zIndex(if (isDragging) 20f else 1f)
+                                    .onSizeChanged { if (it.height > 0) rowHeightPx = it.height.toFloat() }
+                                    .graphicsLayer {
+                                        if (isDragging) {
+                                            translationY = dragOffsetY
+                                            if (!reducedMotion) {
+                                                scaleX = 1.02f
+                                                scaleY = 1.02f
+                                            }
                                         }
                                     }
-                                } else if (!manageMode) {
-                                    Text("↗", color = colors.muted, fontSize = 15.sp, modifier = Modifier.padding(end = 6.dp))
+                            ) {
+                                PaperCard(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .combinedClickable(
+                                            onClick = {
+                                                if (manageMode) {
+                                                    selectedIds = if (isSelected) selectedIds - chapter.id else selectedIds + chapter.id
+                                                } else {
+                                                    onOpenChapter(chapter)
+                                                }
+                                            },
+                                            onLongClick = {
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                manageMode = true
+                                                selectedIds = selectedIds + chapter.id
+                                            }
+                                        ),
+                                    cornerRadius = 9.dp,
+                                    shadowOffset = if (isDragging) 6.dp else 2.dp,
+                                    borderColor = if (isDragging || isSelected) colors.spineBrown else colors.line,
+                                    backgroundColor = if (isSelected) colors.softSurface else colors.surface
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 8.dp, vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        if (manageMode) {
+                                            Icon(
+                                                imageVector = if (isSelected) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank,
+                                                contentDescription = "选择章节",
+                                                tint = colors.ink,
+                                                modifier = Modifier
+                                                    .size(24.dp)
+                                                    .clickable {
+                                                        selectedIds = if (isSelected) selectedIds - chapter.id else selectedIds + chapter.id
+                                                    }
+                                            )
+                                        } else if (liveChapters.size > 1) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(32.dp)
+                                                    .pointerInput(chapter.id, liveChapters.size) {
+                                                        detectDragGestures(
+                                                            onDragStart = {
+                                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                                draggingId = chapter.id
+                                                                dragOffsetY = 0f
+                                                            },
+                                                            onDrag = { change, dragAmount ->
+                                                                change.consume()
+                                                                dragOffsetY += dragAmount.y
+                                                                val curIdx = liveChapters.indexOfFirst { it.id == chapter.id }
+                                                                val threshold = (rowHeightPx + 10f) * 0.55f
+                                                                if (curIdx >= 0) {
+                                                                    if (dragOffsetY > threshold && curIdx < liveChapters.lastIndex) {
+                                                                        val next = liveChapters.toMutableList()
+                                                                        next.add(curIdx + 1, next.removeAt(curIdx))
+                                                                        liveChapters = next
+                                                                        dragOffsetY -= rowHeightPx
+                                                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                                    } else if (dragOffsetY < -threshold && curIdx > 0) {
+                                                                        val next = liveChapters.toMutableList()
+                                                                        next.add(curIdx - 1, next.removeAt(curIdx))
+                                                                        liveChapters = next
+                                                                        dragOffsetY += rowHeightPx
+                                                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                                    }
+                                                                }
+                                                            },
+                                                            onDragEnd = {
+                                                                draggingId = null
+                                                                dragOffsetY = 0f
+                                                                onReorderChapters(liveChapters.map { it.id })
+                                                            },
+                                                            onDragCancel = {
+                                                                draggingId = null
+                                                                dragOffsetY = 0f
+                                                                liveChapters = chapters
+                                                            }
+                                                        )
+                                                    },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    Icons.Outlined.DragIndicator,
+                                                    contentDescription = "拖动调整章节顺序",
+                                                    tint = if (isDragging) colors.spineBrown else colors.muted,
+                                                    modifier = Modifier.size(22.dp)
+                                                )
+                                            }
+                                        }
+
+                                        Box(
+                                            modifier = Modifier
+                                                .border(1.2.dp, colors.line, RoundedCornerShape(4.dp))
+                                                .padding(horizontal = 6.dp, vertical = 3.dp)
+                                        ) {
+                                            Text(
+                                                text = badgeText,
+                                                color = colors.ink,
+                                                fontFamily = FontFamily.Monospace,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 11.sp
+                                            )
+                                        }
+
+                                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            Text(
+                                                text = displayInfo.primaryTitle,
+                                                color = colors.ink,
+                                                fontWeight = FontWeight.SemiBold,
+                                                fontSize = 14.5.sp,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            if (displayInfo.summaryTitle.isNotEmpty()) {
+                                                Text(
+                                                    text = displayInfo.summaryTitle,
+                                                    color = colors.muted,
+                                                    fontSize = 12.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                            if (isDirty) {
+                                                Text("草稿待同步", color = colors.spineBrown, fontSize = 10.sp, fontWeight = FontWeight.Medium)
+                                            }
+                                        }
+
+                                        if (manageMode && liveChapters.size > 1) {
+                                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                                IconButton(
+                                                    onClick = { moveIndex(index, index - 1) },
+                                                    enabled = index > 0,
+                                                    modifier = Modifier.size(32.dp)
+                                                ) {
+                                                    Icon(
+                                                        Icons.Outlined.ArrowUpward,
+                                                        contentDescription = "上移章节",
+                                                        tint = if (index > 0) colors.ink else colors.subtleLine,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+                                                IconButton(
+                                                    onClick = { moveIndex(index, index + 1) },
+                                                    enabled = index < liveChapters.lastIndex,
+                                                    modifier = Modifier.size(32.dp)
+                                                ) {
+                                                    Icon(
+                                                        Icons.Outlined.ArrowDownward,
+                                                        contentDescription = "下移章节",
+                                                        tint = if (index < liveChapters.lastIndex) colors.ink else colors.subtleLine,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+                                            }
+                                        } else if (!manageMode) {
+                                            Text("↗", color = colors.muted, fontSize = 15.sp, modifier = Modifier.padding(end = 6.dp))
+                                        }
+                                    }
                                 }
                             }
                         }

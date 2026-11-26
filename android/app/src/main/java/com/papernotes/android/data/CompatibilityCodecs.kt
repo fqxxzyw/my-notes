@@ -269,6 +269,79 @@ object CompatibilityCodecs {
         return if (slash > 0) decoded.substring(0, slash) else ""
     }
 
+    data class ChapterDisplayInfo(
+        val isImported: Boolean,
+        val groupName: String,
+        val nestedSubpath: String,
+        val primaryTitle: String,
+        val summaryTitle: String
+    )
+
+    data class ChapterDirectoryGroup<T>(
+        val key: String,
+        val groupName: String,
+        val ordinal: Int,
+        val items: List<T>
+    )
+
+    /**
+     * Exact Android port of `chapterDisplayInfo`:
+     * - 1st subfolder inside notebook -> collapsible group (`groupName`, 章)
+     * - Deeper subfolders (4+ levels) -> flattened as `子文件夹/文档名`
+     * - Imported files prioritize filename as `primaryTitle` and show cleaned H1 as `summaryTitle`.
+     */
+    fun chapterDisplayInfo(id: String, title: String): ChapterDisplayInfo {
+        val cleaned = cleanMarkdownTitle(title).ifEmpty { title.trim() }.ifEmpty { title }
+        val decoded = decodedEncodedChapterPath(id) ?: return ChapterDisplayInfo(
+            isImported = false,
+            groupName = "",
+            nestedSubpath = "",
+            primaryTitle = cleaned,
+            summaryTitle = ""
+        )
+        val parts = decoded.split('/').filter { it.isNotEmpty() }
+        val rawFile = parts.lastOrNull() ?: decoded
+        val fileStem = IMPORTED_EXT_REGEX.replace(rawFile, "").trim().ifEmpty { rawFile }
+        val groupName = if (parts.size >= 2) parts[0] else ""
+        val nestedSubpath = if (parts.size >= 3) parts.subList(1, parts.size - 1).joinToString("/") else ""
+        val primaryTitle = if (nestedSubpath.isNotEmpty()) "$nestedSubpath/$fileStem" else fileStem
+        val normPrimary = fileStem.lowercase(Locale.ROOT).replace(Regex("\\s+"), "")
+        val normHeading = cleaned.lowercase(Locale.ROOT).replace(Regex("\\s+"), "")
+        val summaryTitle = if (cleaned.isNotEmpty() && normHeading != normPrimary) cleaned else ""
+        return ChapterDisplayInfo(
+            isImported = true,
+            groupName = groupName,
+            nestedSubpath = nestedSubpath,
+            primaryTitle = primaryTitle,
+            summaryTitle = summaryTitle
+        )
+    }
+
+    fun <T> groupChaptersForDirectory(chapters: List<T>, idOf: (T) -> String): List<ChapterDirectoryGroup<T>> {
+        val result = mutableListOf<Pair<String, MutableList<T>>>()
+        val groupNames = mutableMapOf<String, String>()
+        for (item in chapters) {
+            val id = idOf(item)
+            val decoded = decodedEncodedChapterPath(id)
+            val parts = decoded?.split('/')?.filter { it.isNotEmpty() }.orEmpty()
+            val gName = if (parts.size >= 2) parts[0] else ""
+            val key = if (gName.isNotEmpty()) "dir:$gName" else "flat:$id"
+            val prev = result.lastOrNull()
+            if (gName.isNotEmpty() && prev != null && prev.first == key) {
+                prev.second.add(item)
+            } else {
+                result.add(key to mutableListOf(item))
+                groupNames[key] = gName
+            }
+        }
+        var ord = 0
+        return result.map { (key, list) ->
+            val gName = groupNames[key].orEmpty()
+            val groupOrd = if (gName.isNotEmpty()) ++ord else 0
+            ChapterDirectoryGroup(key = key, groupName = gName, ordinal = groupOrd, items = list)
+        }
+    }
+
     private fun compareTextRun(a: String, b: String): Int {
         if (a == b) return 0
         val cmp = zhCollator.get()?.compare(a, b) ?: a.lowercase(Locale.ROOT).compareTo(b.lowercase(Locale.ROOT))

@@ -325,19 +325,25 @@ fun BookshelfScreen(
                             val viewportWidthPx = with(density) { maxWidth.toPx() }
                             val sidePad = ((maxWidth - 96.dp) / 2f).coerceAtLeast(24.dp)
 
-                            // Auto-select the book closest to the horizontal center while scrolling + tactile ticks.
+                            // Auto-select the book closest to the horizontal center ONLY while actively scrolling;
+                            // when idle, tapping any book selects that exact book without being overridden.
                             LaunchedEffect(hScroll, items.size, viewportWidthPx) {
                                 val stepPx = with(density) { 64.dp.toPx() }.coerceAtLeast(32f)
                                 var lastBucket = (hScroll.value / stepPx).toInt()
+                                var lastScrollPos = hScroll.value
                                 var atEdge = if (hScroll.value <= 2) -1 else 0
                                 snapshotFlow { Triple(hScroll.value, hScroll.maxValue, hScroll.isScrollInProgress) }
-                                    .collect { (pos, maxVal, _) ->
+                                    .collect { (pos, maxVal, scrolling) ->
+                                        val moved = pos != lastScrollPos
+                                        lastScrollPos = pos
+                                        if (!scrolling) return@collect
+
                                         val bucket = (pos / stepPx).toInt()
                                         if (bucket != lastBucket) {
                                             lastBucket = bucket
                                             ShelfSoundHaptics.playShelfTick(context, view)
                                         }
-                                        if (items.isNotEmpty() && itemCenters.isNotEmpty()) {
+                                        if (moved && items.isNotEmpty() && itemCenters.isNotEmpty()) {
                                             val centerX = pos + viewportWidthPx / 2f
                                             val nearest = items.minByOrNull { item ->
                                                 kotlin.math.abs((itemCenters[item.id] ?: Float.MAX_VALUE) - centerX)
@@ -373,7 +379,8 @@ fun BookshelfScreen(
 
                                     Box(
                                         modifier = Modifier.onGloballyPositioned { coords ->
-                                            itemCenters[item.id] = coords.positionInParent().x + coords.size.width / 2f
+                                            // Anchor on the book's visual spine center (left ~35% of the 3D bounding box)
+                                            itemCenters[item.id] = coords.positionInParent().x + coords.size.width * 0.35f
                                         }
                                     ) {
                                         ShelfVolume3D(

@@ -352,21 +352,21 @@ onBeforeUnmount(() => {
 .cabinet-gallery { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
 .cabinet {
   display: flex; flex-direction: column; gap: 24px; justify-content: space-between;
-  min-width: 0; min-height: 184px; padding: 24px; background: #fff;
-  border: 2px solid #111; border-radius: 7px; color: #111; text-align: left; cursor: pointer;
+  min-width: 0; min-height: 184px; padding: 24px; background: var(--theme-paper, #fff);
+  border: 2px solid var(--theme-edge, #111); border-radius: 7px; color: var(--theme-ink, #111); text-align: left; cursor: pointer;
   transition: transform .16s ease, box-shadow .16s ease;
 }
-.cabinet:hover, .cabinet:focus-visible { transform: translate(-1px,-1px); box-shadow: 5px 5px 0 var(--depth-edge, #111); }
-.cabinet:focus-visible { outline: 2px solid #111; outline-offset: 4px; }
+.cabinet:hover, .cabinet:focus-visible { transform: translate(-1px,-1px); box-shadow: 5px 5px 0 var(--depth-edge, var(--theme-edge, #111)); }
+.cabinet:focus-visible { outline: 2px solid var(--theme-edge, #111); outline-offset: 4px; }
 .cabinet__top, .cabinet__footer { display: flex; justify-content: space-between; gap: 16px; }
 .cabinet__top { align-items: stretch; }
 .cabinet__information { flex: 0 1 32%; min-width: 0; display: grid; align-content: start; gap: 10px; }
-.cabinet__meta { color: #555; font-size: 12px; font-weight: 600; }
-.case-number { display: inline-block; margin-right: 6px; padding: 2px 7px; color: #111; border: 1.5px solid #111; border-radius: 2px; box-shadow: 1px 1px 0 currentColor; font: 700 11px ui-monospace,monospace; letter-spacing: .04em; }
+.cabinet__meta { color: var(--theme-muted, #555); font-size: 12px; font-weight: 600; }
+.case-number { display: inline-block; margin-right: 6px; padding: 2px 7px; color: var(--theme-ink, #111); border: 1.5px solid var(--theme-edge, #111); border-radius: 2px; box-shadow: 1px 1px 0 var(--theme-edge, currentColor); font: 700 11px ui-monospace,monospace; letter-spacing: .04em; }
 .cabinet__name { font-family: var(--paper-serif); font-size: 22px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
 .cabinet__drawing {
   flex: 1 1 0; min-width: 0; position: relative; height: 144px;
-  border: 2px solid #111; background: #fff; box-shadow: 2px 2px 0 currentColor;
+  border: 2px solid var(--theme-edge, #111); background: var(--theme-paper, #fff); box-shadow: 2px 2px 0 var(--theme-edge, currentColor);
   overflow: hidden; user-select: none; -webkit-user-select: none;
 }
 .cabinet__books {

@@ -39,10 +39,10 @@ html.paper-night, html.paper-night body { scrollbar-color: #aaa59c transparent; 
   width: 18px;
   height: 23px;
   margin-right: 10px;
-  background: #fff;
-  border: 2px solid #111;
+  background: var(--theme-paper, #fff);
+  border: 2px solid var(--theme-edge, #111);
   border-radius: 2px;
-  box-shadow: inset 4px 0 #6e4726, 2px 2px 0 #111;
+  box-shadow: inset 4px 0 #6e4726, 2px 2px 0 var(--theme-edge, #111);
 }
 
 .vp-doc h1, .vp-doc h2 { font-family: var(--paper-serif); }

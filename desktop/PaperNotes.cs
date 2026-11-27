@@ -894,7 +894,8 @@ namespace PaperNotesDesktop
             {
                 Directory.CreateDirectory(profile);
                 webView = new Microsoft.Web.WebView2.WinForms.WebView2();
-                webView.Dock = DockStyle.Fill;
+                webView.Location = new Point(-20000, -20000);
+                webView.Size = ClientSize;
                 Controls.Add(webView);
                 startupScreen.BringToFront();
                 foreach (ResizeGrip grip in resizeGrips) grip.BringToFront();
@@ -980,6 +981,7 @@ namespace PaperNotesDesktop
             int remaining = (startupScreen.AnimationsEnabled ? 1400 : 150) - (int)startupClock.ElapsedMilliseconds;
             if (remaining > 0) await Task.Delay(remaining);
             if (IsDisposed || webView == null || webView.CoreWebView2 == null) return;
+            webView.Dock = DockStyle.Fill;
             startupScreen.StopAnimation();
             startupScreen.Visible = false;
             webView.CoreWebView2.PostWebMessageAsJson("{\"channel\":\"paper-notes\",\"action\":\"ui.reveal\"}");

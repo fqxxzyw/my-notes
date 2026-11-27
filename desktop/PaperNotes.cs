@@ -8,10 +8,12 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
+using Timer = System.Windows.Forms.Timer;
 
 namespace PaperNotesDesktop
 {
@@ -34,13 +36,24 @@ namespace PaperNotesDesktop
                 bool portable;
                 string appData = ResolveDataDirectory(Application.ExecutablePath,
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), out portable);
-                if (portable) EnsurePortableDataDirectory(appData);
-                runtimeDirectory = ExtractPayload(Path.Combine(appData, "Versions"));
-                AppDomain.CurrentDomain.AssemblyResolve += ResolveBundledAssembly;
-                if (!SetDllDirectory(runtimeDirectory))
-                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                string instanceKey = ComputeInstanceKey(appData);
+                bool createdNew;
+                using (var instanceMutex = new Mutex(true, "Local\\PaperNotes_Instance_" + instanceKey, out createdNew))
+                using (var wakeEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\PaperNotes_Wake_" + instanceKey))
+                {
+                    if (!createdNew)
+                    {
+                        try { wakeEvent.Set(); } catch { }
+                        return;
+                    }
+                    if (portable) EnsurePortableDataDirectory(appData);
+                    runtimeDirectory = ExtractPayload(Path.Combine(appData, "Versions"));
+                    AppDomain.CurrentDomain.AssemblyResolve += ResolveBundledAssembly;
+                    if (!SetDllDirectory(runtimeDirectory))
+                        throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
 
-                StartWindow(runtimeDirectory, Path.Combine(appData, "WebView2"));
+                    StartWindow(runtimeDirectory, Path.Combine(appData, "WebView2"), wakeEvent);
+                }
             }
             catch (Exception exception)
             {
@@ -79,10 +92,20 @@ namespace PaperNotesDesktop
             }
         }
 
-        // The WebView2 types are referenced only after our assembly resolver is installed.
-        private static void StartWindow(string root, string profile)
+        private static string ComputeInstanceKey(string appData)
         {
-            Application.Run(new MainWindow(root, profile));
+            string normalized = Path.GetFullPath(appData).TrimEnd(Path.DirectorySeparatorChar).ToLowerInvariant();
+            using (var sha = SHA256.Create())
+            {
+                byte[] hash = sha.ComputeHash(Encoding.UTF8.GetBytes(normalized));
+                return BitConverter.ToString(hash, 0, 8).Replace("-", "").ToLowerInvariant();
+            }
+        }
+
+        // The WebView2 types are referenced only after our assembly resolver is installed.
+        private static void StartWindow(string root, string profile, EventWaitHandle wakeEvent)
+        {
+            Application.Run(new MainWindow(root, profile, wakeEvent));
         }
 
         private static Assembly ResolveBundledAssembly(object sender, ResolveEventArgs args)
@@ -838,6 +861,12 @@ namespace PaperNotesDesktop
         private readonly Dictionary<string, string> selectedMarkdownNormalized = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private readonly Stopwatch startupClock = Stopwatch.StartNew();
         private bool startupRevealed;
+        private readonly EventWaitHandle wakeEvent;
+        private readonly RegisteredWaitHandle wakeRegistration;
+        private readonly NotifyIcon trayIcon;
+        private readonly ContextMenuStrip trayMenu;
+        private bool allowExit;
+        private bool trayHintShown;
 
         [DllImport("user32.dll")]
         private static extern bool ReleaseCapture();
@@ -863,10 +892,11 @@ namespace PaperNotesDesktop
         [StructLayout(LayoutKind.Sequential)]
         private struct MinMaxInfo { public NativePoint Reserved, MaxSize, MaxPosition, MinTrackSize, MaxTrackSize; }
 
-        public MainWindow(string root, string profile)
+        public MainWindow(string root, string profile, EventWaitHandle wakeEvent)
         {
             this.root = root;
             this.profile = profile;
+            this.wakeEvent = wakeEvent;
             credentialDirectory = Path.Combine(Path.GetDirectoryName(profile), "Credentials");
             Text = "纸间";
             FormBorderStyle = FormBorderStyle.None;
@@ -875,6 +905,34 @@ namespace PaperNotesDesktop
             ClientSize = new Size(1280, 820);
             MinimumSize = new Size(760, 520);
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+            trayMenu = new ContextMenuStrip();
+            var openItem = new ToolStripMenuItem("打开纸间");
+            openItem.Font = new Font(openItem.Font, FontStyle.Bold);
+            openItem.Click += delegate { RestoreFromTray(); };
+            var exitItem = new ToolStripMenuItem("退出纸间");
+            exitItem.Click += delegate { ExitApplication(); };
+            trayMenu.Items.Add(openItem);
+            trayMenu.Items.Add(new ToolStripSeparator());
+            trayMenu.Items.Add(exitItem);
+            trayIcon = new NotifyIcon
+            {
+                Icon = Icon ?? SystemIcons.Application,
+                Text = "纸间 - 点击打开",
+                ContextMenuStrip = trayMenu,
+                Visible = true
+            };
+            trayIcon.MouseClick += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) RestoreFromTray(); };
+            trayIcon.DoubleClick += delegate { RestoreFromTray(); };
+            if (wakeEvent != null)
+            {
+                wakeRegistration = ThreadPool.RegisterWaitForSingleObject(wakeEvent, delegate
+                {
+                    if (!IsDisposed && IsHandleCreated)
+                    {
+                        try { BeginInvoke((Action)RestoreFromTray); } catch { }
+                    }
+                }, null, Timeout.Infinite, false);
+            }
             startupScreen = new StartupScreen(Icon);
             startupScreen.Dock = DockStyle.Fill;
             Controls.Add(startupScreen);
@@ -966,6 +1024,52 @@ namespace PaperNotesDesktop
             {
                 startupScreen.ShowFailure("无法加载笔记界面，请重新启动应用。");
             }
+        }
+
+        private void RestoreFromTray()
+        {
+            if (IsDisposed) return;
+            ShowInTaskbar = true;
+            if (!Visible) Show();
+            if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+            Activate();
+            BringToFront();
+        }
+
+        private void ExitApplication()
+        {
+            allowExit = true;
+            if (trayIcon != null) trayIcon.Visible = false;
+            Close();
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (!allowExit && e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                Hide();
+                ShowInTaskbar = false;
+                if (!trayHintShown && trayIcon != null)
+                {
+                    trayHintShown = true;
+                    try { trayIcon.ShowBalloonTip(2200, "纸间已在后台运行", "点击托盘图标或再次打开快捷方式即可秒开；右键托盘图标可退出。", ToolTipIcon.Info); }
+                    catch { }
+                }
+                return;
+            }
+            base.OnFormClosing(e);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                try { if (wakeRegistration != null) wakeRegistration.Unregister(null); } catch { }
+                if (trayIcon != null) { trayIcon.Visible = false; trayIcon.Dispose(); }
+                if (trayMenu != null) trayMenu.Dispose();
+            }
+            base.Dispose(disposing);
         }
 
         private async void RevealStartup()
@@ -1072,7 +1176,8 @@ namespace PaperNotesDesktop
                 string theme = GetString(request, "theme");
                 BackColor = theme == "night" ? Color.FromArgb(23, 25, 28)
                     : theme == "green" ? Color.FromArgb(233, 243, 231)
-                    : theme == "yellow" ? Color.FromArgb(251, 245, 224) : Color.White;
+                    : theme == "yellow" ? Color.FromArgb(251, 245, 224)
+                    : theme == "blue" ? Color.FromArgb(234, 243, 251) : Color.White;
                 return;
             }
             if (action == "window.minimize") { WindowState = FormWindowState.Minimized; return; }

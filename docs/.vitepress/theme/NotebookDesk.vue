@@ -3403,11 +3403,13 @@ onMounted(() => {
     backgroundReady = loaded
     await credentialReady
     if (loaded && connected.value) {
-      // Pure local-first: when a local snapshot already exists, do NOT hit GitHub on startup;
-      // only check & sync when the user explicitly clicks「恢复」or「同步」.
+      // First login (no local cache yet): run full initial restore WITH the visible top progress bar!
+      // Already cached locally: quietly check HEAD only, keeping 0ms local-first browsing.
       if (!restoredSnapshot.value) void refresh()
+      else void updateFromRemoteInBackground()
     }
   })()
+  window.addEventListener('focus', scheduleDesktopRemoteCheck)
   window.addEventListener('scroll', handleWindowScroll, { passive: true })
   ensureShelfAudioUnlocked()
   checkInitialShareHash()
@@ -3421,6 +3423,7 @@ onBeforeUnmount(() => {
   imageObjects.clear()
   disposed = true
   headerResizeObserver?.disconnect()
+  window.removeEventListener('focus', scheduleDesktopRemoteCheck)
   clearTimeout(backgroundTimer)
   clearTimeout(autoTimer)
   transferIndicator.dispose()

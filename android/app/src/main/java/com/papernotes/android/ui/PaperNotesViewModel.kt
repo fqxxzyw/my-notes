@@ -670,7 +670,7 @@ class PaperNotesViewModel(val repo: PaperNotesRepository) : ViewModel() {
     fun restoreFromGitHub() {
         flushActiveEditorDraft()
         viewModelScope.launch {
-            _ui.update { it.copy(busy = true, busyLabel = "正在从 GitHub 恢复完整离线副本…", error = null, notice = null) }
+            _ui.update { it.copy(showSyncSheet = false, busy = true, busyLabel = "正在从远端恢复完整离线副本…", error = null, notice = null) }
             try {
                 val (imgCount, ws) = withContext(Dispatchers.IO) { repo.restoreFromGitHub() }
                 _ui.update {
@@ -691,7 +691,7 @@ class PaperNotesViewModel(val repo: PaperNotesRepository) : ViewModel() {
     fun syncSelected(keys: Set<String>) {
         flushActiveEditorDraft()
         viewModelScope.launch {
-            _ui.update { it.copy(busy = true, busyLabel = "正在原子提交到 GitHub…", error = null, notice = null) }
+            _ui.update { it.copy(showSyncSheet = false, busy = true, busyLabel = "正在同步改动到远端仓库…", error = null, notice = null) }
             try {
                 val outcome = withContext(Dispatchers.IO) { repo.syncSelected(keys) }
                 when (outcome) {
@@ -1044,73 +1044,119 @@ class PaperNotesViewModel(val repo: PaperNotesRepository) : ViewModel() {
                 for (r in AttachmentPolicy.extractAttachmentReferences(md, bookId)) {
                     if (!seen.add(r.src)) continue
                     try {
-                        val att = client.readAttachment(r.path)
-                        out.add(
-                            SharedAttachment(
-                                relPath = r.src,
-                                mime = AttachmentPolicy.attachmentMime(r.path),
-                                base64 = java.util.Base64.getEncoder().encodeToString(att.bytes)
+                        val bytes = client.fetchRawBytes(r.path)
+                        if (bytes.isNotEmpty()) {
+                            out.add(
+                                SharedAttachment(
+                                    relPath = r.src,
+                                    mime = AttachmentPolicy.attachmentMime(r.path),
+                                    base64 = java.util.Base64.getEncoder().encodeToString(bytes)
+                                )
                             )
-                        )
+                        }
                     } catch (_: Throwable) { /* skip unreadable remote image */ }
                 }
             }
             return out.ifEmpty { null }
         }
 
+        // Fast path: 1 Git Trees API call + raw.githubusercontent.com (avoids 60/hr unauthenticated rate limit)
+        suspend fun readBookViaRaw(bookId: String, allPaths: List<String>, fallbackTitle: String?): SharedBook {
+            val prefix = "docs/notebooks/$bookId/"
+            val indexPath = "${prefix}index.md"
+            val indexMd = if (indexPath in allPaths) client.fetchRawText(indexPath) else ""
+            val title = if (indexMd.isNotEmpty()) {
+                com.papernotes.android.data.CompatibilityCodecs.titleFromMarkdown(indexMd, fallbackTitle ?: bookId)
+            } else (fallbackTitle ?: bookId)
+            val desc = if (indexMd.isNotEmpty()) com.papernotes.android.data.CompatibilityCodecs.readNotebookDescription(indexMd) else ""
+            val order = if (indexMd.isNotEmpty()) com.papernotes.android.data.CompatibilityCodecs.readNotebookChapterOrder(indexMd) else emptyList()
+            val chPaths = allPaths.filter {
+                it.startsWith(prefix) && it != indexPath && !it.startsWith("${prefix}assets/") && it.endsWith(".md")
+            }
+            val rawChapters = chPaths.map { p ->
+                val cid = p.removePrefix(prefix).removeSuffix(".md")
+                val body = client.fetchRawText(p)
+                val cTitle = com.papernotes.android.data.CompatibilityCodecs.titleFromMarkdown(
+                    body,
+                    com.papernotes.android.data.CompatibilityCodecs.titleFromEncodedId(cid, 'c')
+                )
+                Triple(cid, cTitle, body)
+            }
+            val sorted = com.papernotes.android.data.CompatibilityCodecs.sortChapters(
+                rawChapters.map { (cid, cTitle, body) ->
+                    Chapter(id = cid, bookId = bookId, title = cTitle, sha = "", content = body)
+                },
+                { it.id },
+                order
+            )
+            return SharedBook(
+                title = title,
+                description = desc.ifBlank { null },
+                chapters = sorted.map { SharedChapter(it.title, it.content) },
+                attachments = fetchImages(bookId, sorted.map { it.content })
+            )
+        }
+
         return when (ref.scope) {
             "page" -> {
-                val p = client.readPage(ref.id)
+                val md = client.fetchRawText("docs/pages/${ref.id}.md")
+                val title = com.papernotes.android.data.CompatibilityCodecs.titleFromMarkdown(
+                    md,
+                    com.papernotes.android.data.CompatibilityCodecs.titleFromEncodedId(ref.id, 'p')
+                )
                 PaperSharePayloadV1(
                     v = 1,
                     scope = "page",
-                    page = SharedPage(title = p.title, content = p.content, attachments = fetchImages(null, listOf(p.content)))
+                    page = SharedPage(title = title, content = md, attachments = fetchImages(null, listOf(md)))
                 )
             }
             "chapter" -> {
                 val cid = ref.chapterId ?: throw IllegalArgumentException("GitHub 章节链接缺少章节 ID。")
-                val ch = client.readChapter(ref.id, cid)
+                val md = client.fetchRawText("docs/notebooks/${ref.id}/$cid.md")
+                val title = com.papernotes.android.data.CompatibilityCodecs.titleFromMarkdown(
+                    md,
+                    com.papernotes.android.data.CompatibilityCodecs.titleFromEncodedId(cid, 'c')
+                )
                 PaperSharePayloadV1(
                     v = 1,
                     scope = "chapter",
-                    chapter = SharedChapterData(title = ch.title, content = ch.content, attachments = fetchImages(ref.id, listOf(ch.content)))
+                    chapter = SharedChapterData(title = title, content = md, attachments = fetchImages(ref.id, listOf(md)))
                 )
             }
             "book" -> {
-                val allBooks = client.listNotebooks()
-                val nb = allBooks.find { it.id == ref.id }
-                val chs = client.listChapters(ref.id)
+                val allPaths = client.listPublicDocsTreePaths()
                 PaperSharePayloadV1(
                     v = 1,
                     scope = "book",
-                    book = SharedBook(
-                        title = nb?.title ?: ref.title ?: ref.id,
-                        description = nb?.description?.ifBlank { null },
-                        chapters = chs.map { SharedChapter(it.title, it.content) },
-                        attachments = fetchImages(ref.id, chs.map { it.content })
-                    )
+                    book = readBookViaRaw(ref.id, allPaths, ref.title)
                 )
             }
             else -> {
-                val cat = client.readCatalog()
-                val allBooks = client.listNotebooks()
-                val allPages = client.listPages()
-                val cabTitle = cat.catalog.cabinets.find { it.id == ref.id }?.title ?: ref.title ?: "分享书柜"
+                val allPaths = client.listPublicDocsTreePaths()
+                val catalog = if ("docs/cabinets.json" in allPaths) {
+                    com.papernotes.android.data.CompatibilityCodecs.parseCatalog(client.fetchRawText("docs/cabinets.json"))
+                } else com.papernotes.android.data.CompatibilityCodecs.defaultCatalog()
+                val cabTitle = catalog.cabinets.find { it.id == ref.id }?.title ?: ref.title ?: "分享书柜"
                 fun assigned(id: String): String {
-                    val t = cat.catalog.assignments[id]
-                    return if (t != null && cat.catalog.cabinets.any { it.id == t }) t else DEFAULT_CABINET_ID
+                    val t = catalog.assignments[id]
+                    return if (t != null && catalog.cabinets.any { it.id == t }) t else DEFAULT_CABINET_ID
                 }
-                val books = allBooks.filter { assigned(it.id) == ref.id }.map { b ->
-                    val chs = client.listChapters(b.id)
-                    SharedBook(
-                        title = b.title,
-                        description = b.description?.ifBlank { null },
-                        chapters = chs.map { SharedChapter(it.title, it.content) },
-                        attachments = fetchImages(b.id, chs.map { it.content })
+                val bookIds = allPaths.mapNotNull { p ->
+                    val m = Regex("^docs/notebooks/([^/]+)/index\\.md$").matchEntire(p)
+                    m?.groupValues?.get(1)
+                }.distinct().filter { assigned(it) == ref.id }
+                val books = bookIds.map { bid -> readBookViaRaw(bid, allPaths, null) }
+                val pageIds = allPaths.mapNotNull { p ->
+                    val m = Regex("^docs/pages/([^/]+)\\.md$").matchEntire(p)
+                    m?.groupValues?.get(1)
+                }.distinct().filter { assigned("page_$it") == ref.id }
+                val pages = pageIds.map { pid ->
+                    val md = client.fetchRawText("docs/pages/$pid.md")
+                    val title = com.papernotes.android.data.CompatibilityCodecs.titleFromMarkdown(
+                        md,
+                        com.papernotes.android.data.CompatibilityCodecs.titleFromEncodedId(pid, 'p')
                     )
-                }
-                val pages = allPages.filter { assigned("page_${it.id}") == ref.id }.map { p ->
-                    SharedPage(title = p.title, content = p.content, attachments = fetchImages(null, listOf(p.content)))
+                    SharedPage(title = title, content = md, attachments = fetchImages(null, listOf(md)))
                 }
                 PaperSharePayloadV1(v = 1, scope = "cabinet", cabinet = SharedCabinetData(cabTitle, books, pages))
             }

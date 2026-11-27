@@ -8,26 +8,44 @@ import java.security.MessageDigest
  * Never hardcoded to any developer account; isolates local data and tokens per repo.
  */
 object RepositoryIdentity {
-    private val OWNER_REGEX = Regex("^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$")
+    private val OWNER_REGEX = Regex("^[a-zA-Z0-9](?:[a-zA-Z0-9._-]{0,37}[a-zA-Z0-9])?$")
     private val REPO_REGEX = Regex("^[a-zA-Z0-9._-]{1,100}$")
+    private val SUPPORTED_HOSTS = mapOf(
+        "github.com" to "github",
+        "gitee.com" to "gitee",
+        "gitlab.com" to "gitlab",
+        "gitcode.com" to "gitcode"
+    )
+    private val PROVIDER_PREFIX_REGEX = Regex("^(github|gitee|gitlab|gitcode):(.+)$", RegexOption.IGNORE_CASE)
 
-    fun normalizeRepository(input: String): String {
+    data class ParsedRepo(val provider: String, val owner: String, val repo: String) {
+        val canonical: String get() = if (provider == "github") "$owner/$repo" else "$provider:$owner/$repo"
+    }
+
+    fun parseRepository(input: String): ParsedRepo {
         var value = input.trim()
-        if (value.startsWith("http://", ignoreCase = true) || value.startsWith("https://", ignoreCase = true)) {
+        var provider = "github"
+        val prefixMatch = PROVIDER_PREFIX_REGEX.matchEntire(value)
+        if (prefixMatch != null) {
+            provider = prefixMatch.groupValues[1].lowercase()
+            value = prefixMatch.groupValues[2].trim()
+        } else if (value.startsWith("http://", ignoreCase = true) || value.startsWith("https://", ignoreCase = true)) {
             val uri = try {
                 URI(value)
             } catch (_: Exception) {
-                throw IllegalArgumentException("请输入 GitHub 仓库地址或 owner/repository。")
+                throw IllegalArgumentException("请输入 GitHub / Gitee / GitLab / GitCode 仓库地址或 owner/repository。")
             }
+            val hostProvider = SUPPORTED_HOSTS[uri.host?.lowercase().orEmpty()]
             if (!"https".equals(uri.scheme, ignoreCase = true) ||
-                !"github.com".equals(uri.host, ignoreCase = true) ||
+                hostProvider == null ||
                 uri.port != -1 ||
                 uri.userInfo != null ||
                 uri.query != null ||
                 uri.fragment != null
             ) {
-                throw IllegalArgumentException("请输入 github.com 上的 HTTPS 仓库地址。")
+                throw IllegalArgumentException("仅支持 github.com、gitee.com、gitlab.com 或 gitcode.com 的 HTTPS 仓库地址。")
             }
+            provider = hostProvider
             value = (uri.path ?: "").trim('/')
         }
         if (value.endsWith(".git", ignoreCase = true)) {
@@ -45,8 +63,10 @@ object RepositoryIdentity {
         ) {
             throw IllegalArgumentException("仓库格式应为 owner/repository，例如 octocat/my-notes。")
         }
-        return "$owner/$repo".lowercase()
+        return ParsedRepo(provider, owner.lowercase(), repo.lowercase())
     }
+
+    fun normalizeRepository(input: String): String = parseRepository(input).canonical
 
     /** Stable filesystem-safe directory identifier per repository (or 'local' when unbound). */
     fun workspaceScope(repository: String?): String {

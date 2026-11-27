@@ -11,17 +11,26 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -368,34 +377,50 @@ private fun PaperNotesRoot(
                 )
             }
 
-            // Busy Transfer Pill Overlay
-            if (ui.busy) {
-                Box(
+            // Non-blocking Top Transfer Progress Rail (matches Desktop .transfer-rail)
+            // Never covers or blocks browsing/reading/editing other notes during restore or sync.
+            AnimatedVisibility(
+                visible = ui.busy,
+                enter = slideInVertically { -it } + fadeIn(),
+                exit = slideOutVertically { -it } + fadeOut(),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+            ) {
+                Column(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .background(colors.scrim),
-                    contentAlignment = Alignment.Center
+                        .fillMaxWidth()
+                        .background(colors.surface.copy(alpha = 0.96f))
                 ) {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(3.dp),
+                        color = colors.ink,
+                        trackColor = colors.softSurface
+                    )
                     Row(
                         modifier = Modifier
-                            .border(2.dp, colors.line, RoundedCornerShape(10.dp))
-                            .background(colors.surface, RoundedCornerShape(10.dp))
-                            .padding(horizontal = 20.dp, vertical = 14.dp),
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 5.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        horizontalArrangement = Arrangement.Center
                     ) {
-                        CircularProgressIndicator(
-                            color = colors.ink,
-                            strokeWidth = 2.5.dp,
-                            modifier = Modifier.size(20.dp)
-                        )
                         Text(
-                            text = ui.busyLabel.ifBlank { "处理中…" },
+                            text = ui.busyLabel.ifBlank { "正在同步处理…" },
                             color = colors.ink,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 11.5.sp,
+                            maxLines = 1
                         )
                     }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(colors.line.copy(alpha = 0.45f))
+                    )
                 }
             }
         }

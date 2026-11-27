@@ -163,6 +163,27 @@ body[data-theme="blue"] {
   background: rgba(186, 158, 114, 0.34) !important;
 }
 
+.cm-gutters {
+  background: var(--soft) !important;
+  color: var(--muted) !important;
+  border-right: 1px solid var(--subtle-line) !important;
+  font-size: 12px;
+}
+
+.cm-paper-code-line[data-code-line]::before {
+  content: attr(data-code-line);
+  display: inline-block;
+  min-width: 2.2em;
+  margin-right: 10px;
+  padding-right: 8px;
+  border-right: 1px solid var(--paper-code-border);
+  color: var(--muted);
+  text-align: right;
+  font-size: 12px;
+  user-select: none;
+  opacity: 0.72;
+}
+
 .paper-mermaid-card {
   margin: 14px 0;
   border: 1.5px solid var(--line);

@@ -502,12 +502,24 @@ object CompatibilityCodecs {
         return sb.toString().ifEmpty { "未命名" }
     }
 
+    private fun truncateUtf8ForId(input: String, maxBytes: Int = 150): String {
+        val bytes = input.toByteArray(Charsets.UTF_8)
+        if (bytes.size <= maxBytes) return input
+        val sb = StringBuilder()
+        var count = 0
+        for (ch in input) {
+            val cb = ch.toString().toByteArray(Charsets.UTF_8).size
+            if (count + cb > maxBytes) break
+            sb.append(ch)
+            count += cb
+        }
+        return sb.toString().trim().ifEmpty { "note" }
+    }
+
     private fun encodedIdFromTitle(prefix: Char, title: String): String {
-        val clean = checkTitle(title)
+        val clean = truncateUtf8ForId(checkTitle(title), 150)
         val encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(clean.toByteArray(Charsets.UTF_8))
-        val id = "${prefix}_${newRandomId()}_$encoded"
-        if (id.length > 251) throw IllegalArgumentException("文件名过长，请缩短后重试。")
-        return id
+        return "${prefix}_${newRandomId()}_$encoded"
     }
 
     fun pageIdFromTitle(title: String): String = encodedIdFromTitle('p', title)

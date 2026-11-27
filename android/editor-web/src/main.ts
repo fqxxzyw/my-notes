@@ -1,7 +1,7 @@
 import { Compartment, EditorSelection, EditorState, Prec, StateEffect, StateField, findClusterBreak, type Range } from '@codemirror/state'
 import { defaultKeymap, deleteCharBackward, deleteCharForward, history, historyKeymap, indentLess, insertTab, isolateHistory, redo, redoDepth, undo, undoDepth } from '@codemirror/commands'
 import { ensureSyntaxTree, syntaxHighlighting, syntaxTree } from '@codemirror/language'
-import { Decoration, EditorView, keymap, WidgetType, type DecorationSet } from '@codemirror/view'
+import { Decoration, EditorView, keymap, lineNumbers, WidgetType, type DecorationSet } from '@codemirror/view'
 import { markdownBlocks, markdownEnvironment, renderInlineMarkdown, revealInlineMarker, sourceOffsetForText, tableCellRange, type MarkdownBlock } from '../../../docs/.vitepress/theme/liveMarkdown'
 import { emptyInlineDeletion, visibleInlineEditPosition } from '../../../docs/.vitepress/theme/inlineDeletion.js'
 import { markdownEditorLanguage, sourceMarkdownHighlight, visualCodeHighlight } from '../../../docs/.vitepress/theme/editorHighlight.js'
@@ -278,16 +278,20 @@ function addFenceDecorations(state: EditorState, selection: readonly { from: num
   if (!match) return
   const language = (match[2].trim().split(/\s+/)[0] || '代码').slice(0, 40)
   const openingFence = match[1]
+  let codeLineIdx = 0
   for (let n = first.number; n <= last.number; n++) {
     const line = state.doc.line(n), isFirst = n === first.number
     const closing = /^\s*(`+|~+)\s*\r?$/.exec(line.text)?.[1] || ''
     const closed = n === last.number && n > first.number && closing[0] === openingFence[0] && closing.length >= openingFence.length
     const fenceLine = isFirst || closed
     const fenceStart = isFirst ? from : closed ? line.from + line.text.indexOf(closing) : line.from
-    const revealFence = fenceLine && selection.some(range => range.from <= line.to && range.to >= fenceStart)
+    const revealFence = fenceLine && selection.some(range => range.from === range.to && range.from <= line.to && range.to >= fenceStart)
+    const attrs: Record<string, string> = {}
+    if (isFirst) attrs['data-language'] = language
+    if (!fenceLine) attrs['data-code-line'] = String(++codeLineIdx)
     ranges.push(Decoration.line({
       class: `cm-paper-code-line${isFirst ? ' cm-paper-code-open' : ''}${closed ? ' cm-paper-code-close' : ''}${revealFence ? ' cm-paper-code-revealed' : ''}`,
-      attributes: isFirst ? { 'data-language': language } : undefined
+      attributes: Object.keys(attrs).length ? attrs : undefined
     }).range(line.from))
     if (fenceLine && !revealFence && line.to > fenceStart) ranges.push(Decoration.replace({}).range(fenceStart, line.to))
   }
@@ -307,7 +311,7 @@ function renderedDecorations(state: EditorState): DecorationSet {
     const environment = markdownEnvironment(text)
     const ranges: Range<Decoration>[] = []
     for (const block of blocks) {
-      const active = selection.some(range => range.from <= block.to && range.to >= block.from)
+      const active = caretSelections.some(range => range.from <= block.to && range.to >= block.from)
       if (block.type === 'fence') {
         const mermaidFence = extractMermaidFence(block.source)
         if (mermaidFence) {
@@ -422,7 +426,7 @@ const renderedField = StateField.define<DecorationSet>({
 function displayExtension(mode: EditorMode) {
   return mode === 'visual'
     ? [renderedField, syntaxHighlighting(visualCodeHighlight)]
-    : [syntaxHighlighting(sourceMarkdownHighlight)]
+    : [lineNumbers(), syntaxHighlighting(sourceMarkdownHighlight)]
 }
 
 function editableExtension(ro: boolean) {

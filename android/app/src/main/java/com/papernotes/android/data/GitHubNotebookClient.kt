@@ -73,12 +73,55 @@ class GitHubNotebookClient(
             URLEncoder.encode(seg, "UTF-8").replace("+", "%20")
     }
 
-    val canonicalRepository: String = RepositoryIdentity.normalizeRepository(repository)
+    val parsedRepo = RepositoryIdentity.parseRepository(repository)
+    val canonicalRepository: String = parsedRepo.canonical
     private val base = apiBaseUrl.trimEnd('/')
-    private val repoPath = canonicalRepository.split('/').joinToString("/") { encodeSegment(it) }
+    private val repoPath = "${encodeSegment(parsedRepo.owner)}/${encodeSegment(parsedRepo.repo)}"
     private val repoApi = "$base/repos/$repoPath"
     private val contentsApi = "$repoApi/contents/docs"
     private val gitApi = "$repoApi/git"
+
+    /** Single Git Trees call returning all blob paths under docs/ (avoids 60/hr unauthenticated rate limit). */
+    suspend fun listPublicDocsTreePaths(): List<String> = withContext(Dispatchers.IO) {
+        val tree = gitRequest("trees/main?recursive=1")
+        val entries = tree["tree"]?.jsonArray ?: return@withContext emptyList()
+        entries.mapNotNull { el ->
+            val obj = el.jsonObject
+            if (obj["type"]?.jsonPrimitive?.content == "blob") {
+                val p = obj["path"]?.jsonPrimitive?.content.orEmpty()
+                if (p.startsWith("docs/")) p else null
+            } else null
+        }
+    }
+
+    /** Direct raw.githubusercontent.com fetch (no REST API quota consumption). */
+    suspend fun fetchRawText(repoFilePath: String): String = withContext(Dispatchers.IO) {
+        val encoded = repoFilePath.split('/').joinToString("/") { encodeSegment(it) }
+        val url = "https://raw.githubusercontent.com/$repoPath/main/$encoded"
+        val req = Request.Builder().url(url).get().header("Cache-Control", "no-store").build()
+        val response = try {
+            httpClient.newCall(req).execute()
+        } catch (_: IOException) {
+            throw NotebookStoreException(StoreErrorCode.NETWORK, "无法拉取分享内容，请检查网络后重试。")
+        }
+        response.use { res ->
+            if (!res.isSuccessful) {
+                throw NotebookStoreException(StoreErrorCode.NOT_FOUND, "分享内容不存在或仓库为私有（HTTP ${res.code}）。")
+            }
+            res.body?.string().orEmpty()
+        }
+    }
+
+    suspend fun fetchRawBytes(repoFilePath: String): ByteArray = withContext(Dispatchers.IO) {
+        val encoded = repoFilePath.split('/').joinToString("/") { encodeSegment(it) }
+        val url = "https://raw.githubusercontent.com/$repoPath/main/$encoded"
+        val req = Request.Builder().url(url).get().header("Cache-Control", "no-store").build()
+        val response = httpClient.newCall(req).execute()
+        response.use { res ->
+            if (!res.isSuccessful) throw NotebookStoreException(StoreErrorCode.NOT_FOUND, "附件不存在。")
+            res.body?.bytes() ?: ByteArray(0)
+        }
+    }
 
     fun setToken(value: String) {
         token = value.trim()
